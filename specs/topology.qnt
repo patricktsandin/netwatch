@@ -90,8 +90,12 @@ module topology {
   // Model bounds
   // ===========================================================================
 
+  /// Global roles (0 .. NUM_ROLES - 1) come from the kernel's notifications.
   pure val NUM_ROLES = 2
   pure val ROLES: Set[Role] = 0.to(NUM_ROLES - 1)
+  /// One role identified by Probing instead, as a hop is (ADR-0025). Its
+  /// observations are never buffered, and resyncs never touch it.
+  pure val PROBE_ROLE: Role = NUM_ROLES
   pure val IDENTITIES: Set[Identity] = 0.to(1)
   pure val MAX_PROBES = 2
 
@@ -233,6 +237,9 @@ module topology {
   // Ghost state, used only to state properties: every epoch ever allocated.
   var allocated: Epoch -> { role: Role, identity: Identity }
 
+  // Ghost state: the identity Probing last reported for PROBE_ROLE, if any.
+  var lastProbed: Set[Identity]
+
   // Probing, reduced to what attribution needs.
   var inFlight: Set[Probe]
   var samples: Set[Sample]
@@ -263,6 +270,7 @@ module topology {
     agg' = initialAggregate,
     outputs' = [],
     allocated' = Map(),
+    lastProbed' = Set(),
     inFlight' = Set(),
     samples' = Set(),
     nextProbe' = 0,
@@ -285,6 +293,7 @@ module topology {
     inFlight' = inFlight,
     samples' = samples,
     nextProbe' = nextProbe,
+    lastProbed' = lastProbed,
   }
 
   action resyncIdle: bool = all {
@@ -402,6 +411,19 @@ module topology {
     probesIdle,
   }
 
+  /// Probing reports who answered for PROBE_ROLE. It takes effect at once, even
+  /// while desynchronized, because the kernel's notifications have nothing to
+  /// say about it. Counted as a world change, since the responder really changed.
+  action probeIdentify(identity: Identity): bool = all {
+    worldChanges < MAX_WORLD_CHANGES,
+    worldChanges' = worldChanges + 1,
+    aggregateSteps(bind(agg, PROBE_ROLE, identity)),
+    lastProbed' = Set(identity),
+    inFlight' = inFlight, samples' = samples, nextProbe' = nextProbe,
+    actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
+    resyncIdle,
+  }
+
   // --- Probing, reduced to attribution ---------------------------------------
 
   /// A probe takes the role's current binding from the view as its pin.
@@ -412,6 +434,7 @@ module topology {
     inFlight' = inFlight.union(Set({ id: nextProbe, role: role, pin: agg.bindings.get(role) })),
     nextProbe' = nextProbe + 1,
     samples' = samples,
+    lastProbed' = lastProbed,
     actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
     resyncIdle, aggregateIdle,
   }
@@ -431,6 +454,7 @@ module topology {
     )),
     inFlight' = inFlight.exclude(Set(p)),
     nextProbe' = nextProbe,
+    lastProbed' = lastProbed,
     actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
     resyncIdle, aggregateIdle,
   }
@@ -448,6 +472,7 @@ module topology {
       reportLoss,
       takeSnapshot,
       deliverSnapshot,
+      probeIdentify(identity),
       scheduleProbe(role),
       nondet p = inFlight.oneOf()
       sendProbe(p),
@@ -506,7 +531,15 @@ module topology {
   /// Pinning keeps samples truthful in the meantime.
   val quiescentViewIsAccurate: bool =
     (agg.synchronized and pending.length() == 0 and not(lossSignal) and snapshots.length() == 0)
-      implies agg.bindings.keys().mapBy(r => agg.bindings.get(r).identity) == actual
+      implies agg.bindings.keys().filter(r => r < NUM_ROLES).mapBy(r => agg.bindings.get(r).identity) == actual
+
+  /// A role identified by Probing always holds exactly the identity Probing last
+  /// reported, whatever the kernel-side protocol is doing: buffering, losing
+  /// notifications, or resyncing (ADR-0025).
+  val probeRoleFollowsProbes: bool =
+    lastProbed.forall(i =>
+      agg.bindings.keys().contains(PROBE_ROLE) and agg.bindings.get(PROBE_ROLE).identity == i
+    )
 
   /// While desynchronized, a resync for the current generation has always been
   /// requested.
@@ -520,5 +553,6 @@ module topology {
     openEpochsAreDistinct,
     quiescentViewIsAccurate,
     desynchronizedImpliesResyncRequested,
+    probeRoleFollowsProbes,
   }
 }

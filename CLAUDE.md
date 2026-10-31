@@ -29,8 +29,7 @@ Not yet built, roughly in priority order:
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
 - eBPF drop reasons, `/dev/kmsg`, clock health, config drift, conntrack and qdisc
   stats (ADR-0008)
-- a Quint spec of the UI's merge and backfill (ADR-0019), and of `ProbeIdentified`
-  (ADR-0025)
+- a Quint spec of the UI's merge and backfill (ADR-0019)
 - configuration (TOML), and runtime target management through the API
 - kernel receive timestamps (`SO_TIMESTAMPING`)
 

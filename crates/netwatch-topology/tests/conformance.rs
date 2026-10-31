@@ -7,6 +7,8 @@
 //! - `reportLoss` becomes `NotificationsLost`
 //! - `deliverSnapshot` becomes the snapshot at the head of the previous state's
 //!   `snapshots`
+//! - `probeIdentify` becomes `ProbeIdentified` for the spec's `PROBE_ROLE`, with the
+//!   identity the spec picked
 //!
 //! Every other action must leave the aggregate untouched. After every step, the test
 //! checks the outputs, every role's binding, and whether the view is synchronized.
@@ -35,9 +37,17 @@ const TRACES: usize = 200;
 const MAX_STEPS: usize = 60;
 const SEED: &str = "0x6e657477617463";
 
-/// Spec role `i` is `SPEC_ROLES[i]`. Must be ascending in `Role`'s order, and as long
-/// as the spec's `NUM_ROLES`.
-const SPEC_ROLES: [Role; 2] = [Role::Nic, Role::Tunnel];
+/// Spec role `i` is `SPEC_ROLES[i]`. Must be ascending in `Role`'s order: the
+/// spec's `NUM_ROLES` global roles, then its `PROBE_ROLE`.
+const SPEC_ROLES: [Role; 3] = [
+    Role::Nic,
+    Role::Tunnel,
+    Role::Hop {
+        target: netwatch_shared::TargetId::new(1),
+        ttl: netwatch_shared::HopTtl::new(std::num::NonZeroU8::MIN),
+    },
+];
+const PROBE_ROLE: i64 = 2;
 
 // --- The spec's state, as ITF encodes it ----------------------------------------
 
@@ -49,6 +59,20 @@ struct SpecState {
     snapshots: Vec<SpecSnapshot>,
     #[serde(rename = "mbt::actionTaken")]
     action_taken: String,
+    #[serde(rename = "mbt::nondetPicks")]
+    picks: Picks,
+}
+
+#[derive(Debug, Deserialize)]
+struct Picks {
+    identity: SpecOption<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "tag", content = "value")]
+enum SpecOption<T> {
+    Some(T),
+    None(serde::de::IgnoredAny),
 }
 
 #[derive(Debug, Deserialize)]
@@ -220,6 +244,15 @@ fn replay(path: &Path) {
             "deliver" => Some(observation(&before.pending[0])),
             "reportLoss" => Some(Observation::NotificationsLost),
             "deliverSnapshot" => Some(snapshot(&before.snapshots[0])),
+            "probeIdentify" => {
+                let SpecOption::Some(picked) = after.picks.identity else {
+                    panic!("probeIdentify without a picked identity");
+                };
+                Some(Observation::ProbeIdentified {
+                    role: role(PROBE_ROLE),
+                    identity: identity(picked),
+                })
+            }
             _ => None,
         };
         let outputs = observed.map_or_else(Vec::new, |o| topology.observe(o));
