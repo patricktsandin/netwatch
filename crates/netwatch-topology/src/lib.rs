@@ -37,9 +37,11 @@
 //! when the probe is scheduled (ADR-0020).
 
 mod aggregate;
+pub mod egress;
 mod observation;
 mod output;
 
 pub use aggregate::{Binding, Topology};
+pub use egress::{EgressPath, InterfaceKind};
 pub use observation::{Observation, ResyncGeneration, Snapshot};
 pub use output::{Command, Output, TopologyEvent};

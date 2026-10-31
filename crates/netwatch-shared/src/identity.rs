@@ -47,7 +47,7 @@ impl InterfaceIndex {
 /// Stored inline, so a name is `Copy` and never allocates. The bytes after `len` are
 /// always zero. Because a name can't contain NUL, the derived ordering is exactly
 /// the lexicographic order of the names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InterfaceName {
     bytes: [u8; InterfaceName::MAX_LEN],
     len: u8,
@@ -121,6 +121,12 @@ fn is_forbidden_in_name(b: u8) -> bool {
         b,
         b'/' | b':' | 0 | b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' | 0xa0
     )
+}
+
+impl fmt::Debug for InterfaceName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
 }
 
 impl fmt::Display for InterfaceName {

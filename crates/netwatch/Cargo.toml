@@ -17,6 +17,11 @@ netwatch-adapter-procfs.workspace = true
 netwatch-adapter-modem.workspace = true
 netwatch-adapter-sqlite.workspace = true
 netwatch-adapter-web.workspace = true
+netwatch-shared.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true

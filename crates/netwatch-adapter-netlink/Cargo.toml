@@ -10,6 +10,12 @@ publish.workspace = true
 netwatch-shared.workspace = true
 netwatch-topology.workspace = true
 netwatch-host-health.workspace = true
+netlink-sys.workspace = true
+netlink-packet-route.workspace = true
+netlink-packet-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

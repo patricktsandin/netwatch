@@ -27,3 +27,4 @@ to "Superseded".
 | [0019](0019-frontend-verification.md) | Frontend verification | Accepted |
 | [0020](0020-pinned-probes-and-topology-resync.md) | Pin probes to identity epochs; resynchronize after lost notifications | Accepted; refined by 0021 |
 | [0021](0021-buffer-and-drain-during-resync.md) | Buffer notifications while desynchronized; drain the socket on loss | Accepted |
+| [0022](0022-global-roles-from-reference-egress.md) | Global roles follow the egress path to a reference destination | Accepted |

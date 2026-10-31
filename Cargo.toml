@@ -28,6 +28,14 @@ vstd = "=0.0.0-2026-10-25-0158"
 cargo_metadata = "0.23"
 thiserror = "2"
 itf = "0.4"
+netlink-sys = { version = "0.9", features = ["tokio_socket"] }
+netlink-packet-route = "0.33"
+netlink-packet-core = "0.9"
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
