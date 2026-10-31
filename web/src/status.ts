@@ -20,3 +20,17 @@ export function status(points: readonly Point[], now: Micros, staleAfterUs: numb
   if (lost === 0) return "healthy";
   return lost * 2 < recent.length ? "degraded" : "failing";
 }
+
+/** A role's status, with loss at a hop reinterpreted where the path says so. */
+export type RowStatus = Status | "rate-limited";
+
+/**
+ * Loss at an intermediate hop that doesn't carry through to the hops beyond it, or to
+ * the target, is the router deprioritizing ICMP, not loss on the path (ADR-0004). So
+ * a degraded or failing hop with a healthy role further along the same path is
+ * shown as `rate-limited`, and is never alarmed on.
+ */
+export function pathAware(own: Status, isHop: boolean, downstream: readonly Status[]): RowStatus {
+  const lossy = own === "degraded" || own === "failing";
+  return isHop && lossy && downstream.includes("healthy") ? "rate-limited" : own;
+}

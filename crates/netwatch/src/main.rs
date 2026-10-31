@@ -95,6 +95,12 @@ async fn main() -> anyhow::Result<()> {
         let target = TargetId::new(id);
         let mut streams = vec![(Role::Target(target), None, echo)];
         for ttl in HOPS {
+            // Hop 1 is the gateway for every target pinned to the same interface, so
+            // one shared stream serves them all (ADR-0026). Separate streams would
+            // trip the gateway's ICMP rate limit and show loss that isn't there.
+            if ttl == HOPS[0] && id != DEFAULT_ECHO_TARGETS[0].0 {
+                continue;
+            }
             let ttl = HopTtl::new(ttl);
             streams.push((Role::Hop { target, ttl }, Some(ttl), hop));
         }
@@ -130,14 +136,16 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
             Some(resolution) = resolutions.recv() => {
-                let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
-                    handle(output, &observations_tx, &writes, &live, clock);
-                }) else {
-                    continue;
-                };
-                log_sample(&sample);
-                let _ = live.send(LiveMessage::from(&sample));
-                let _ = writes.send(persist::Write::Sample(sample));
+                for resolution in fan_out(resolution) {
+                    let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
+                        handle(output, &observations_tx, &writes, &live, clock);
+                    }) else {
+                        continue;
+                    };
+                    log_sample(&sample);
+                    let _ = live.send(LiveMessage::from(&sample));
+                    let _ = writes.send(persist::Write::Sample(sample));
+                }
             }
             _ = tokio::signal::ctrl_c() => break,
         }
@@ -181,6 +189,26 @@ fn handle(
                 }
             });
         }
+    }
+}
+
+/// The shared first-hop stream's resolutions, copied to every target's first-hop
+/// role (ADR-0026). Each role then gets its own epoch and sample.
+fn fan_out(resolution: probe::Resolution) -> Vec<probe::Resolution> {
+    match resolution.role {
+        Role::Hop { ttl, .. } if ttl.get() == HOPS[0] => DEFAULT_ECHO_TARGETS
+            .iter()
+            .map(|&(id, _)| probe::Resolution {
+                role: Role::Hop {
+                    target: TargetId::new(id),
+                    ttl,
+                },
+                pin: resolution.pin.clone(),
+                responder: resolution.responder,
+                measurement: resolution.measurement,
+            })
+            .collect(),
+        _ => vec![resolution],
     }
 }
 

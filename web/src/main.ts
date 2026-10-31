@@ -10,7 +10,7 @@ import { createChart, type Chart } from "./chart";
 import type { Marker, Micros, Point, RoleKey } from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
-import { status } from "./status";
+import { pathAware, status, type Status } from "./status";
 
 const WINDOW_US = 3600 * 1e6;
 const STALE_AFTER_US = 15 * 1e6;
@@ -87,12 +87,33 @@ function setZoom(min: number, max: number): void {
   if (reset !== null) reset.hidden = false;
 }
 
-function render(row: Row): void {
+/** The roles further along the same path: later hops toward the same target, and
+ *  the target itself. */
+function downstreamOf(key: RoleKey): RoleKey[] {
+  const [kind, target, ttl] = key.split(":");
+  if (kind !== "hop" || target === undefined || ttl === undefined) return [];
+  return [...rows.keys()].filter((other) => {
+    const [k, t, n] = other.split(":");
+    return t === target && ((k === "hop" && Number(n) > Number(ttl)) || k === "target");
+  });
+}
+
+function ownStatus(row: Row): Status {
+  return status(row.points, nowMicros(), STALE_AFTER_US);
+}
+
+function render(row: Row, key: RoleKey): void {
   row.chart.update(row.points);
   if (zoom !== null) row.chart.setWindow(zoom.min, zoom.max);
-  const s = status(row.points, nowMicros(), STALE_AFTER_US);
+  const downstream = downstreamOf(key).flatMap((k) => {
+    const other = rows.get(k);
+    return other === undefined ? [] : [ownStatus(other)];
+  });
+  const s = pathAware(ownStatus(row), key.startsWith("hop:"), downstream);
   row.statusEl.className = `status ${s}`;
-  row.statusEl.textContent = s;
+  row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
+  row.statusEl.title =
+    s === "rate-limited" ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP." : "";
   const last = row.points.at(-1);
   row.valueEl.textContent =
     last === undefined ? "" : last.measurement.kind === "round-trip" ? `${last.measurement.rttMs.toFixed(2)} ms` : last.measurement.reason;
@@ -126,7 +147,7 @@ async function backfill(from: Micros): Promise<void> {
       const row = addRow(key);
       const fetched = parsePoints(await fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`));
       row.points = merge(row.points, fetched);
-      render(row);
+      render(row, key);
     }),
   );
   renderIdentities();
@@ -151,7 +172,7 @@ function connect(): void {
         case "sample": {
           const row = addRow(live.role);
           row.points = merge(row.points, [live.point]);
-          render(row);
+          render(row, live.role);
           break;
         }
         case "event":
@@ -177,9 +198,9 @@ function report(error: unknown): void {
 
 function trim(): void {
   const cutoff = nowMicros() - WINDOW_US;
-  for (const row of rows.values()) {
+  for (const [key, row] of rows) {
     row.points = since(row.points, parseMicros(cutoff));
-    render(row);
+    render(row, key);
   }
   markers = markers.filter((m) => m.at >= cutoff);
 }
@@ -187,7 +208,7 @@ function trim(): void {
 document.getElementById("reset-zoom")?.addEventListener("click", (event) => {
   zoom = null;
   if (event.currentTarget instanceof HTMLElement) event.currentTarget.hidden = true;
-  for (const row of rows.values()) render(row);
+  for (const [key, row] of rows) render(row, key);
 });
 setInterval(trim, 60_000);
 connect();

@@ -49,3 +49,4 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 .status.failing { color: var(--failing); }
 .status.unknown { color: var(--muted); }
 .plot { width: 100%; overflow: hidden; }
+.status.rate-limited { color: var(--muted); border-style: dashed; }
