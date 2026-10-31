@@ -10,6 +10,7 @@ publish.workspace = true
 netwatch-shared.workspace = true
 netwatch-host-health.workspace = true
 tokio.workspace = true
+libc.workspace = true
 
 [lints]
 workspace = true

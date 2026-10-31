@@ -11,6 +11,7 @@ fn reading(counters: &[(&str, u64)], cpu: f64) -> Reading {
             io: 0.0,
         }),
         conntrack_fill: None,
+        clock: None,
     }
 }
 
@@ -114,4 +115,19 @@ fn a_nearly_full_conntrack_table_degrades_and_a_full_one_fails() {
     watch.observe(with_fill(10.0));
     assert_eq!(watch.observe(with_fill(85.0)).status, LayerStatus::Degraded);
     assert_eq!(watch.observe(with_fill(100.0)).status, LayerStatus::Failing);
+}
+
+#[test]
+fn an_unsynchronized_clock_degrades() {
+    let mut watch = CounterWatch::new(KERNEL_RULES);
+    let with_clock = |synchronized: bool| Reading {
+        clock: Some((synchronized, 1_000)),
+        ..reading(&[], 0.0)
+    };
+    watch.observe(with_clock(true));
+    assert_eq!(watch.observe(with_clock(true)).status, LayerStatus::Healthy);
+    assert_eq!(
+        watch.observe(with_clock(false)).status,
+        LayerStatus::Degraded
+    );
 }

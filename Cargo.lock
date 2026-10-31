@@ -1037,6 +1037,7 @@ dependencies = [
 name = "netwatch-adapter-procfs"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "netwatch-host-health",
  "netwatch-shared",
  "tokio",

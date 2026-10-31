@@ -31,7 +31,9 @@ export type EventKind =
   | "desynchronized"
   | "resynchronized"
   | "kernel-log"
-  | "source-disabled";
+  | "source-disabled"
+  | "clock-jump"
+  | "config-drift";
 
 /** One topology event, drawn as an event marker on every row. */
 export interface Marker {
@@ -48,6 +50,7 @@ export interface LayerReport {
   readonly increases: readonly { readonly name: string; readonly by: number }[];
   readonly cpuPressure: number | null;
   readonly conntrackFill: number | null;
+  readonly clockSynchronized: boolean | null;
 }
 
 export type Live =

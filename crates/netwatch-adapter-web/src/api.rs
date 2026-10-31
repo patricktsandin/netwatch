@@ -149,6 +149,11 @@ pub struct LayerReportView {
     pub pressure: Option<PressureView>,
     /// The connection-tracking table's fill level in percent, if conntrack is loaded.
     pub conntrack_fill: Option<f64>,
+    /// Whether the clock is NTP-synchronized, if known.
+    pub clock_synchronized: Option<bool>,
+    /// The clock's estimated error in µs, if known.
+    #[ts(type = "number | null")]
+    pub clock_error_us: Option<i64>,
 }
 
 /// One watched counter's growth.
@@ -200,6 +205,8 @@ impl From<&netwatch_host_health::LayerReport> for LayerReportView {
                 io: p.io,
             }),
             conntrack_fill: report.conntrack_fill,
+            clock_synchronized: report.clock.map(|(synchronized, _)| synchronized),
+            clock_error_us: report.clock.map(|(_, error)| error),
         }
     }
 }

@@ -152,11 +152,12 @@ function layerSummary(key: RoleKey): string {
   if (report === undefined) return "";
   const cpu = report.cpuPressure === null ? "" : `CPU pressure ${report.cpuPressure.toFixed(1)}%`;
   const conntrack = report.conntrackFill === null ? "" : `conntrack ${report.conntrackFill.toFixed(1)}% full`;
+  const clock = report.clockSynchronized === false ? "clock not synchronized" : "";
   const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
   const disabled = markers
     .filter((m) => m.kind === "source-disabled" && m.role === key)
     .map((m) => `disabled: ${m.detail ?? "?"}`);
-  return [cpu, conntrack, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
+  return [cpu, conntrack, clock, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
 }
 
 function render(row: Row, key: RoleKey): void {

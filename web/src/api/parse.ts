@@ -43,6 +43,12 @@ function integer(value: unknown, what: string): number {
   return value;
 }
 
+function optionalBoolean(value: unknown, what: string): boolean | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "boolean") throw new ParseError(`${what}: expected a boolean`);
+  return value;
+}
+
 function optionalNumber(value: unknown, what: string): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "number" || !Number.isFinite(value)) throw new ParseError(`${what}: expected a number`);
@@ -88,6 +94,8 @@ const EVENT_KINDS: readonly EventKind[] = [
   "resynchronized",
   "kernel-log",
   "source-disabled",
+  "clock-jump",
+  "config-drift",
 ];
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {
@@ -197,6 +205,7 @@ export function parseLayerReport(value: unknown): LayerReport {
     }),
     cpuPressure: cpu,
     conntrackFill: optionalNumber(r.conntrack_fill, "layer.conntrack_fill"),
+    clockSynchronized: optionalBoolean(r.clock_synchronized, "layer.clock_synchronized"),
   };
 }
 

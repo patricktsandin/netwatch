@@ -8,7 +8,8 @@
 //! Sources so far: `/proc/net/snmp`, `/proc/net/netstat`, `/proc/net/softnet_stat`,
 //! `/proc/pressure/{cpu,memory,io}`, the connection-tracking table
 //! (`/proc/net/stat/nf_conntrack` and its fill level), and the neighbor tables
-//! (`/proc/net/stat/{arp_cache,ndisc_cache}`). A source that can't be read (for example PSI on a
+//! (`/proc/net/stat/{arp_cache,ndisc_cache}`), the clock's discipline (`adjtimex`), and
+//! network sysctls (for config drift). A source that can't be read (for example PSI on a
 //! kernel without `CONFIG_PSI`) is left out of the reading, never reported as zero.
 
 use std::collections::BTreeMap;
@@ -79,6 +80,7 @@ pub fn read() -> Reading {
         counters,
         pressure,
         conntrack_fill,
+        clock: clock_state().map(|c| (c.synchronized, c.estimated_error_us)),
     }
 }
 
@@ -216,4 +218,56 @@ pub fn watch_kernel_log(
 pub fn parse_kmsg_record(record: &str) -> Option<&str> {
     let (_, rest) = record.split_once(';')?;
     Some(rest.lines().next().unwrap_or("").trim_end())
+}
+
+/// The kernel clock's discipline, from `adjtimex` in read-only mode (ADR-0008).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClockState {
+    /// Whether an NTP daemon has the clock synchronized (`TIME_ERROR` is not set).
+    pub synchronized: bool,
+    /// The kernel's estimate of the clock's error, in µs.
+    pub estimated_error_us: i64,
+}
+
+/// Reads the clock's discipline. `adjtimex` with no mode bits set only reads, and
+/// needs no privileges.
+pub fn clock_state() -> Option<ClockState> {
+    // SAFETY: `timex` is plain old data, so all-zero is a valid value, and with
+    // `modes == 0` the kernel only writes into the struct we pass.
+    #[allow(unsafe_code)]
+    let (state, timex) = unsafe {
+        let mut timex: libc::timex = std::mem::zeroed();
+        (libc::adjtimex(&mut timex), timex)
+    };
+    (state >= 0).then_some(ClockState {
+        synchronized: state != libc::TIME_ERROR,
+        estimated_error_us: timex.esterror,
+    })
+}
+
+/// Network-relevant sysctls whose changes are recorded as config drift (ADR-0008).
+pub const WATCHED_SYSCTLS: &[&str] = &[
+    "net/ipv4/ip_forward",
+    "net/ipv4/conf/all/rp_filter",
+    "net/ipv4/ping_group_range",
+    "net/ipv4/tcp_congestion_control",
+    "net/ipv4/icmp_ratelimit",
+    "net/ipv6/conf/all/disable_ipv6",
+    "net/netfilter/nf_conntrack_max",
+    "net/core/rmem_max",
+    "net/core/netdev_max_backlog",
+];
+
+/// The current value of each watched sysctl that exists, by its dotted name.
+pub fn sysctls() -> BTreeMap<String, String> {
+    WATCHED_SYSCTLS
+        .iter()
+        .filter_map(|path| {
+            let value = fs::read_to_string(format!("/proc/sys/{path}")).ok()?;
+            Some((
+                path.replace('/', "."),
+                value.split_whitespace().collect::<Vec<_>>().join(" "),
+            ))
+        })
+        .collect()
 }

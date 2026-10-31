@@ -91,6 +91,9 @@ const CPU_PRESSURE_LIMIT: f64 = 20.0;
 /// limit new connections are being dropped.
 const CONNTRACK_NEARLY_FULL: f64 = 80.0;
 const CONNTRACK_FULL: f64 = 99.0;
+/// A clock whose estimated error exceeds this (µs) can't order samples across hosts
+/// or reconcile them with logs, so the kernel layer is `Degraded`.
+const CLOCK_ERROR_LIMIT_US: i64 = 100_000;
 
 /// One reading of every telemetry source, already parsed by the procfs adapter.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -102,6 +105,9 @@ pub struct Reading {
     /// How full the connection-tracking table is, in percent, if conntrack is loaded.
     /// A full table drops every new connection silently.
     pub conntrack_fill: Option<f64>,
+    /// Whether the clock is NTP-synchronized, and its estimated error in µs. An
+    /// unsynchronized clock skews every timestamp (ADR-0004).
+    pub clock: Option<(bool, i64)>,
 }
 
 /// Pressure stall information: the share of the last 10 s in which some task
@@ -143,6 +149,8 @@ pub struct LayerReport {
     pub pressure: Option<Pressure>,
     /// The connection-tracking table's fill level, in percent, if available.
     pub conntrack_fill: Option<f64>,
+    /// Whether the clock is synchronized, and its estimated error in µs.
+    pub clock: Option<(bool, i64)>,
 }
 
 /// Compares each reading of one layer with the previous one, by that layer's rules.
@@ -175,6 +183,7 @@ impl CounterWatch {
                 resets: Vec::new(),
                 pressure: reading.pressure,
                 conntrack_fill: reading.conntrack_fill,
+                clock: reading.clock,
             };
         };
         let mut increases = BTreeMap::new();
@@ -198,7 +207,10 @@ impl CounterWatch {
         let pressured = reading.pressure.is_some_and(|p| p.cpu > CPU_PRESSURE_LIMIT);
         let conntrack = reading.conntrack_fill.unwrap_or(0.0);
         severe |= conntrack >= CONNTRACK_FULL;
-        let pressured = pressured || conntrack >= CONNTRACK_NEARLY_FULL;
+        let clock_untrusted = reading
+            .clock
+            .is_some_and(|(synchronized, error)| !synchronized || error > CLOCK_ERROR_LIMIT_US);
+        let pressured = pressured || conntrack >= CONNTRACK_NEARLY_FULL || clock_untrusted;
         let status = if severe {
             LayerStatus::Failing
         } else if !increases.is_empty() || pressured {
@@ -212,6 +224,7 @@ impl CounterWatch {
             resets,
             pressure: reading.pressure,
             conntrack_fill: reading.conntrack_fill,
+            clock: reading.clock,
         }
     }
 }

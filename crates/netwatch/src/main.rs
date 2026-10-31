@@ -229,6 +229,9 @@ async fn main() -> anyhow::Result<()> {
     // whenever the NIC changes (a failover).
     let mut nic_watch: Option<(InterfaceIndex, CounterWatch)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
+    let mut last_clocks = (clock.wall_now(), clock.now());
+    let mut last_sysctls = netwatch_adapter_procfs::sysctls();
     // Network-relevant kernel log lines become event markers (ADR-0008). Reading the
     // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
     let (kmsg_tx, mut kmsg) = mpsc::channel::<String>(64);
@@ -250,6 +253,23 @@ async fn main() -> anyhow::Result<()> {
                     continue;
                 };
                 publish_layer(Role::Kernel, &kernel_watch.observe(reading), &live, &layers_tx);
+                let clocks = (clock.wall_now(), clock.now());
+                let wall_us = clocks.0.as_unix_micros() - last_clocks.0.as_unix_micros();
+                let monotonic_us = i64::try_from(clocks.1.as_nanos().saturating_sub(last_clocks.1.as_nanos()) / 1_000).unwrap_or(i64::MAX);
+                if (wall_us - monotonic_us).abs() > 1_000_000 {
+                    let jump_s = (wall_us - monotonic_us) as f64 / 1e6;
+                    tracing::warn!(jump_s, "wall clock jumped");
+                    note("clock-jump", format!("wall clock jumped by {jump_s:+.1} s"), &writes, &live, clock);
+                }
+                last_clocks = clocks;
+                let sysctls = netwatch_adapter_procfs::sysctls();
+                for (name, value) in &sysctls {
+                    if let Some(before) = last_sysctls.get(name).filter(|before| *before != value) {
+                        tracing::warn!(%name, %before, %value, "network sysctl changed");
+                        note("config-drift", format!("{name}: {before} → {value}"), &writes, &live, clock);
+                    }
+                }
+                last_sysctls = sysctls;
                 let nic = topology.binding(&Role::Nic).and_then(|b| match b.identity {
                     Identity::Interface { index, .. } => Some(index),
                     Identity::Address(_) => None,

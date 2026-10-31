@@ -26,7 +26,8 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - Kernel: snmp/netstat/softnet counters, PSI, conntrack, and neighbor tables.
   - NIC: `IFLA_STATS64` counters.
   - Both graded every 1 s.
-  - Kernel log lines (with `CAP_SYSLOG`) become event markers.
+  - Kernel log lines (with `CAP_SYSLOG`), wall-clock jumps, and network sysctl
+    changes become event markers. Clock sync state comes from `adjtimex`.
 - **History:** raw samples (7 days), plus 1m (90 days) and 1h (forever) rollups merged
   with the verified algebra.
 - **UI:**
@@ -45,7 +46,7 @@ Not yet built, roughly in priority order:
 - percentile bands on the rollup charts, and pan/zoom into history beyond the
   selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
-- eBPF drop reasons, clock health, config drift, and qdisc stats (ADR-0008)
+- eBPF drop reasons and qdisc stats (ADR-0008)
 - runtime target management through the API
 - kernel receive timestamps (`SO_TIMESTAMPING`)
 

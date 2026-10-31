@@ -25,4 +25,12 @@ pressure: PressureView | null,
 /**
  * The connection-tracking table's fill level in percent, if conntrack is loaded.
  */
-conntrack_fill: number | null, };
+conntrack_fill: number | null, 
+/**
+ * Whether the clock is NTP-synchronized, if known.
+ */
+clock_synchronized: boolean | null, 
+/**
+ * The clock's estimated error in µs, if known.
+ */
+clock_error_us: number | null, };
