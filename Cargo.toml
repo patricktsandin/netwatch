@@ -26,6 +26,7 @@ netwatch-adapter-web = { path = "crates/netwatch-adapter-web" }
 vstd = "=0.0.0-2026-10-25-0158"
 
 cargo_metadata = "0.23"
+thiserror = "2"
 
 [workspace.lints.rust]
 missing_docs = "warn"            # every public item has an interface comment (ADR-0011)

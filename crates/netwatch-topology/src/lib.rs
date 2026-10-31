@@ -25,3 +25,21 @@
 //!
 //! This crate does no I/O. It is a pure state machine: *observations* go in, and
 //! *commands* and *facts* come out (ADR-0012).
+//!
+//! # Using it
+//!
+//! Feed every [`Observation`] to [`Topology::observe`], and act on the [`Output`]s in
+//! the order they are returned:
+//! - persist and publish each [`TopologyEvent`]
+//! - carry out each [`Command`]
+//!
+//! To pin a probe, take the role's current [`Binding`] from [`Topology::binding`]
+//! when the probe is scheduled (ADR-0020).
+
+mod aggregate;
+mod observation;
+mod output;
+
+pub use aggregate::{Binding, Topology};
+pub use observation::{Observation, ResyncGeneration, Snapshot};
+pub use output::{Command, Output, TopologyEvent};

@@ -18,3 +18,9 @@
 //! Every domain crate depends on this one, so any change here ripples through all of
 //! them. Keep it small, and move things into it only after two contexts have
 //! genuinely needed the same concept.
+
+mod identity;
+mod role;
+
+pub use identity::{Identity, IdentityEpoch, InterfaceIndex, InterfaceName, InvalidInterfaceName};
+pub use role::{HopTtl, Role, TargetId};
