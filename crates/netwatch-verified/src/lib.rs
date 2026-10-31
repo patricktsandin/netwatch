@@ -7,7 +7,7 @@
 //! - reply matching and probe-sequence wraparound (used by Probing)
 //! - counter wraparound and counter-reset detection (used by Host health)
 //! - the merge algebra for rollups and percentiles (used by History)
-//! - identity-epoch advancement (used by Topology)
+//! - identity-epoch advancement (used by Topology): [`MonotonicCounter`]
 //!
 //! # Rules
 //!
@@ -20,7 +20,6 @@
 
 #![allow(missing_docs)] // `verus!` expands to items that rustdoc can't see; document inside it.
 
-#[allow(unused_imports)]
-use vstd::prelude::*;
+mod monotonic_counter;
 
-verus! {} // verus!
+pub use monotonic_counter::MonotonicCounter;

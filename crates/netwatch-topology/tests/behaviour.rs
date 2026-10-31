@@ -4,6 +4,8 @@
 //! (`conformance.rs`). These tests are the readable account of what that spec means,
 //! including the two scenarios model checking found (ADR-0021).
 
+#![allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015), including in helpers.
+
 use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 
