@@ -1,0 +1,158 @@
+# Glossary
+
+This file is the ubiquitous language of netwatch ([ADR-0013](adr/0013-domain-driven-design.md)).
+Code, tests, specs, UI text, and commit messages use these terms exactly as written.
+Add a term here before using it in code. To rename a term, rename it everywhere in one
+change.
+
+Terms are grouped by bounded context (see [context-map.md](context-map.md)). *Italic*
+words are defined elsewhere in this file.
+
+## Words with one meaning only
+
+- **Kernel**: the Linux kernel. Never use it for anything else.
+- **Shared crate**: `netwatch-shared`, the value objects that every domain context uses
+  (DDD calls this a shared kernel; we don't, see *Kernel*).
+- **Verified crate**: `netwatch-verified`, algorithms proven with Verus.
+- **Event**: avoid using it alone. Say *observation*, *domain event*, *topology event*,
+  or *event marker*.
+
+## Domain core vocabulary (all contexts)
+
+- **Observation**: an input to a domain state machine. Examples: a netlink message
+  already translated into domain terms, a received packet, a clock reading. ADR-0012 calls
+  these "events"; *observation* is the term.
+- **Command**: an output from a domain state machine asking the shell to act (send
+  a *probe*, wake at instant T, start *hop discovery*).
+- **Fact**: an output from a domain state machine recording something that happened:
+  a *sample*, a *counter reading*, or a *domain event*.
+- **Domain event**: a *fact* that another context reacts to. *Topology events* are the
+  main kind.
+- **Instant**: a monotonic clock reading. Durations are only ever differences between
+  instants.
+- **Wall time**: a UTC timestamp, used only to label *samples* and *domain events*.
+
+## Topology
+
+- **Layer**: one level of the monitored path: *kernel layer*, *NIC layer*, *tunnel layer*,
+  *local interface layer*, *hop layer*, *target layer*.
+- **Role**: a logical position that is measured continuously, like "the NIC", "hop 2 toward
+  target X", or "target X". Series are keyed by role.
+- **Identity**: the concrete thing behind a *role* at a given moment, such as an interface,
+  IP address, MAC address, *responding address*, *BSSID*, *serving cell*, or *point of presence*.
+- **Identity epoch**: a span of time during which a *role* keeps the same *identity*.
+  A new epoch begins whenever the identity changes. Aggregates never span epochs.
+  Only the topology aggregate assigns epochs.
+- **Egress path**: what the kernel resolves for a destination: egress interface,
+  *gateway*, source address, and *tunnel* (if any), as `RTM_GETROUTE` reports it.
+- **Egress interface**: the interface an *egress path* leaves through.
+- **NIC**: the physical device under the current *egress path*. If a *tunnel* is
+  involved, the NIC is the device that carries the tunnel's traffic.
+- **Tunnel**: a virtual interface (WireGuard, tun/tap) that the *egress path* goes
+  through. It is linked to the NIC beneath it.
+- **Tunnel endpoint**: the remote address of a *tunnel*. Its own *egress path* identifies
+  the NIC underneath.
+- **Gateway**: the next-hop router on an *egress path*.
+- **BSSID**: the identity of the Wi-Fi access point a wireless NIC is connected to.
+- **Serving cell**: the identity of the cell a cellular NIC is attached to.
+- **Point of presence**: the anycast site that answered a *target*, such as Cloudflare's
+  `colo=`.
+- **Topology event**: a *domain event* recording a change, such as a route change, a
+  *gateway* change, a link going up or down, an address being added or removed, a new
+  *identity epoch*, a *suspend gap*, or a *config drift*.
+
+## Probing
+
+- **Probe**: one measurement attempt with exactly one *probe outcome*. Its lifecycle is
+  scheduled → in flight → resolved.
+- **Probe kind**: one of *loopback probe*, *link-layer probe*, *hop probe*, *echo probe*,
+  *DNS probe*, *HTTP probe*.
+- **Loopback probe**: an ICMP echo or UDP echo through `lo`, giving the *kernel layer*
+  baseline.
+- **Link-layer probe**: an ARP request (IPv4) or neighbor solicitation (IPv6) to the *gateway*.
+- **Hop probe**: a TTL-limited probe toward a *target*, answered by the router at that
+  *hop*.
+- **Echo probe**: an ICMP or ICMPv6 echo request to a *target*.
+- **DNS probe**: a DNS query to a specific server.
+- **HTTP probe**: an HTTP(S) request with *phase timings*, checked against an *expected
+  response*.
+- **Phase timings**: the DNS, connect, TLS, time-to-first-byte, and total durations of an
+  *HTTP probe*.
+- **Expected response**: the status code (and body, where relevant) an *HTTP probe* must
+  receive to count as answered. A captive portal page fails it.
+- **Probe outcome**: one of:
+  - `Answered`, with a round-trip time
+  - `TimedOut`
+  - `Unreachable { code }`
+  - `SendFailed { cause }`
+  - `UnexpectedResponse`
+
+  These are never collapsed into a missing value.
+- **Reply matching**: pairing a received packet with its *probe* by identifier, sequence
+  number, and the original header embedded in ICMP errors. Never by arrival order.
+- **Probe stream**: the fixed-cadence sequence of *probes* for one *role*. Several
+  *targets* can share one stream (see *stream sharing*).
+- **Stream sharing**: running one *probe stream* for *hops* that resolve identically
+  (same *egress interface*, *gateway*, and *responding addresses*) across *targets*.
+- **Cadence**: the fixed interval at which a *probe stream* sends, measured from the
+  schedule, never from the last reply.
+- **Timer lateness**: how far after its scheduled *instant* a *probe* was actually sent.
+- **Hop**: the router at a given TTL on a *target*'s path. Hop N is a *role*.
+- **Responding address**: the address that answered a *hop probe*. It is the hop's
+  *identity*.
+- **Hop discovery**: finding hops 1–3 for a *target*. It runs again immediately whenever
+  the target's *egress path* changes.
+- **Suspected rate limiting**: loss at a *hop* that doesn't carry through to later hops.
+  It is shown as such, never as loss.
+- **Target**: a user-configured endpoint probed by an *echo probe*, *DNS probe*, or
+  *HTTP probe*.
+- **Timestamp source**: where a receive time came from: a kernel timestamp
+  (`SO_TIMESTAMPING`) or userspace. Recorded on every *sample*.
+
+## Host health
+
+- **Telemetry source**: one collector of host data, such as protocol counters, softnet,
+  conntrack, qdisc, PSI, clock health, config drift, kernel log, or drop reasons.
+- **Disabled source**: a *telemetry source* (or *probe kind*) turned off because a
+  capability is missing. It is recorded as a *domain event* and shown in the UI.
+- **Counter**: a value that only increases, read from the kernel or a driver. It can
+  wrap around or reset.
+- **Counter reading**: one *counter* value at one *instant*, stored raw.
+- **Counter reset**: a *counter reading* lower than the previous one, caused by a reboot,
+  a module reload, or wraparound. It is detected, never shown as negative traffic.
+- **Rate**: the change in a *counter* over a time interval, computed at query time.
+- **Gauge**: a value that can go up or down, such as conntrack entries, PSI, or signal
+  strength.
+- **Drop reason**: the kernel's `skb_drop_reason` for a discarded packet, counted by
+  the eBPF *telemetry source*.
+- **Kernel log line**: a network-relevant line from `/dev/kmsg`, matched by a known
+  pattern and attributed to an interface where possible.
+- **Suspend gap**: a period when the host was suspended, detected from `CLOCK_BOOTTIME`
+  vs. `CLOCK_MONOTONIC`. It is a gap in the data, never loss.
+- **Clock health**: synchronization state, estimated error, clock source, and
+  *wall time* jumps.
+- **Config drift**: a change to a watched network sysctl.
+
+## History
+
+- **Sample**: one *probe outcome* or *gauge* value, together with its *role*, *identity*,
+  *identity epoch*, *wall time*, and *timestamp source*.
+- **Tier**: a resolution level of stored history: *raw*, *1m*, or *1h*.
+- **Rollup**: an aggregate over one *tier* interval within one *identity epoch*: count,
+  loss, min, average, max, p50, p95, p99, and jitter. Rollups merge (see *merge*).
+- **Merge**: combining two *rollups* of adjacent intervals into one. It is associative
+  and commutative, and proven in the *verified crate*.
+- **Retention**: how long each *tier* is kept: raw 7 days, 1m 90 days, 1h indefinitely.
+
+## Presentation
+
+- **Row**: one *layer* or *role* on the main screen, with a *status*, a sparkline, and
+  current values.
+- **Status**: a *row*'s current condition: `Healthy`, `Degraded`, `Failing`, `Unknown`, or
+  `Disabled`.
+- **Time axis**: the single shared horizontal axis that every *row* uses. Zoom and pan
+  are synchronized across rows.
+- **Event marker**: a vertical line on the *time axis* for a *topology event*.
+- **Live stream**: *samples* pushed to the UI over WebSocket.
+- **Backfill**: fetching history to fill gaps, at startup, on zoom, or after a reconnect.
+  It merges with the *live stream* without gaps or duplicates.
