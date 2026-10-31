@@ -132,7 +132,8 @@ Toolchains are installed on the dev host, user-local, in `~/.cargo/bin` and `~/.
   it. Install that toolchain whenever you upgrade Verus.
 
 ```sh
-cargo build                                        # also builds the eBPF programs (aya-build)
+./scripts/check.sh                                 # everything below, failing fast (~6 min)
+cargo build
 cargo test                                         # unprivileged tests
 sudo -E cargo test -- --ignored                    # netns integration tests (by design #[ignore]d)
 cargo clippy --all-targets -- -D warnings

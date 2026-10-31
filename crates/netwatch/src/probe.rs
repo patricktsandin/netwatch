@@ -31,26 +31,26 @@ pub async fn run_target(
         if let Some(retire) = retire_current.take() {
             let _ = retire.send(());
         }
-        if let Some(pin) = pin {
-            if let Identity::Interface { index, name } = &pin.identity {
-                match EchoSocket::open(destination, index.get()) {
-                    Ok(socket) => {
-                        let (retire, retired) = oneshot::channel();
-                        retire_current = Some(retire);
-                        let stream = ProbeStream::new(config, clock.now());
-                        tokio::spawn(run_stream(
-                            role.clone(),
-                            pin.clone(),
-                            socket,
-                            stream,
-                            retired,
-                            samples.clone(),
-                            clock,
-                        ));
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, ?role, interface = %name, "cannot open echo socket");
-                    }
+        if let Some(pin) = pin
+            && let Identity::Interface { index, name } = &pin.identity
+        {
+            match EchoSocket::open(destination, index.get()) {
+                Ok(socket) => {
+                    let (retire, retired) = oneshot::channel();
+                    retire_current = Some(retire);
+                    let stream = ProbeStream::new(config, clock.now());
+                    tokio::spawn(run_stream(
+                        role.clone(),
+                        pin.clone(),
+                        socket,
+                        stream,
+                        retired,
+                        samples.clone(),
+                        clock,
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, ?role, interface = %name, "cannot open echo socket");
                 }
             }
         }
