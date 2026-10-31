@@ -12,24 +12,41 @@ the ADRs.
 ## Status (keep this current)
 
 Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
-- **Topology:** NIC, tunnel, and local interface followed via rtnetlink, with
-  resync after `ENOBUFS`. Epochs persist across restarts.
-- **Probing:** ICMP echo and DNS (`. IN NS`) to targets every 5 s, HTTPS every 10 s. Hops 1–3 per target every 1 s via
-  `IP_RECVERR`, with hop 1 shared across targets. Loopback baseline every 1 s.
-- **Host health:** kernel (snmp/netstat/softnet, PSI) and NIC (`IFLA_STATS64`) counters, graded every 1 s.
-- **History:** raw samples (7 days), plus 1m (90 days) and 1h (forever) rollups merged with the verified algebra.
-- **UI:** layered stack with 1 h / 24 h / 30 d ranges, live stream with backfill, epoch markers, and rate-limit-aware
-  hop status.
+Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`, or
+`NETWATCH_CONFIG`.
+- **Topology:** NIC, tunnel, and local interface followed via rtnetlink, with resync
+  after `ENOBUFS`. Epochs persist across restarts.
+- **Probing:**
+  - ICMP echo (IPv4 and IPv6) and DNS (`. IN NS`) to targets every 5 s, HTTPS every
+    10 s.
+  - Hops 1–3 per echo target every 1 s via `IP_RECVERR`, with hop 1 shared per
+    address family.
+  - Loopback baseline every 1 s.
+- **Host health:**
+  - Kernel: snmp/netstat/softnet counters, PSI, conntrack, and neighbor tables.
+  - NIC: `IFLA_STATS64` counters.
+  - Both graded every 1 s.
+  - Kernel log lines (with `CAP_SYSLOG`) become event markers.
+- **History:** raw samples (7 days), plus 1m (90 days) and 1h (forever) rollups merged
+  with the verified algebra.
+- **UI:**
+  - A layered stack with 1 h / 24 h / 30 d ranges.
+  - A live stream with backfill behind a flush barrier.
+  - Epoch and kernel-log markers, and rate-limit-aware hop status.
+- **Specs:** `topology.qnt`, `probing.qnt`, and `live_backfill.qnt`, all
+  TLC-exhaustive and conformance-tested.
 
 Not yet built, roughly in priority order:
-- persisting and graphing HTTPS phase timings, the `colo=` identity, and DNS through the system resolver
-- IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC), and IPv6 DNS/HTTPS targets
+- persisting and graphing HTTPS phase timings, the `colo=` identity, and DNS through
+  the system resolver
+- IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC),
+  and IPv6 DNS/HTTPS targets
 - ethtool driver stats, Wi-Fi (nl80211), cellular (ModemManager)
-- percentile bands on the rollup charts, and pan/zoom into history beyond the selected range
+- percentile bands on the rollup charts, and pan/zoom into history beyond the
+  selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
-- eBPF drop reasons, clock health, config drift, and qdisc
-  stats (ADR-0008)
-- runtime target management through the API (configuration is a TOML file today)
+- eBPF drop reasons, clock health, config drift, and qdisc stats (ADR-0008)
+- runtime target management through the API
 - kernel receive timestamps (`SO_TIMESTAMPING`)
 
 ## Non-negotiables
