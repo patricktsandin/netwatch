@@ -1,0 +1,2 @@
+# systemd-sysusers: the unprivileged user netwatch runs as (ADR-0007).
+u netwatch - "netwatch network monitor" /var/lib/netwatch
