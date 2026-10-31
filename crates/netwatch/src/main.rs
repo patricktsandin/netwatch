@@ -7,18 +7,19 @@ mod clock;
 mod persist;
 mod probe;
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use netwatch_adapter_web::{EventPoint, LiveMessage};
 use netwatch_history::{Measurement, Sample};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
 use netwatch_shared::{IdentityEpoch, Role, TargetId};
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::clock::Clock;
 
@@ -41,7 +42,22 @@ async fn main() -> anyhow::Result<()> {
         std::env::var_os("NETWATCH_DB").map_or_else(|| PathBuf::from("netwatch.db"), PathBuf::from);
     let resume_after = persist::last_epoch(&database)
         .with_context(|| format!("opening {}", database.display()))?;
-    let writes = persist::spawn(database, clock)?;
+    let writes = persist::spawn(database.clone(), clock)?;
+
+    // The UI listens on localhost only, unless configured otherwise (ADR-0007).
+    let listen: SocketAddr = std::env::var("NETWATCH_LISTEN")
+        .unwrap_or_else(|_| "127.0.0.1:8732".to_owned())
+        .parse()
+        .context("NETWATCH_LISTEN must be an address:port")?;
+    let (live, _) = broadcast::channel::<LiveMessage>(1024);
+    tokio::spawn({
+        let live = live.clone();
+        async move {
+            if let Err(error) = netwatch_adapter_web::serve(listen, database, live).await {
+                tracing::error!(%error, "the UI server stopped");
+            }
+        }
+    });
 
     let (observations_tx, mut observations) = mpsc::channel(256);
     let _watcher = netwatch_adapter_netlink::watch(observations_tx.clone())
@@ -76,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
-                    handle(output, &observations_tx, &writes, clock);
+                    handle(output, &observations_tx, &writes, &live, clock);
                 }
                 // Targets are pinned to the egress interface: the tunnel if there
                 // is one, otherwise the NIC (ADR-0020, ADR-0022).
@@ -92,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(sample) = samples.recv() => {
                 log_sample(&sample);
+                let _ = live.send(LiveMessage::from(&sample));
                 let _ = writes.send(persist::Write::Sample(sample));
             }
             _ = tokio::signal::ctrl_c() => break,
@@ -104,12 +121,17 @@ fn handle(
     output: Output,
     observations: &mpsc::Sender<Observation>,
     writes: &std::sync::mpsc::Sender<persist::Write>,
+    live: &broadcast::Sender<LiveMessage>,
     clock: Clock,
 ) {
     match output {
         Output::Event(event) => {
             log_event(&event);
-            let _ = writes.send(persist::Write::Event(event, clock.wall_now()));
+            let at = clock.wall_now();
+            let _ = live.send(LiveMessage::Event {
+                event: EventPoint::from(netwatch_adapter_sqlite::describe(&event, at)),
+            });
+            let _ = writes.send(persist::Write::Event(event, at));
         }
         Output::Command(Command::Resync { generation }) => {
             let observations = observations.clone();

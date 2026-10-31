@@ -139,7 +139,7 @@ impl Store {
     pub fn record_event(&mut self, event: &TopologyEvent, at: WallTime) -> Result<(), StoreError> {
         let at_us = at.as_unix_micros();
         let transaction = self.connection.transaction()?;
-        let (kind, role, epoch, detail) = match event {
+        match event {
             TopologyEvent::EpochStarted {
                 epoch,
                 role,
@@ -149,41 +149,19 @@ impl Store {
                     "INSERT INTO epochs (epoch, role, identity, started_us) VALUES (?1, ?2, ?3, ?4)",
                     params![epoch_value(*epoch), role.key(), identity_text(identity), at_us],
                 )?;
-                (
-                    "epoch-started",
-                    Some(role.key()),
-                    Some(epoch_value(*epoch)),
-                    Some(identity_text(identity)),
-                )
             }
-            TopologyEvent::EpochEnded { epoch, role } => {
+            TopologyEvent::EpochEnded { epoch, .. } => {
                 transaction.execute(
                     "UPDATE epochs SET ended_us = ?2 WHERE epoch = ?1",
                     params![epoch_value(*epoch), at_us],
                 )?;
-                (
-                    "epoch-ended",
-                    Some(role.key()),
-                    Some(epoch_value(*epoch)),
-                    None,
-                )
             }
-            TopologyEvent::Desynchronized { generation } => (
-                "desynchronized",
-                None,
-                None,
-                Some(format!("generation {}", generation.get())),
-            ),
-            TopologyEvent::Resynchronized { generation } => (
-                "resynchronized",
-                None,
-                None,
-                Some(format!("generation {}", generation.get())),
-            ),
-        };
+            TopologyEvent::Desynchronized { .. } | TopologyEvent::Resynchronized { .. } => {}
+        }
+        let row = describe(event, at);
         transaction.execute(
             "INSERT INTO events (at_us, kind, role, epoch, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![at_us, kind, role, epoch, detail],
+            params![at_us, row.kind, row.role, row.epoch, row.detail],
         )?;
         transaction.commit()?;
         Ok(())
@@ -294,6 +272,48 @@ impl Store {
             .query_row("SELECT MAX(epoch) FROM epochs", [], |row| row.get(0))
             .optional()?
             .flatten())
+    }
+}
+
+/// The stored form of a topology event, exactly as [`Store::events`] would return it.
+/// The live UI uses this too, so live and stored events read identically.
+pub fn describe(event: &TopologyEvent, at: WallTime) -> StoredEvent {
+    let (kind, role, epoch, detail) = match event {
+        TopologyEvent::EpochStarted {
+            epoch,
+            role,
+            identity,
+        } => (
+            "epoch-started",
+            Some(role.key()),
+            Some(epoch_value(*epoch)),
+            Some(identity_text(identity)),
+        ),
+        TopologyEvent::EpochEnded { epoch, role } => (
+            "epoch-ended",
+            Some(role.key()),
+            Some(epoch_value(*epoch)),
+            None,
+        ),
+        TopologyEvent::Desynchronized { generation } => (
+            "desynchronized",
+            None,
+            None,
+            Some(format!("generation {}", generation.get())),
+        ),
+        TopologyEvent::Resynchronized { generation } => (
+            "resynchronized",
+            None,
+            None,
+            Some(format!("generation {}", generation.get())),
+        ),
+    };
+    StoredEvent {
+        at,
+        kind: kind.to_owned(),
+        role,
+        epoch,
+        detail,
     }
 }
 
