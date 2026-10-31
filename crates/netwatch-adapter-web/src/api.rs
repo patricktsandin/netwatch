@@ -48,6 +48,49 @@ pub struct SamplePoint {
     pub loss: Option<String>,
 }
 
+/// One rollup: a tier interval of one role in one epoch (ADR-0006). RTT fields are
+/// null when nothing in the interval was answered.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct RollupPoint {
+    /// The interval's start, in µs since the Unix epoch.
+    #[ts(type = "number")]
+    pub start_us: i64,
+    /// The epoch every summarized sample belongs to.
+    #[ts(type = "number")]
+    pub epoch: u64,
+    /// How many samples it summarizes.
+    #[ts(type = "number")]
+    pub count: u64,
+    /// How many of them were lost.
+    #[ts(type = "number")]
+    pub lost: u64,
+    /// The mean of the answered RTTs.
+    #[ts(type = "number | null")]
+    pub mean_us: Option<u64>,
+    /// The median, within 10%.
+    #[ts(type = "number | null")]
+    pub p50_us: Option<u64>,
+    /// The 95th percentile, within 10%.
+    #[ts(type = "number | null")]
+    pub p95_us: Option<u64>,
+}
+
+impl From<&netwatch_history::Rollup> for RollupPoint {
+    fn from(r: &netwatch_history::Rollup) -> Self {
+        let answered = r.summary.count.saturating_sub(r.summary.lost);
+        RollupPoint {
+            start_us: r.start.as_unix_micros(),
+            epoch: r.epoch.get().get(),
+            count: r.summary.count,
+            lost: r.summary.lost,
+            mean_us: (answered > 0).then(|| r.summary.rtt_sum_us / answered),
+            p50_us: r.histogram.quantile_us(0.5),
+            p95_us: r.histogram.quantile_us(0.95),
+        }
+    }
+}
+
 /// A topology event, for an event marker.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]

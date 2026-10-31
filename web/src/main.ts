@@ -13,6 +13,7 @@ import {
   parseMicros,
   parsePoints,
   parseRoles,
+  parseRollups,
   parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
@@ -21,8 +22,23 @@ import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
 import { pathAware, status, worse, type Status } from "./status";
 
-const WINDOW_US = 3600 * 1e6;
-const STALE_AFTER_US = 15 * 1e6;
+/** The time ranges the UI offers: raw samples for the last hour, then the rollup
+ *  tiers (ADR-0006). */
+type Range = "hour" | "day" | "month";
+interface RangeSpec {
+  readonly spanUs: number;
+  readonly tier: "minute" | "hour" | null;
+  readonly maxGapUs: number;
+  /** A row with nothing newer than this is `unknown`. Rollups appear a few minutes
+   *  after their interval starts, so the longer ranges allow more. */
+  readonly staleAfterUs: number;
+}
+const RANGES: Readonly<Record<Range, RangeSpec>> = {
+  hour: { spanUs: 3600e6, tier: null, maxGapUs: 15e6, staleAfterUs: 15e6 },
+  day: { spanUs: 24 * 3600e6, tier: "minute", maxGapUs: 2 * 60e6, staleAfterUs: 5 * 60e6 },
+  month: { spanUs: 30 * 24 * 3600e6, tier: "hour", maxGapUs: 2 * 3600e6, staleAfterUs: 3 * 3600e6 },
+};
+let range: Range = "hour";
 
 interface Row {
   points: Point[];
@@ -78,7 +94,7 @@ function addRow(key: RoleKey): Row {
   // The chart reads the row's points while it is being constructed, so the points
   // need a home that exists before the chart does.
   const series: { points: Point[] } = { points: [] };
-  const chart = createChart(plotEl, () => series.points, () => markers, setZoom);
+  const chart = createChart(plotEl, () => series.points, () => markers, setZoom, () => RANGES[range].maxGapUs);
   const row: Row = {
     get points() {
       return series.points;
@@ -96,10 +112,10 @@ function addRow(key: RoleKey): Row {
   return row;
 }
 
+/** The selected range, ending now. */
 function sharedWindow(): { min: number; max: number } {
-  const firsts = [...rows.values()].flatMap((r) => (r.points[0] === undefined ? [] : [r.points[0].at]));
   const now = nowMicros() / 1e6;
-  return { min: firsts.length > 0 ? Math.min(...firsts) / 1e6 : now - 60, max: now };
+  return { min: now - RANGES[range].spanUs / 1e6, max: now };
 }
 
 function setZoom(min: number, max: number): void {
@@ -121,7 +137,7 @@ function downstreamOf(key: RoleKey): RoleKey[] {
 }
 
 function ownStatus(row: Row): Status {
-  return status(row.points, nowMicros(), STALE_AFTER_US);
+  return status(row.points, nowMicros(), RANGES[range].staleAfterUs);
 }
 
 /** A layer row combines its probes, if any, with its health report (ADR-0008). */
@@ -203,8 +219,20 @@ async function backfill(from: Micros): Promise<void> {
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);
-      const fetched = parsePoints(await fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`));
-      row.points = merge(row.points, fetched);
+      const tier = RANGES[range].tier;
+      if (tier === null) {
+        const fetched = parsePoints(
+          await fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`),
+        );
+        row.points = merge(row.points, fetched);
+      } else {
+        // Rollups are re-read whole: the latest interval keeps growing until it closes.
+        row.points = [
+          ...parseRollups(
+            await fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`),
+          ),
+        ];
+      }
       render(row, key);
     }),
   );
@@ -220,7 +248,8 @@ function connect(): void {
     // Anything that happened while disconnected is fetched, and merged without
     // duplicates.
     const earliestLatest = [...rows.values()].map((r) => latest(r.points)).filter((t) => t !== undefined);
-    const from = earliestLatest.length > 0 ? Math.min(...earliestLatest) : nowMicros() - WINDOW_US;
+    const from =
+      range === "hour" && earliestLatest.length > 0 ? Math.min(...earliestLatest) : nowMicros() - RANGES[range].spanUs;
     void backfill(parseMicros(from)).catch(report);
   };
   socket.onmessage = (event: MessageEvent) => {
@@ -228,6 +257,8 @@ function connect(): void {
       const live = parseLive(JSON.parse(String(event.data)));
       switch (live.type) {
         case "sample": {
+          // Live samples are raw, so they only join the raw range.
+          if (range !== "hour") break;
           const row = addRow(live.role);
           row.points = merge(row.points, [live.point]);
           render(row, live.role);
@@ -259,7 +290,7 @@ function report(error: unknown): void {
 }
 
 function trim(): void {
-  const cutoff = nowMicros() - WINDOW_US;
+  const cutoff = nowMicros() - RANGES[range].spanUs;
   for (const [key, row] of rows) {
     row.points = since(row.points, parseMicros(cutoff));
     render(row, key);
@@ -272,5 +303,36 @@ document.getElementById("reset-zoom")?.addEventListener("click", (event) => {
   if (event.currentTarget instanceof HTMLElement) event.currentTarget.hidden = true;
   for (const [key, row] of rows) render(row, key);
 });
-setInterval(trim, 60_000);
+function selectRange(selected: Range): void {
+  range = selected;
+  history.replaceState(null, "", selected === "hour" ? location.pathname : `#${selected}`);
+  zoom = null;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
+    button.setAttribute("aria-pressed", String(button.dataset["range"] === selected));
+  }
+  for (const row of rows.values()) row.points = [];
+  void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
+}
+
+for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
+  button.addEventListener("click", () => {
+    const selected = Object.keys(RANGES).find((r) => r === button.dataset["range"]);
+    if (selected === "hour" || selected === "day" || selected === "month") selectRange(selected);
+  });
+}
+
+// A range can be bookmarked: `#day` or `#month`.
+const bookmarked = Object.keys(RANGES).find((r) => `#${r}` === location.hash);
+if (bookmarked === "day" || bookmarked === "month") {
+  range = bookmarked;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
+    button.setAttribute("aria-pressed", String(button.dataset["range"] === bookmarked));
+  }
+}
+
+setInterval(() => {
+  trim();
+  // Rollups close once a minute; re-read them so the long ranges stay current.
+  if (range !== "hour") void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
+}, 60_000);
 connect();

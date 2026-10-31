@@ -3,6 +3,7 @@
 //!
 //! - `GET /api/roles`: every role that has samples
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
+//! - `GET /api/rollups?role=<key>&tier=minute|hour&since_us=<µs>`: one role's rollups
 //! - `GET /api/events?since_us=<µs>`: topology events, oldest first
 //! - `GET /api/targets`: every configured target's name
 //! - `GET /api/layers`: each layer's latest health report, by role key
@@ -29,7 +30,9 @@ use netwatch_shared::{Role, WallTime};
 use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
-pub use api::{EventPoint, LayerReportView, LiveMessage, RoleSummary, SamplePoint, TargetView};
+pub use api::{
+    EventPoint, LayerReportView, LiveMessage, RoleSummary, RollupPoint, SamplePoint, TargetView,
+};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -55,6 +58,7 @@ pub async fn serve(
     let app = Router::new()
         .route("/api/roles", get(roles))
         .route("/api/samples", get(samples))
+        .route("/api/rollups", get(rollups))
         .route("/api/events", get(events))
         .route("/api/targets", get(target_list))
         .route("/api/layers", get(layer_reports))
@@ -74,6 +78,13 @@ pub async fn serve(
 #[derive(Deserialize)]
 struct SamplesQuery {
     role: String,
+    since_us: i64,
+}
+
+#[derive(Deserialize)]
+struct RollupsQuery {
+    role: String,
+    tier: String,
     since_us: i64,
 }
 
@@ -125,6 +136,26 @@ async fn samples(
     let since = WallTime::from_unix_micros(query.since_us);
     let samples = read(&state, move |store| store.samples(&role, since)).await?;
     Ok(Json(samples.iter().map(SamplePoint::from).collect()))
+}
+
+async fn rollups(
+    State(state): State<AppState>,
+    Query(query): Query<RollupsQuery>,
+) -> Result<Json<Vec<RollupPoint>>, (StatusCode, String)> {
+    let role = Role::from_key(&query.role).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown role {:?}", query.role),
+        )
+    })?;
+    let tier = match query.tier.as_str() {
+        "minute" => netwatch_history::Tier::Minute,
+        "hour" => netwatch_history::Tier::Hour,
+        other => return Err((StatusCode::BAD_REQUEST, format!("unknown tier {other:?}"))),
+    };
+    let since = WallTime::from_unix_micros(query.since_us);
+    let rollups = read(&state, move |store| store.rollups(&role, tier, since)).await?;
+    Ok(Json(rollups.iter().map(RollupPoint::from).collect()))
 }
 
 async fn events(

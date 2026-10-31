@@ -9,6 +9,11 @@
     <header class="top">
       <h1>netwatch</h1>
       <div id="identities"></div>
+      <div id="ranges" role="group" aria-label="Time range">
+        <button data-range="hour" aria-pressed="true">1 h</button>
+        <button data-range="day" aria-pressed="false">24 h</button>
+        <button data-range="month" aria-pressed="false">30 d</button>
+      </div>
       <button id="reset-zoom" hidden>Reset zoom</button>
     </header>
     <div id="connection" hidden>Disconnected from the daemon. Reconnecting…</div>

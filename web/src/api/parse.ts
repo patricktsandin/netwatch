@@ -120,6 +120,29 @@ export function parseRoles(value: unknown): readonly RoleKey[] {
   return array(value, "roles").map((r) => roleKey(record<RoleSummary>(r, "role").key, "role.key"));
 }
 
+/**
+ * Rollups from `/api/rollups`, as points the charts can draw: each interval is drawn
+ * at its median RTT, or as a loss if nothing in it was answered.
+ */
+export function parseRollups(value: unknown): readonly Point[] {
+  return array(value, "rollups").map((r) => {
+    const rollup = record<{ start_us: number; epoch: number; count: number; lost: number; p50_us: number | null }>(
+      r,
+      "rollup",
+    );
+    const at = micros(rollup.start_us, "rollup.start_us");
+    const rollupEpoch = epoch(rollup.epoch, "rollup.epoch");
+    const count = integer(rollup.count, "rollup.count");
+    const lost = integer(rollup.lost, "rollup.lost");
+    if (lost > count) throw new ParseError("rollup: more lost than counted");
+    if (rollup.p50_us === null) {
+      return { at, epoch: rollupEpoch, measurement: { kind: "lost", reason: "timed-out" } };
+    }
+    const p50 = integer(rollup.p50_us, "rollup.p50_us");
+    return { at, epoch: rollupEpoch, measurement: { kind: "round-trip", rttMs: p50 / 1000 } };
+  });
+}
+
 /** Every layer's latest report by role key, from `/api/layers`. */
 export function parseLayers(value: unknown): ReadonlyMap<RoleKey, LayerReport> {
   const all = record<Record<string, unknown>>(value, "layers");

@@ -6,16 +6,13 @@ import uPlot from "uplot";
 import type { Marker, Point } from "./model";
 import { plotColumns } from "./series";
 
-/** Points further apart than this are a measurement gap, not a line. */
-const MAX_GAP_US = 15e6;
-
 const color = (name: string): string =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const seconds = (micros: number): number => micros / 1e6;
 
-function data(points: readonly Point[]): uPlot.AlignedData {
-  const { xs, ys } = plotColumns(points, MAX_GAP_US);
+function data(points: readonly Point[], maxGapUs: number): uPlot.AlignedData {
+  const { xs, ys } = plotColumns(points, maxGapUs);
   return [xs.map(seconds), ys];
 }
 
@@ -66,6 +63,8 @@ export function createChart(
   points: () => readonly Point[],
   markers: () => readonly Marker[],
   onZoom: (min: number, max: number) => void,
+  /** Points further apart than this are a measurement gap, not a line. */
+  maxGapUs: () => number,
 ): Chart {
   const plot = new uPlot(
     {
@@ -90,7 +89,7 @@ export function createChart(
         ],
       },
     },
-    data(points()),
+    data(points(), maxGapUs()),
     container,
   );
   new ResizeObserver(() => {
@@ -100,7 +99,7 @@ export function createChart(
     plot,
     // Rescales to the data. A zoom, if any, is reapplied by the caller afterwards.
     update: (ps) => {
-      plot.setData(data(ps));
+      plot.setData(data(ps, maxGapUs()));
     },
     redraw: () => {
       plot.redraw();

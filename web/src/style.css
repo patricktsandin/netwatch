@@ -36,7 +36,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 .top h1 { margin: 0; font-size: 18px; font-weight: 600; }
 #identities { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; }
 .identity { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
-#reset-zoom { margin-left: auto; }
+#ranges { margin-left: auto; display: flex; gap: 4px; }
+#ranges button, #reset-zoom { font: inherit; padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+#ranges button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
 #connection { margin: 12px 16px 0; padding: 8px 12px; border-radius: 6px; background: var(--failing); color: #fff; }
 #stack { display: grid; gap: 12px; padding: 16px; }
 .row { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
