@@ -33,13 +33,13 @@ live and historically, in a web UI served only to this machine by default.
 
 %build
 (cd web && npm ci --no-audit --no-fund && npm run build)
-# Stripped here because the debuginfo subpackage is off.
-CARGO_PROFILE_RELEASE_STRIP=symbols cargo build --release --locked -p netwatch
+# Stripped at install (install -s), because the debuginfo subpackage is off.
+cargo build --release --locked -p netwatch
 
 %install
 # deploy/README.md would collide with README.md among the docs.
 cp deploy/README.md DEPLOYING.md
-install -D -m 0755 target/release/netwatch %{buildroot}%{_bindir}/netwatch
+install -D -s -m 0755 target/release/netwatch %{buildroot}%{_bindir}/netwatch
 install -D -m 0644 deploy/netwatch.service %{buildroot}%{_unitdir}/netwatch.service
 install -D -m 0644 deploy/netwatch.sysusers %{buildroot}%{_sysusersdir}/netwatch.conf
 # The packaged configuration keeps its database in the service's state directory.
