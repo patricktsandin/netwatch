@@ -1,0 +1,51 @@
+:root {
+  --bg: #fbfbfa;
+  --surface: #ffffff;
+  --text: #1d1f23;
+  --muted: #6b7079;
+  --grid: #ececea;
+  --line: #2f6fdf;
+  --loss: #d9342b;
+  --marker: #8a63d2;
+  --healthy: #1f8a4c;
+  --degraded: #b7791f;
+  --failing: #d9342b;
+  --border: #e4e4e1;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131417;
+    --surface: #1b1d21;
+    --text: #e8e9ec;
+    --muted: #9198a3;
+    --grid: #2a2d33;
+    --line: #6aa0ff;
+    --loss: #ff6b61;
+    --marker: #b597ff;
+    --healthy: #4cc283;
+    --degraded: #e0a948;
+    --failing: #ff6b61;
+    --border: #2c2f35;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+.top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
+.top h1 { margin: 0; font-size: 18px; font-weight: 600; }
+#identities { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; }
+.identity { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
+#reset-zoom { margin-left: auto; }
+#connection { margin: 12px 16px 0; padding: 8px 12px; border-radius: 6px; background: var(--failing); color: #fff; }
+#stack { display: grid; gap: 12px; padding: 16px; }
+.row { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+.row-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.row-title { margin: 0; font-size: 14px; font-weight: 600; }
+.value { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+.status { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; }
+.status.healthy { color: var(--healthy); }
+.status.degraded { color: var(--degraded); }
+.status.failing { color: var(--failing); }
+.status.unknown { color: var(--muted); }
+.plot { width: 100%; overflow: hidden; }

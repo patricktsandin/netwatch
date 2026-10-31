@@ -29,7 +29,7 @@ use tokio::sync::broadcast;
 pub use api::{EventPoint, LiveMessage, RoleSummary, SamplePoint};
 
 #[derive(rust_embed::RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/../../web/dist"]
+#[folder = "../../web/dist"]
 #[allow_missing = true]
 struct Spa;
 
