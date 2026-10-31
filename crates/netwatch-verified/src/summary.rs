@@ -20,6 +20,7 @@ pub struct Summary {
 
 /// A summary's fields as mathematical integers, so the laws can be stated without
 /// overflow.
+#[allow(dead_code)] // Only specs and proofs use it, and a normal build erases them.
 pub struct SummaryView {
     pub count: int,
     pub lost: int,
