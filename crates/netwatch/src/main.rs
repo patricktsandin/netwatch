@@ -144,13 +144,22 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("NETWATCH_LISTEN must be an address:port")?;
     let (live, _) = broadcast::channel::<LiveMessage>(1024);
+    let flush: netwatch_adapter_web::Flush = {
+        let writes = writes.clone();
+        std::sync::Arc::new(move || {
+            let (done, flushed) = tokio::sync::oneshot::channel();
+            let _ = writes.send(persist::Write::Flush(done));
+            flushed
+        })
+    };
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     tokio::spawn({
         let live = live.clone();
         async move {
             if let Err(error) =
-                netwatch_adapter_web::serve(listen, database, live, layers, target_names()).await
+                netwatch_adapter_web::serve(listen, database, live, layers, target_names(), flush)
+                    .await
             {
                 tracing::error!(%error, "the UI server stopped");
             }

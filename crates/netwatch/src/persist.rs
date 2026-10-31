@@ -13,6 +13,11 @@ use netwatch_topology::TopologyEvent;
 pub enum Write {
     Sample(Sample),
     Event(TopologyEvent, WallTime),
+    /// Write everything received so far, then acknowledge. The API sends this before
+    /// answering a backfill, so a backfill never misses a sample the live stream
+    /// already sent (ADR-0029). The channel is FIFO, so "everything so far" includes
+    /// every sample broadcast before the request.
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 const BATCH: usize = 256;
@@ -83,6 +88,16 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                         if let Err(error) = store.record_event(&event, at) {
                             tracing::error!(%error, "cannot record topology event");
                         }
+                    }
+                    Ok(Write::Flush(done)) => {
+                        if !batch.is_empty()
+                            && let Err(error) = store.write_samples(&batch)
+                        {
+                            tracing::error!(%error, lost = batch.len(), "cannot write samples");
+                        }
+                        batch.clear();
+                        flushed = Instant::now();
+                        let _ = done.send(());
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,

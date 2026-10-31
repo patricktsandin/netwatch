@@ -19,7 +19,8 @@ export default tseslint.config(
     },
   },
   {
-    files: ["src/api/parse.ts"],
+    // The two boundary parsers: the daemon's JSON, and Quint's ITF traces.
+    files: ["src/api/parse.ts", "src/conformance.test.ts"],
     rules: { "@typescript-eslint/consistent-type-assertions": "off" },
   },
   {

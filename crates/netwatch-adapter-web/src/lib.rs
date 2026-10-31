@@ -11,7 +11,9 @@
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
 //! Reads open their own SQLite connection, which WAL mode lets run alongside the
-//! single writer.
+//! single writer. Every read first asks the writer to flush, so a backfill never
+//! misses a sample that the live stream already sent (ADR-0029,
+//! `specs/live_backfill.qnt`).
 
 pub mod api;
 
@@ -39,8 +41,12 @@ pub use api::{
 #[allow_missing = true]
 struct Spa;
 
+/// Asks the writer to write everything it has received, and resolves once it has.
+pub type Flush = std::sync::Arc<dyn Fn() -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
+
 #[derive(Clone)]
 struct AppState {
+    flush: Flush,
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
@@ -54,6 +60,7 @@ pub async fn serve(
     live: broadcast::Sender<LiveMessage>,
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: Vec<TargetView>,
+    flush: Flush,
 ) -> std::io::Result<()> {
     let app = Router::new()
         .route("/api/roles", get(roles))
@@ -65,6 +72,7 @@ pub async fn serve(
         .route("/api/live", get(live_socket))
         .fallback(spa)
         .with_state(AppState {
+            flush,
             database,
             live,
             layers,
@@ -98,6 +106,9 @@ async fn read<T: Send + 'static>(
     state: &AppState,
     query: impl FnOnce(&Store) -> Result<T, netwatch_adapter_sqlite::StoreError> + Send + 'static,
 ) -> Result<T, (StatusCode, String)> {
+    // The flush barrier: if the writer has gone away, there's nothing left to wait
+    // for, so the read goes ahead.
+    let _ = (state.flush)().await;
     let database = state.database.clone();
     tokio::task::spawn_blocking(move || {
         let store = Store::open(&database)?;
