@@ -1063,6 +1063,7 @@ dependencies = [
  "netwatch-history",
  "netwatch-shared",
  "netwatch-topology",
+ "netwatch-verified",
  "rusqlite",
  "thiserror",
 ]

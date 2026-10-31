@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use netwatch_adapter_sqlite::Store;
-use netwatch_history::Sample;
+use netwatch_history::{self as history, Sample, Tier};
 use netwatch_shared::WallTime;
 use netwatch_topology::TopologyEvent;
 
@@ -18,6 +18,46 @@ pub enum Write {
 const BATCH: usize = 256;
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+const ROLL_UP_EVERY: Duration = Duration::from_secs(60);
+/// A minute is rolled up only this long after it ends, so that samples still in a
+/// write batch aren't missed.
+const SETTLE_US: i64 = 2 * 60 * 1_000_000;
+
+/// Rolls up every complete minute not yet rolled up, then every complete hour from
+/// its minutes, an hour of data at a time. Progress is recorded per tier, so a
+/// restart resumes where it left off (ADR-0006).
+fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqlite::StoreError> {
+    let settled = WallTime::from_unix_micros(now.as_unix_micros() - SETTLE_US);
+    let minutes_done = Tier::Minute.start_of(settled);
+    let hour = Tier::Hour.interval_us();
+    let first_minute = store.rollup_progress(Tier::Minute)?.unwrap_or_else(|| {
+        WallTime::from_unix_micros(
+            minutes_done.as_unix_micros() - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * hour,
+        )
+    });
+    let mut from = first_minute;
+    while from < minutes_done {
+        let until = WallTime::from_unix_micros(
+            (from.as_unix_micros() + hour).min(minutes_done.as_unix_micros()),
+        );
+        let samples = store.samples_between(from, until)?;
+        store.write_rollups(&history::roll_up(&samples, Tier::Minute))?;
+        store.set_rollup_progress(Tier::Minute, until)?;
+        from = until;
+    }
+    let hours_done = Tier::Hour.start_of(minutes_done);
+    let mut from = store
+        .rollup_progress(Tier::Hour)?
+        .unwrap_or(Tier::Hour.start_of(first_minute));
+    while from < hours_done {
+        let until = WallTime::from_unix_micros(from.as_unix_micros() + hour);
+        let minutes = store.rollups_between(Tier::Minute, from, until)?;
+        store.write_rollups(&history::coarsen(&minutes, Tier::Hour))?;
+        store.set_rollup_progress(Tier::Hour, until)?;
+        from = until;
+    }
+    Ok(())
+}
 
 /// Starts the writer. Writes are lost only if the database itself fails, and that is
 /// logged.
@@ -34,6 +74,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
             let mut batch = Vec::with_capacity(BATCH);
             let mut flushed = Instant::now();
             let mut pruned = Instant::now() - PRUNE_EVERY;
+            let mut rolled = Instant::now() - ROLL_UP_EVERY;
             loop {
                 let next = rx.recv_timeout(FLUSH_EVERY);
                 match next {
@@ -54,6 +95,12 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                     }
                     batch.clear();
                     flushed = Instant::now();
+                }
+                if rolled.elapsed() >= ROLL_UP_EVERY {
+                    if let Err(error) = roll_up(&mut store, clock.wall_now()) {
+                        tracing::error!(%error, "cannot roll up samples");
+                    }
+                    rolled = Instant::now();
                 }
                 if pruned.elapsed() >= PRUNE_EVERY {
                     match store.prune(clock.wall_now()) {

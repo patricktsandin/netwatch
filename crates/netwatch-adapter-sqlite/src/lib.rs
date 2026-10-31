@@ -5,15 +5,17 @@
 //! stored as their [`Role::key`]. A migration that has been applied is never edited:
 //! a schema change is a new file in `migrations/`, appended to [`MIGRATIONS`].
 //!
-//! Not yet implemented: rollup tiers. Retention currently prunes raw samples only.
+//! Rollups of both tiers are stored with their histograms. Retention keeps raw samples
+//! for 7 days, minute rollups for 90 days, and hour rollups indefinitely.
 
 use std::path::Path;
 
-use netwatch_history::{Loss, Measurement, Sample};
+use netwatch_history::{Histogram, Loss, Measurement, Rollup, Sample, Tier};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::microsecond;
 use netwatch_shared::{Identity, IdentityEpoch, Role, WallTime};
 use netwatch_topology::TopologyEvent;
+use netwatch_verified::Summary;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// The schema, as an ordered list of migrations. The database's `user_version` is the
@@ -22,10 +24,37 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001-initial.sql"),
     include_str!("../migrations/0002-refused-loss.sql"),
     include_str!("../migrations/0003-unexpected-response.sql"),
+    include_str!("../migrations/0004-rollups.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
 pub const RAW_RETENTION_DAYS: i64 = 7;
+/// How long minute rollups are kept (ADR-0006).
+pub const MINUTE_RETENTION_DAYS: i64 = 90;
+const DAY_US: i64 = 24 * 3600 * 1_000_000;
+
+fn tier_text(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Minute => "minute",
+        Tier::Hour => "hour",
+    }
+}
+
+fn encode_histogram(histogram: &Histogram) -> Vec<u8> {
+    histogram
+        .buckets()
+        .flat_map(|(bucket, count)| std::iter::once(bucket).chain(count.to_le_bytes()))
+        .collect()
+}
+
+fn decode_histogram(blob: &[u8]) -> Histogram {
+    let (entries, _) = blob.as_chunks::<5>();
+    Histogram::from_buckets(
+        entries
+            .iter()
+            .map(|[bucket, c0, c1, c2, c3]| (*bucket, u32::from_le_bytes([*c0, *c1, *c2, *c3]))),
+    )
+}
 
 /// Why the store failed.
 #[derive(Debug, thiserror::Error)]
@@ -187,12 +216,188 @@ impl Store {
         )?)
     }
 
-    /// Deletes raw samples older than the retention period, relative to `now`.
+    /// Deletes raw samples and minute rollups past their retention, relative to `now`.
+    /// Returns how many rows were removed.
     pub fn prune(&mut self, now: WallTime) -> Result<usize, StoreError> {
-        let cutoff = now.as_unix_micros() - RAW_RETENTION_DAYS * 24 * 3600 * 1_000_000;
+        let now = now.as_unix_micros();
+        let samples = self.connection.execute(
+            "DELETE FROM samples WHERE at_us < ?1",
+            [now - RAW_RETENTION_DAYS * DAY_US],
+        )?;
+        let minutes = self.connection.execute(
+            "DELETE FROM rollups WHERE tier = 'minute' AND start_us < ?1",
+            [now - MINUTE_RETENTION_DAYS * DAY_US],
+        )?;
+        Ok(samples + minutes)
+    }
+
+    /// Every sample, of every role, with `from <= at < until`.
+    pub fn samples_between(
+        &self,
+        from: WallTime,
+        until: WallTime,
+    ) -> Result<Vec<Sample>, StoreError> {
+        let mut query = self
+            .connection
+            .prepare_cached("SELECT DISTINCT role FROM samples WHERE at_us >= ?1 AND at_us < ?2")?;
+        let keys: Vec<String> = query
+            .query_map(
+                params![from.as_unix_micros(), until.as_unix_micros()],
+                |row| row.get(0),
+            )?
+            .collect::<Result<_, _>>()?;
+        let mut samples = Vec::new();
+        for role in keys.iter().filter_map(|k| Role::from_key(k)) {
+            for stored in self.samples(&role, from)? {
+                if stored.at < until {
+                    samples.push(Sample {
+                        role: role.clone(),
+                        epoch: stored.epoch,
+                        at: stored.at,
+                        measurement: stored.measurement,
+                    });
+                }
+            }
+        }
+        Ok(samples)
+    }
+
+    /// Writes rollups, replacing any with the same role, epoch, tier, and start.
+    pub fn write_rollups(&mut self, rollups: &[Rollup]) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT OR REPLACE INTO rollups (role, epoch, tier, start_us, count, lost,
+                     rtt_sum_us, rtt_min_us, rtt_max_us, histogram)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            )?;
+            for r in rollups {
+                let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+                insert.execute(params![
+                    r.role.key(),
+                    epoch_value(r.epoch),
+                    tier_text(r.tier),
+                    r.start.as_unix_micros(),
+                    clamp(r.summary.count),
+                    clamp(r.summary.lost),
+                    clamp(r.summary.rtt_sum_us),
+                    clamp(r.summary.rtt_min_us),
+                    clamp(r.summary.rtt_max_us),
+                    encode_histogram(&r.histogram),
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The role's rollups of `tier` starting at or after `since`, oldest first.
+    pub fn rollups(
+        &self,
+        role: &Role,
+        tier: Tier,
+        since: WallTime,
+    ) -> Result<Vec<Rollup>, StoreError> {
+        let mut query = self.connection.prepare_cached(
+            "SELECT epoch, start_us, count, lost, rtt_sum_us, rtt_min_us, rtt_max_us, histogram
+             FROM rollups WHERE role = ?1 AND tier = ?2 AND start_us >= ?3 ORDER BY start_us",
+        )?;
+        let rows = query.query_map(
+            params![role.key(), tier_text(tier), since.as_unix_micros()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    [
+                        row.get::<_, i64>(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ],
+                    row.get::<_, Vec<u8>>(7)?,
+                ))
+            },
+        )?;
+        let mut rollups = Vec::new();
+        for row in rows {
+            let (epoch, start, [count, lost, sum, min, max], histogram) = row?;
+            let Some(epoch) = u64::try_from(epoch)
+                .ok()
+                .and_then(std::num::NonZeroU64::new)
+            else {
+                continue;
+            };
+            let unsigned = |v: i64| u64::try_from(v).unwrap_or(0);
+            let mut summary = Summary::empty();
+            summary.count = unsigned(count);
+            summary.lost = unsigned(lost);
+            summary.rtt_sum_us = unsigned(sum);
+            summary.rtt_min_us = unsigned(min);
+            summary.rtt_max_us = unsigned(max);
+            rollups.push(Rollup {
+                role: role.clone(),
+                epoch: IdentityEpoch::new(epoch),
+                tier,
+                start: WallTime::from_unix_micros(start),
+                summary,
+                histogram: decode_histogram(&histogram),
+            });
+        }
+        Ok(rollups)
+    }
+
+    /// Every rollup of `tier` with `from <= start < until`, of every role.
+    pub fn rollups_between(
+        &self,
+        tier: Tier,
+        from: WallTime,
+        until: WallTime,
+    ) -> Result<Vec<Rollup>, StoreError> {
+        let mut query = self.connection.prepare_cached(
+            "SELECT DISTINCT role FROM rollups WHERE tier = ?1 AND start_us >= ?2 AND start_us < ?3",
+        )?;
+        let keys: Vec<String> = query
+            .query_map(
+                params![
+                    tier_text(tier),
+                    from.as_unix_micros(),
+                    until.as_unix_micros()
+                ],
+                |row| row.get(0),
+            )?
+            .collect::<Result<_, _>>()?;
+        let mut all = Vec::new();
+        for role in keys.iter().filter_map(|k| Role::from_key(k)) {
+            all.extend(
+                self.rollups(&role, tier, from)?
+                    .into_iter()
+                    .filter(|r| r.start < until),
+            );
+        }
+        Ok(all)
+    }
+
+    /// How far `tier` has been rolled up, if at all.
+    pub fn rollup_progress(&self, tier: Tier) -> Result<Option<WallTime>, StoreError> {
         Ok(self
             .connection
-            .execute("DELETE FROM samples WHERE at_us < ?1", [cutoff])?)
+            .query_row(
+                "SELECT done_until_us FROM rollup_progress WHERE tier = ?1",
+                [tier_text(tier)],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(WallTime::from_unix_micros))
+    }
+
+    /// Records that every interval of `tier` before `until` has been rolled up.
+    pub fn set_rollup_progress(&mut self, tier: Tier, until: WallTime) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO rollup_progress (tier, done_until_us) VALUES (?1, ?2)",
+            params![tier_text(tier), until.as_unix_micros()],
+        )?;
+        Ok(())
     }
 
     /// Every role that has samples, with the time of its latest one.

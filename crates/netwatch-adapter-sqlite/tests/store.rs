@@ -164,3 +164,34 @@ fn prune_removes_only_samples_past_retention() {
 
     assert_eq!(removed, 1);
 }
+
+#[test]
+fn rollups_round_trip_with_their_histograms() {
+    use netwatch_history::{Tier, roll_up};
+    let mut store = Store::open(&fresh("rollups")).unwrap();
+    let samples: Vec<Sample> = (0..90)
+        .map(|i| {
+            sample(
+                i * 1_000_000,
+                if i % 7 == 0 {
+                    Measurement::Lost(Loss::TimedOut)
+                } else {
+                    Measurement::RoundTrip(Time::new::<microsecond>(1_000.0 + i as f64))
+                },
+            )
+        })
+        .collect();
+    let rollups = roll_up(&samples, Tier::Minute);
+
+    store.write_rollups(&rollups).unwrap();
+
+    let read = store
+        .rollups(
+            &Role::Target(TargetId::new(1)),
+            Tier::Minute,
+            WallTime::from_unix_micros(0),
+        )
+        .unwrap();
+    assert_eq!(read, rollups);
+    assert_eq!(read.len(), 2);
+}
