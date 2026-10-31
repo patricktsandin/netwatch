@@ -4,7 +4,7 @@
 //!
 //! This crate holds the few algorithms where a subtle bug would quietly corrupt every
 //! number netwatch reports:
-//! - reply matching and probe-sequence wraparound (used by Probing)
+//! - reply matching and probe-sequence wraparound (used by Probing): [`sequence_of`]
 //! - counter wraparound and counter-reset detection (used by Host health)
 //! - the merge algebra for rollups and percentiles (used by History)
 //! - identity-epoch advancement (used by Topology): [`MonotonicCounter`]
@@ -21,5 +21,7 @@
 #![allow(missing_docs)] // `verus!` expands to items that rustdoc can't see; document inside it.
 
 mod monotonic_counter;
+mod sequence;
 
 pub use monotonic_counter::MonotonicCounter;
+pub use sequence::sequence_of;

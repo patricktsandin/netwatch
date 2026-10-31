@@ -21,6 +21,12 @@
 
 mod identity;
 mod role;
+mod time;
 
 pub use identity::{Identity, IdentityEpoch, InterfaceIndex, InterfaceName, InvalidInterfaceName};
 pub use role::{HopTtl, Role, TargetId};
+pub use time::Instant;
+
+/// Physical quantities (ADR-0014), re-exported so that every crate uses the same
+/// `uom` configuration.
+pub use uom;

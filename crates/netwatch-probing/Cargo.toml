@@ -9,6 +9,11 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-verified.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+itf.workspace = true
+serde.workspace = true

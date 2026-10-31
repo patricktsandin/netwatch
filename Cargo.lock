@@ -631,8 +631,11 @@ dependencies = [
 name = "netwatch-probing"
 version = "0.1.0"
 dependencies = [
+ "itf",
  "netwatch-shared",
  "netwatch-verified",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -640,6 +643,7 @@ name = "netwatch-shared"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+ "uom",
 ]
 
 [[package]]
@@ -1147,10 +1151,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "typenum"
+version = "1.20.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "uom"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a739f83872836c82a4f2527d4e54b37007b3de68cafe7edde95fd695968bf4b9"
+dependencies = [
+ "num-traits",
+ "typenum",
+]
 
 [[package]]
 name = "valuable"

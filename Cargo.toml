@@ -36,6 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 libc = "0.2"
+uom = { version = "0.38", default-features = false, features = ["f64", "si", "std"] }
 serde = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
