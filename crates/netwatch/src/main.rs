@@ -12,16 +12,20 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
 
 use anyhow::Context;
-use netwatch_adapter_web::{EventPoint, LayerReportView, LiveMessage, TargetView};
+use netwatch_adapter_web::{
+    BindingView, EventPoint, LayerReportView, LiveMessage, TargetView, status_text,
+};
 use netwatch_history::{Measurement, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES};
+use netwatch_probing::health::{self, Health};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
 use netwatch_shared::{
-    HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId,
+    HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
 };
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::clock::Clock;
@@ -96,11 +100,13 @@ async fn main() -> anyhow::Result<()> {
     };
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
+    let (current_tx, current) = watch::channel(netwatch_adapter_web::Current::default());
     tokio::spawn({
         let live = live.clone();
         async move {
             if let Err(error) =
-                netwatch_adapter_web::serve(listen, database, live, layers, names, flush).await
+                netwatch_adapter_web::serve(listen, database, live, layers, names, flush, current)
+                    .await
             {
                 tracing::error!(%error, "the UI server stopped");
             }
@@ -229,13 +235,20 @@ async fn main() -> anyhow::Result<()> {
     // whenever the NIC changes (a failover).
     let mut nic_watch: Option<(InterfaceIndex, CounterWatch)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    // Every role's recent outcomes, and the layers' latest reports, from which the
+    // daemon grades every role each second (ADR-0030).
+    let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
+    let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
     let mut last_clocks = (clock.wall_now(), clock.now());
     let mut last_sysctls = netwatch_adapter_procfs::sysctls();
     // Network-relevant kernel log lines become event markers (ADR-0008). Reading the
     // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
     let (kmsg_tx, mut kmsg) = mpsc::channel::<String>(64);
+    // The kernel layer's sources that couldn't start, reported with every kernel report.
+    let mut disabled = Vec::new();
     if let Err(error) = netwatch_adapter_procfs::watch_kernel_log(kmsg_tx) {
+        disabled.push(format!("kernel log: {error} (needs CAP_SYSLOG)"));
         tracing::warn!(%error, "kernel log disabled (needs CAP_SYSLOG)");
         note(
             "source-disabled",
@@ -252,7 +265,10 @@ async fn main() -> anyhow::Result<()> {
                 let Ok(reading) = tokio::task::spawn_blocking(netwatch_adapter_procfs::read).await else {
                     continue;
                 };
-                publish_layer(Role::Kernel, &kernel_watch.observe(reading), &live, &layers_tx);
+                layer_health.insert(
+                    Role::Kernel,
+                    publish_layer(Role::Kernel, &kernel_watch.observe(reading), &disabled, &live, &layers_tx),
+                );
                 let clocks = (clock.wall_now(), clock.now());
                 let wall_us = clocks.0.as_unix_micros() - last_clocks.0.as_unix_micros();
                 let monotonic_us = i64::try_from(clocks.1.as_nanos().saturating_sub(last_clocks.1.as_nanos()) / 1_000).unwrap_or(i64::MAX);
@@ -284,9 +300,13 @@ async fn main() -> anyhow::Result<()> {
                     .await;
                     if let (Ok(Ok(counters)), Some((_, watch))) = (counters, nic_watch.as_mut()) {
                         let reading = netwatch_host_health::Reading { counters, ..Default::default() };
-                        publish_layer(Role::Nic, &watch.observe(reading), &live, &layers_tx);
+                        layer_health.insert(
+                            Role::Nic,
+                            publish_layer(Role::Nic, &watch.observe(reading), &[], &live, &layers_tx),
+                        );
                     }
                 }
+                publish_current(&recent, &layer_health, &topology, clock.wall_now(), &live, &current_tx);
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
@@ -312,6 +332,11 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     };
                     log_sample(&sample);
+                    let outcomes = recent.entry(sample.role.clone()).or_default();
+                    outcomes.push_back((sample.at, matches!(sample.measurement, Measurement::RoundTrip(_))));
+                    if outcomes.len() > health::WINDOW {
+                        outcomes.pop_front();
+                    }
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
                 }
@@ -443,13 +468,76 @@ fn note(
 }
 
 /// Publishes a layer's health report to the UI, and logs it when something got worse.
+/// A role's outcomes older than this are too old to grade it by, so it is `Unknown`.
+const STALE_AFTER_US: i64 = 30_000_000;
+
+/// Grades every role from its recent outcomes, reads loss along each path, folds in
+/// the layer reports, and publishes the result together with every role's current
+/// binding. This is the only place statuses are decided (ADR-0030).
+fn publish_current(
+    recent: &HashMap<Role, VecDeque<(WallTime, bool)>>,
+    layers: &BTreeMap<Role, Health>,
+    topology: &Topology,
+    now: WallTime,
+    live: &broadcast::Sender<LiveMessage>,
+    current: &watch::Sender<netwatch_adapter_web::Current>,
+) {
+    let mut grades: BTreeMap<Role, Health> = recent
+        .iter()
+        .map(|(role, outcomes)| {
+            let answered: Vec<bool> = outcomes.iter().map(|&(_, answered)| answered).collect();
+            let fresh = outcomes.back().is_some_and(|(at, _)| {
+                now.as_unix_micros() - at.as_unix_micros() <= STALE_AFTER_US
+            });
+            (role.clone(), health::grade(&answered, fresh))
+        })
+        .collect();
+    for (role, &layer) in layers {
+        let probes = grades.get(role).copied().unwrap_or(Health::Unknown);
+        grades.insert(role.clone(), probes.worse(layer));
+    }
+    let statuses: BTreeMap<String, String> = health::along_paths(&grades)
+        .into_iter()
+        .map(|(role, health)| (role.key(), status_text(health)))
+        .collect();
+    let bindings: BTreeMap<String, BindingView> = topology
+        .bindings()
+        .map(|(role, binding)| {
+            let identity = match &binding.identity {
+                Identity::Interface { index, name } => format!("{name} (ifindex {})", index.get()),
+                Identity::Address(address) => address.to_string(),
+            };
+            (
+                role.key(),
+                BindingView {
+                    identity,
+                    epoch: binding.epoch.get().get(),
+                },
+            )
+        })
+        .collect();
+    let _ = live.send(LiveMessage::Statuses {
+        statuses: statuses.clone(),
+    });
+    let _ = live.send(LiveMessage::Bindings {
+        bindings: bindings.clone(),
+    });
+    current.send_replace(netwatch_adapter_web::Current { statuses, bindings });
+}
+
+/// Publishes a layer's report, and returns its grade for [`publish_current`].
 fn publish_layer(
     role: Role,
     report: &netwatch_host_health::LayerReport,
+    disabled: &[String],
     live: &broadcast::Sender<LiveMessage>,
     layers: &watch::Sender<std::collections::BTreeMap<String, LayerReportView>>,
-) {
-    let view = LayerReportView::from(report);
+) -> Health {
+    use netwatch_host_health::LayerStatus;
+    let view = LayerReportView {
+        disabled: disabled.to_vec(),
+        ..LayerReportView::from(report)
+    };
     if !view.increases.is_empty() {
         tracing::warn!(?role, status = %view.status, increases = ?view.increases, "counters grew");
     }
@@ -460,6 +548,12 @@ fn publish_layer(
     layers.send_modify(|all| {
         all.insert(role.key(), view);
     });
+    match report.status {
+        LayerStatus::Unknown => Health::Unknown,
+        LayerStatus::Healthy => Health::Healthy,
+        LayerStatus::Degraded => Health::Degraded,
+        LayerStatus::Failing => Health::Failing,
+    }
 }
 
 fn log_sample(sample: &Sample) {

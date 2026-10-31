@@ -51,9 +51,21 @@ export interface LayerReport {
   readonly cpuPressure: number | null;
   readonly conntrackFill: number | null;
   readonly clockSynchronized: boolean | null;
+  readonly disabled: readonly string[];
+}
+
+/** A role's status, as graded by the daemon (ADR-0030). */
+export type Status = "healthy" | "degraded" | "failing" | "unknown" | "rate-limited";
+
+/** A role's current identity and epoch, from Topology. */
+export interface Binding {
+  readonly identity: string;
+  readonly epoch: Epoch;
 }
 
 export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }
-  | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport };
+  | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
+  | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
+  | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> };

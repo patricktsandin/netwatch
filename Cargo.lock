@@ -1080,6 +1080,7 @@ dependencies = [
  "netwatch-adapter-sqlite",
  "netwatch-history",
  "netwatch-host-health",
+ "netwatch-probing",
  "netwatch-shared",
  "rust-embed",
  "serde",

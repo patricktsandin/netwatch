@@ -7,6 +7,8 @@
 //! - `GET /api/events?since_us=<µs>`: topology events, oldest first
 //! - `GET /api/targets`: every configured target's name
 //! - `GET /api/layers`: each layer's latest health report, by role key
+//! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
+//! - `GET /api/bindings`: every role's current identity and epoch, from Topology
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
@@ -33,7 +35,8 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
 pub use api::{
-    EventPoint, LayerReportView, LiveMessage, RoleSummary, RollupPoint, SamplePoint, TargetView,
+    BindingView, EventPoint, LayerReportView, LiveMessage, RoleSummary, RollupPoint, SamplePoint,
+    TargetView, status_text,
 };
 
 #[derive(rust_embed::RustEmbed)]
@@ -44,9 +47,19 @@ struct Spa;
 /// Asks the writer to write everything it has received, and resolves once it has.
 pub type Flush = std::sync::Arc<dyn Fn() -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
 
+/// The daemon's current view, kept up to date by the composition root.
+#[derive(Debug, Clone, Default)]
+pub struct Current {
+    /// Every role's status, by role key.
+    pub statuses: BTreeMap<String, String>,
+    /// Every role's binding, by role key.
+    pub bindings: BTreeMap<String, BindingView>,
+}
+
 #[derive(Clone)]
 struct AppState {
     flush: Flush,
+    current: watch::Receiver<Current>,
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
@@ -61,6 +74,7 @@ pub async fn serve(
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: Vec<TargetView>,
     flush: Flush,
+    current: watch::Receiver<Current>,
 ) -> std::io::Result<()> {
     let app = Router::new()
         .route("/api/roles", get(roles))
@@ -69,10 +83,13 @@ pub async fn serve(
         .route("/api/events", get(events))
         .route("/api/targets", get(target_list))
         .route("/api/layers", get(layer_reports))
+        .route("/api/status", get(statuses))
+        .route("/api/bindings", get(bindings))
         .route("/api/live", get(live_socket))
         .fallback(spa)
         .with_state(AppState {
             flush,
+            current,
             database,
             live,
             layers,
@@ -180,6 +197,14 @@ async fn events(
 
 async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {
     Json(state.targets.as_ref().clone())
+}
+
+async fn statuses(State(state): State<AppState>) -> Json<BTreeMap<String, String>> {
+    Json(state.current.borrow().statuses.clone())
+}
+
+async fn bindings(State(state): State<AppState>) -> Json<BTreeMap<String, BindingView>> {
+    Json(state.current.borrow().bindings.clone())
 }
 
 async fn layer_reports(State(state): State<AppState>) -> Json<BTreeMap<String, LayerReportView>> {

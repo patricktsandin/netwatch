@@ -1,5 +1,6 @@
 // The app shell: backfill, the live stream, and the layered stack of rows. All the
-// decisions live in pure modules (series, status, roles); this file only wires them
+// measurement decisions, statuses included, are the daemon's (ADR-0030); the pure
+// modules here (series, roles) only merge and present, and this file only wires them
 // to the DOM and the network.
 
 import "uplot/dist/uPlot.min.css";
@@ -14,13 +15,15 @@ import {
   parsePoints,
   parseRoles,
   parseRollups,
+  parseStatuses,
+  parseBindings,
   parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
-import type { LayerReport, Marker, Micros, Point, RoleKey } from "./model";
+import type { Binding, LayerReport, Marker, Micros, Point, RoleKey } from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
-import { pathAware, status, worse, type Status } from "./status";
+import type { Status } from "./model";
 
 /** The time ranges the UI offers: raw samples for the last hour, then the rollup
  *  tiers (ADR-0006). */
@@ -29,14 +32,11 @@ interface RangeSpec {
   readonly spanUs: number;
   readonly tier: "minute" | "hour" | null;
   readonly maxGapUs: number;
-  /** A row with nothing newer than this is `unknown`. Rollups appear a few minutes
-   *  after their interval starts, so the longer ranges allow more. */
-  readonly staleAfterUs: number;
 }
 const RANGES: Readonly<Record<Range, RangeSpec>> = {
-  hour: { spanUs: 3600e6, tier: null, maxGapUs: 15e6, staleAfterUs: 15e6 },
-  day: { spanUs: 24 * 3600e6, tier: "minute", maxGapUs: 2 * 60e6, staleAfterUs: 5 * 60e6 },
-  month: { spanUs: 30 * 24 * 3600e6, tier: "hour", maxGapUs: 2 * 3600e6, staleAfterUs: 3 * 3600e6 },
+  hour: { spanUs: 3600e6, tier: null, maxGapUs: 15e6 },
+  day: { spanUs: 24 * 3600e6, tier: "minute", maxGapUs: 2 * 60e6 },
+  month: { spanUs: 30 * 24 * 3600e6, tier: "hour", maxGapUs: 2 * 3600e6 },
 };
 let range: Range = "hour";
 
@@ -53,6 +53,8 @@ const rows = new Map<RoleKey, Row>();
 let markers: Marker[] = [];
 const layers = new Map<RoleKey, LayerReport>();
 let names: ReadonlyMap<string, string> = new Map();
+let statuses: ReadonlyMap<RoleKey, Status> = new Map();
+let bindings: ReadonlyMap<RoleKey, Binding> = new Map();
 let zoom: { min: number; max: number } | null = null;
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
@@ -125,28 +127,6 @@ function setZoom(min: number, max: number): void {
   if (reset !== null) reset.hidden = false;
 }
 
-/** The roles further along the same path: later hops toward the same target, and
- *  the target itself. */
-function downstreamOf(key: RoleKey): RoleKey[] {
-  const [kind, target, ttl] = key.split(":");
-  if (kind !== "hop" || target === undefined || ttl === undefined) return [];
-  return [...rows.keys()].filter((other) => {
-    const [k, t, n] = other.split(":");
-    return t === target && ((k === "hop" && Number(n) > Number(ttl)) || k === "target");
-  });
-}
-
-function ownStatus(row: Row): Status {
-  return status(row.points, nowMicros(), RANGES[range].staleAfterUs);
-}
-
-/** A layer row combines its probes, if any, with its health report (ADR-0008). */
-function layerStatus(key: RoleKey, row: Row): Status {
-  const report = layers.get(key);
-  if (report === undefined) return ownStatus(row);
-  return row.points.length === 0 ? report.status : worse(ownStatus(row), report.status);
-}
-
 function layerSummary(key: RoleKey): string {
   const report = layers.get(key);
   if (report === undefined) return "";
@@ -154,9 +134,7 @@ function layerSummary(key: RoleKey): string {
   const conntrack = report.conntrackFill === null ? "" : `conntrack ${report.conntrackFill.toFixed(1)}% full`;
   const clock = report.clockSynchronized === false ? "clock not synchronized" : "";
   const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
-  const disabled = markers
-    .filter((m) => m.kind === "source-disabled" && m.role === key)
-    .map((m) => `disabled: ${m.detail ?? "?"}`);
+  const disabled = report.disabled.map((d) => `disabled: ${d}`);
   return [cpu, conntrack, clock, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
 }
 
@@ -166,13 +144,8 @@ function render(row: Row, key: RoleKey): void {
   // from the earliest point of any row up to now.
   const window = zoom ?? sharedWindow();
   row.chart.setWindow(window.min, window.max);
-  const downstream = downstreamOf(key).flatMap((k) => {
-    const other = rows.get(k);
-    return other === undefined ? [] : [ownStatus(other)];
-  });
   row.plotEl.hidden = row.points.length === 0;
-  const own = layerStatus(key, row);
-  const s = pathAware(own, key.startsWith("hop:"), downstream);
+  const s: Status = statuses.get(key) ?? "unknown";
   row.statusEl.className = `status ${s}`;
   row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
   row.statusEl.title =
@@ -188,25 +161,20 @@ function render(row: Row, key: RoleKey): void {
   row.valueEl.textContent = [extra, latestValue].filter((s) => s !== "").join(" · ");
 }
 
-/** The current identity of each global role, from the latest unended epoch. */
+/** Shows Topology's current bindings: global roles in the header, and each hop's
+ *  router in its row's title. Nothing here is derived; the daemon says what holds. */
 function renderIdentities(): void {
   const el = document.getElementById("identities");
   if (el === null) return;
-  const open = new Map<string, Marker>();
-  for (const m of markers) {
-    if (m.role === null) continue;
-    if (m.kind === "epoch-started") open.set(m.role, m);
-    if (m.kind === "epoch-ended" && open.get(m.role)?.epoch === m.epoch) open.delete(m.role);
-  }
-  // Global roles go in the header; a hop's router goes in its own row's title.
   el.replaceChildren(
-    ...[...open.entries()]
+    ...[...bindings.entries()]
       .filter(([role]) => !role.startsWith("target") && !role.startsWith("hop"))
-      .map(([role, m]) => element("span", "identity", `${role}: ${m.detail ?? "?"} (epoch ${String(m.epoch)})`)),
+      .map(([role, b]) => element("span", "identity", `${role}: ${b.identity} (epoch ${String(b.epoch)})`)),
   );
   for (const [key, row] of rows) {
-    const identity = open.get(key)?.detail;
-    row.titleEl.textContent = key.startsWith("hop") && identity != null ? `${label(key, names)} · ${identity}` : label(key, names);
+    const binding = bindings.get(key);
+    row.titleEl.textContent =
+      key.startsWith("hop") && binding !== undefined ? `${label(key, names)} · ${binding.identity}` : label(key, names);
   }
 }
 
@@ -221,6 +189,8 @@ async function backfill(from: Micros): Promise<void> {
     render(addRow(key), key);
   }
   names = parseTargetNames(await fetchJson("/api/targets"));
+  statuses = parseStatuses(await fetchJson("/api/status"));
+  bindings = parseBindings(await fetchJson("/api/bindings"));
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);
@@ -272,6 +242,14 @@ function connect(): void {
         case "layer":
           layers.set(live.role, live.report);
           render(addRow(live.role), live.role);
+          break;
+        case "statuses":
+          statuses = live.statuses;
+          for (const [key, row] of rows) render(row, key);
+          break;
+        case "bindings":
+          bindings = live.bindings;
+          renderIdentities();
           break;
         case "event":
           markers.push(live.marker);

@@ -6,6 +6,8 @@
 use netwatch_adapter_sqlite::{StoredEvent, StoredSample};
 use netwatch_history::{Loss, Measurement, Sample};
 use netwatch_shared::uom::si::time::microsecond;
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -18,6 +20,31 @@ pub struct RoleSummary {
     /// When its latest sample was taken, in µs since the Unix epoch.
     #[ts(type = "number")]
     pub latest_us: i64,
+}
+
+/// A role's current identity and epoch, straight from the topology aggregate.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct BindingView {
+    /// The identity, for people: `eth0 (ifindex 5)`, `192.168.1.1`.
+    pub identity: String,
+    /// The epoch during which the role holds it.
+    #[ts(type = "number")]
+    pub epoch: u64,
+}
+
+/// A status, as the API spells it: `healthy`, `degraded`, `failing`, `unknown`, or
+/// `rate-limited`.
+pub fn status_text(health: netwatch_probing::Health) -> String {
+    use netwatch_probing::Health;
+    match health {
+        Health::Unknown => "unknown",
+        Health::Healthy => "healthy",
+        Health::RateLimited => "rate-limited",
+        Health::Degraded => "degraded",
+        Health::Failing => "failing",
+    }
+    .to_owned()
 }
 
 /// A configured target, for labeling its rows.
@@ -126,6 +153,16 @@ pub enum LiveMessage {
         /// The event.
         event: EventPoint,
     },
+    /// Every role's current status, graded by the daemon (ADR-0030).
+    Statuses {
+        /// Status by role key.
+        statuses: BTreeMap<String, String>,
+    },
+    /// Every role's current identity, from Topology.
+    Bindings {
+        /// Binding by role key.
+        bindings: BTreeMap<String, BindingView>,
+    },
     /// A layer's latest health report.
     Layer {
         /// The layer's role key: `kernel` or `nic`.
@@ -154,6 +191,8 @@ pub struct LayerReportView {
     /// The clock's estimated error in µs, if known.
     #[ts(type = "number | null")]
     pub clock_error_us: Option<i64>,
+    /// The layer's sources that are disabled right now, and why (ADR-0007).
+    pub disabled: Vec<String>,
 }
 
 /// One watched counter's growth.
@@ -207,6 +246,7 @@ impl From<&netwatch_host_health::LayerReport> for LayerReportView {
             conntrack_fill: report.conntrack_fill,
             clock_synchronized: report.clock.map(|(synchronized, _)| synchronized),
             clock_error_us: report.clock.map(|(_, error)| error),
+            disabled: Vec::new(),
         }
     }
 }

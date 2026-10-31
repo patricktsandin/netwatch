@@ -33,4 +33,8 @@ clock_synchronized: boolean | null,
 /**
  * The clock's estimated error in µs, if known.
  */
-clock_error_us: number | null, };
+clock_error_us: number | null, 
+/**
+ * The layer's sources that are disabled right now, and why (ADR-0007).
+ */
+disabled: Array<string>, };

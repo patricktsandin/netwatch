@@ -112,6 +112,12 @@ impl Topology {
         self.bindings.get(role)
     }
 
+    /// Every bound role and its binding, in role order. This is the current
+    /// identity of everything netwatch measures.
+    pub fn bindings(&self) -> impl Iterator<Item = (&Role, &Binding)> {
+        self.bindings.iter()
+    }
+
     /// Whether the view can currently be trusted to match the kernel.
     pub fn is_synchronized(&self) -> bool {
         matches!(self.sync, Sync::Synchronized)

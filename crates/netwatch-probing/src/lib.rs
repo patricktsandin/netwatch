@@ -30,9 +30,11 @@
 //! [`ProbeStream::reply`] (ADR-0012).
 
 mod config;
+pub mod health;
 mod stream;
 
 pub use config::{InvalidStreamConfig, SequenceSpace, StreamConfig};
+pub use health::Health;
 pub use stream::{
     Output, ProbeIndex, ProbeOutcome, ProbeSequence, ProbeStream, Reply, ReplyKind, SendFailure,
     UnreachableCode,

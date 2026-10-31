@@ -67,6 +67,10 @@ Not yet built, roughly in priority order:
     optional at runtime: if it's missing, disable the dependent source and record an
     event. Never fail to start.
   - Never add a capability without an ADR.
+- **The daemon decides, the UI displays** ([0030](docs/adr/0030-the-daemon-decides-the-ui-displays.md)):
+  - Statuses, interpretations (such as rate limiting), current identities, and
+    disabled sources come from the daemon.
+  - The frontend only merges transport and draws.
 - **Scope** ([0010](docs/adr/0010-v1-scope.md)): don't build toward alerting, Prometheus
   export, remote access, multi-host, or firewall monitoring.
 

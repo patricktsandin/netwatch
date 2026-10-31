@@ -7,6 +7,7 @@ import type { LayerReportView } from "./generated/LayerReportView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
 import type {
+  Binding,
   Epoch,
   EventKind,
   LayerReport,
@@ -16,6 +17,7 @@ import type {
   Micros,
   Point,
   RoleKey,
+  Status,
 } from "../model";
 
 export class ParseError extends Error {
@@ -159,6 +161,28 @@ export function parseRollups(value: unknown): readonly Point[] {
   });
 }
 
+const ROLE_STATUSES: readonly Status[] = ["healthy", "degraded", "failing", "unknown", "rate-limited"];
+
+/** Every role's status, from `/api/status` or the live stream. */
+export function parseStatuses(value: unknown): ReadonlyMap<RoleKey, Status> {
+  const all = record<Record<string, unknown>>(value, "statuses");
+  return new Map(
+    Object.entries(all).map(([key, status]) => [roleKey(key, "statuses key"), oneOf(status, ROLE_STATUSES, "status")]),
+  );
+}
+
+/** Every role's binding, from `/api/bindings` or the live stream. */
+export function parseBindings(value: unknown): ReadonlyMap<RoleKey, Binding> {
+  const all = record<Record<string, unknown>>(value, "bindings");
+  return new Map(
+    Object.entries(all).map(([key, raw]) => {
+      const b = record<{ identity: string; epoch: number }>(raw, "binding");
+      if (typeof b.identity !== "string") throw new ParseError("binding.identity: expected a string");
+      return [roleKey(key, "bindings key"), { identity: b.identity, epoch: epoch(b.epoch, "binding.epoch") }];
+    }),
+  );
+}
+
 /** Every layer's latest report by role key, from `/api/layers`. */
 export function parseLayers(value: unknown): ReadonlyMap<RoleKey, LayerReport> {
   const all = record<Record<string, unknown>>(value, "layers");
@@ -206,11 +230,23 @@ export function parseLayerReport(value: unknown): LayerReport {
     cpuPressure: cpu,
     conntrackFill: optionalNumber(r.conntrack_fill, "layer.conntrack_fill"),
     clockSynchronized: optionalBoolean(r.clock_synchronized, "layer.clock_synchronized"),
+    disabled: array(r.disabled, "layer.disabled").map((d) => {
+      if (typeof d !== "string") throw new ParseError("layer.disabled: expected strings");
+      return d;
+    }),
   };
 }
 
 export function parseLive(value: unknown): Live {
-  const m = record<{ type: unknown; role: unknown; point: unknown; event: unknown; report: unknown }>(
+  const m = record<{
+    type: unknown;
+    role: unknown;
+    point: unknown;
+    event: unknown;
+    report: unknown;
+    statuses: unknown;
+    bindings: unknown;
+  }>(
     value,
     "live",
   );
@@ -219,6 +255,10 @@ export function parseLive(value: unknown): Live {
       return { type: "sample", role: roleKey(m.role, "live.role"), point: parsePoint(m.point) };
     case "event":
       return { type: "event", marker: parseMarker(m.event) };
+    case "statuses":
+      return { type: "statuses", statuses: parseStatuses(m.statuses) };
+    case "bindings":
+      return { type: "bindings", bindings: parseBindings(m.bindings) };
     case "layer":
       return { type: "layer", role: roleKey(m.role, "live.role"), report: parseLayerReport(m.report) };
     default:
