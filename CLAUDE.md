@@ -142,6 +142,6 @@ cd web && npm run dev                              # proxies /api and /ws to the
 cd web && npx tsc --noEmit && npx vitest run && npx eslint .
 ./scripts/check-specs.sh                           # every spec: typecheck, simulate, exhaustive TLC (~1 min)
 quint run specs/<f>.qnt --invariant=<name> --verbosity=3   # print a counterexample trace
-cargo kani
+cargo kani                                         # all harnesses, ~3 min
 cargo verus verify -p netwatch-verified        # Verus proofs; format verified code with `cargo verus fmt`
 ```

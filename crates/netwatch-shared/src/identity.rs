@@ -43,8 +43,15 @@ impl InterfaceIndex {
 /// not `.` or `..`, and containing no `/`, `:`, NUL, or byte that the kernel's
 /// `isspace` accepts. These are exactly the rules of the kernel's `dev_valid_name`.
 /// In addition, netwatch requires valid UTF-8, so that every name can be displayed.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct InterfaceName(String);
+///
+/// Stored inline, so a name is `Copy` and never allocates. The bytes after `len` are
+/// always zero. Because a name can't contain NUL, the derived ordering is exactly
+/// the lexicographic order of the names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InterfaceName {
+    bytes: [u8; InterfaceName::MAX_LEN],
+    len: u8,
+}
 
 /// Why a byte string isn't a valid interface name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -86,13 +93,23 @@ impl InterfaceName {
         if let Some(&b) = bytes.iter().find(|&&b| is_forbidden_in_name(b)) {
             return Err(InvalidInterfaceName::ForbiddenByte(b));
         }
-        let name = std::str::from_utf8(bytes).map_err(|_| InvalidInterfaceName::NotUtf8)?;
-        Ok(Self(name.to_owned()))
+        std::str::from_utf8(bytes).map_err(|_| InvalidInterfaceName::NotUtf8)?;
+        let mut stored = [0; Self::MAX_LEN];
+        stored[..bytes.len()].copy_from_slice(bytes);
+        Ok(Self {
+            bytes: stored,
+            len: u8::try_from(bytes.len()).expect("checked above: at most MAX_LEN bytes"),
+        })
+    }
+
+    /// The name's bytes, exactly as the kernel reported them.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
     }
 
     /// The name as text.
     pub fn as_str(&self) -> &str {
-        &self.0
+        std::str::from_utf8(self.as_bytes()).expect("invariant: validated as UTF-8 by parse")
     }
 }
 
@@ -108,7 +125,7 @@ fn is_forbidden_in_name(b: u8) -> bool {
 
 impl fmt::Display for InterfaceName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
@@ -130,5 +147,64 @@ impl IdentityEpoch {
     /// The epoch number, as persisted.
     pub const fn get(self) -> NonZeroU64 {
         self.0
+    }
+}
+
+/// Kani proof harnesses (ADR-0016). `InterfaceName::parse` handles untrusted bytes
+/// from the kernel, so it is checked against every possible input, not just against
+/// examples. The bound comes from CBMC's cost of reasoning about UTF-8 validation,
+/// which roughly doubles with every 2 symbolic bytes:
+/// - every input of up to `EXHAUSTIVE_LEN` bytes, covering every rule and every UTF-8
+///   sequence length (about 2 minutes)
+/// - every input longer than `MAX_LEN` bytes is rejected as too long, before any other
+///   check runs
+///
+/// No rule in `parse` depends on the length, except the empty and too-long checks,
+/// and both of those are covered exactly.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// For every input: `parse` never panics. Whatever it accepts satisfies every
+    /// rule of `dev_valid_name` and keeps the bytes exactly as given. Whatever it
+    /// rejects, it rejects for a reason that is true of the input.
+    const EXHAUSTIVE_LEN: usize = 8;
+
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn parse_accepts_exactly_valid_names() {
+        let buffer: [u8; EXHAUSTIVE_LEN] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= buffer.len());
+        let bytes = &buffer[..len];
+
+        match InterfaceName::parse(bytes) {
+            Ok(name) => {
+                let accepted = name.as_bytes();
+                assert_eq!(accepted, bytes);
+                assert!(!accepted.is_empty() && accepted.len() <= InterfaceName::MAX_LEN);
+                assert!(accepted != b"." && accepted != b"..");
+                assert!(accepted.iter().all(|&b| !is_forbidden_in_name(b)));
+            }
+            Err(InvalidInterfaceName::Empty) => assert!(bytes.is_empty()),
+            Err(InvalidInterfaceName::TooLong(n)) => {
+                assert!(n == bytes.len() && n > InterfaceName::MAX_LEN);
+            }
+            Err(InvalidInterfaceName::Dot) => assert!(bytes == b"." || bytes == b".."),
+            Err(InvalidInterfaceName::ForbiddenByte(b)) => {
+                assert!(is_forbidden_in_name(b) && bytes.contains(&b));
+            }
+            Err(InvalidInterfaceName::NotUtf8) => assert!(std::str::from_utf8(bytes).is_err()),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn overlong_input_is_rejected_whatever_its_contents() {
+        let buffer: [u8; InterfaceName::MAX_LEN + 1] = kani::any();
+        assert_eq!(
+            InterfaceName::parse(&buffer),
+            Err(InvalidInterfaceName::TooLong(InterfaceName::MAX_LEN + 1))
+        );
     }
 }

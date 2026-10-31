@@ -33,7 +33,7 @@ serde = { version = "1", features = ["derive"] }
 [workspace.lints.rust]
 missing_docs = "warn"            # every public item has an interface comment (ADR-0011)
 unsafe_code = "deny"             # adapters that need it allow it locally, with a SAFETY comment
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_only)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_only)", "cfg(kani)"] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"             # ADR-0015; tests are exempt via clippy.toml
