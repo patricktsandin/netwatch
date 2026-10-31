@@ -298,3 +298,41 @@ fn a_resumed_view_continues_after_the_last_stored_epoch() {
 
     assert_eq!(outputs, vec![started(42, Role::Nic, eth0())]);
 }
+
+fn hop() -> Role {
+    Role::Hop {
+        target: netwatch_shared::TargetId::new(1),
+        ttl: netwatch_shared::HopTtl::new(std::num::NonZeroU8::new(1).unwrap()),
+    }
+}
+
+fn router() -> Identity {
+    Identity::Address("192.168.1.1".parse().unwrap())
+}
+
+#[test]
+fn hop_identified_by_probing_takes_effect_even_while_desynchronized() {
+    let mut topology = Topology::new();
+    topology.observe(Observation::NotificationsLost);
+
+    let outputs = topology.observe(Observation::ProbeIdentified {
+        role: hop(),
+        identity: router(),
+    });
+
+    assert_eq!(outputs, vec![started(1, hop(), router())]);
+}
+
+#[test]
+fn resync_leaves_roles_identified_by_probing_alone() {
+    let mut topology = Topology::new();
+    topology.observe(Observation::ProbeIdentified {
+        role: hop(),
+        identity: router(),
+    });
+    topology.observe(Observation::NotificationsLost);
+
+    topology.observe(snapshot(1, []));
+
+    assert_eq!(topology.binding(&hop()).map(|b| b.epoch), Some(epoch(1)));
+}

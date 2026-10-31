@@ -5,15 +5,16 @@
 //!
 //! - [`icmp`] encodes echo requests and parses echo replies. It is pure, and proven
 //!   with Kani never to panic, for every possible input.
-//! - [`EchoSocket`] is an unprivileged ICMP or ICMPv6 datagram socket, pinned to one
-//!   interface with `SO_BINDTOIFINDEX` (ADR-0024), so that its probes can't take any
-//!   other path.
+//! - [`ProbeSocket`] is an unprivileged ICMP or ICMPv6 datagram socket, pinned to one
+//!   interface with `SO_BINDTOIFINDEX` (ADR-0024), optionally with a limited TTL for
+//!   hop probes. ICMP errors arrive through `IP_RECVERR`, and [`errqueue`] parses
+//!   their control messages, which Kani proves panic-free.
 //!
-//! Not yet implemented: ICMP errors through `IP_RECVERR` (which would give the
-//! `Unreachable` outcome and hop probes), raw-socket fallback, and kernel receive
-//! timestamps. Every receive timestamp is currently taken in userspace.
+//! Not yet implemented: the raw-socket fallback and kernel receive timestamps. Every
+//! receive timestamp is currently taken in userspace.
 
+pub mod errqueue;
 pub mod icmp;
 mod socket;
 
-pub use socket::EchoSocket;
+pub use socket::{ProbeSocket, Received};

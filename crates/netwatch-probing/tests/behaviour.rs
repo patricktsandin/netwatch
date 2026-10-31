@@ -225,3 +225,23 @@ fn retired_stream_stops_sending_but_still_resolves_what_is_in_flight() {
     );
     assert!(stream.is_idle());
 }
+
+#[test]
+fn time_exceeded_answers_a_hop_probe() {
+    let mut stream = icmp_stream();
+    stream.tick(at(0));
+    let hop = Reply {
+        kind: ReplyKind::TimeExceeded,
+        ..echo(0)
+    };
+
+    assert_eq!(
+        stream.reply(hop, at(2)),
+        vec![Output::Resolved {
+            index: ProbeIndex::new(0),
+            outcome: ProbeOutcome::Answered {
+                rtt: Time::new::<millisecond>(2.0)
+            },
+        }]
+    );
+}

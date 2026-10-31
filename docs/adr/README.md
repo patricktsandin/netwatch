@@ -30,3 +30,4 @@ to "Superseded".
 | [0022](0022-global-roles-from-reference-egress.md) | Global roles follow the egress path to a reference destination | Accepted |
 | [0023](0023-probe-matching-tokens-and-sequence-window.md) | Probe matching: tokens where possible, a sequence window otherwise | Accepted |
 | [0024](0024-echo-probes-over-pinned-ping-sockets.md) | Echo probes over pinned ping sockets | Accepted |
+| [0025](0025-hops-identified-by-probing.md) | Hops are identified by Probing, through ICMP errors | Accepted |

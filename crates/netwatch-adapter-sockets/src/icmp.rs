@@ -68,6 +68,33 @@ pub fn parse_echo_reply(family: Family, packet: &[u8]) -> Option<Reply> {
     })
 }
 
+/// Parses one of *our own* echo requests, as the error queue returns it alongside
+/// an ICMP error: the sequence number and token of the probe the error answers.
+pub fn parse_own_request(family: Family, packet: &[u8]) -> Option<(ProbeSequence, ProbeIndex)> {
+    let header: &[u8; REQUEST_LEN] = packet.get(..REQUEST_LEN)?.try_into().ok()?;
+    if header[0] != family.request_type() {
+        return None;
+    }
+    Some((
+        ProbeSequence::new(u16::from_be_bytes([header[6], header[7]])),
+        ProbeIndex::new(u64::from_be_bytes([
+            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+            header[15],
+        ])),
+    ))
+}
+
+/// What an ICMP error means for a probe.
+pub fn error_kind(family: Family, icmp_type: u8, icmp_code: u8) -> Option<ReplyKind> {
+    match (family, icmp_type) {
+        (Family::V4, 11) | (Family::V6, 3) => Some(ReplyKind::TimeExceeded),
+        (Family::V4, 3) | (Family::V6, 1) => Some(ReplyKind::Unreachable(
+            netwatch_probing::UnreachableCode(icmp_code),
+        )),
+        _ => None,
+    }
+}
+
 /// Kani proof harnesses (ADR-0016). Every reply parser of untrusted bytes is checked
 /// against every possible input.
 #[cfg(kani)]

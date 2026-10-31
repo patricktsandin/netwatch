@@ -67,6 +67,12 @@ impl HopTtl {
 }
 
 impl Role {
+    /// Whether the role's identity comes from the kernel's topology (netlink), as
+    /// opposed to being learned by Probing, as hops are.
+    pub fn is_global(&self) -> bool {
+        matches!(self, Role::Nic | Role::Tunnel | Role::LocalInterface)
+    }
+
     /// A stable text key, used wherever a role crosses a boundary as text: database
     /// rows, API paths, the UI. `nic`, `tunnel`, `local-interface`, `hop:<target>:<ttl>`,
     /// `target:<id>`.

@@ -76,6 +76,9 @@ pub enum ReplyKind {
     Echo,
     /// A destination-unreachable error.
     Unreachable(UnreachableCode),
+    /// A time-exceeded error: the answer to a hop probe, from the router at that
+    /// hop.
+    TimeExceeded,
 }
 
 /// The one outcome every probe gets. These are never collapsed into a missing value.
@@ -255,7 +258,7 @@ impl ProbeStream {
             return Vec::new();
         };
         let outcome = match reply.kind {
-            ReplyKind::Echo => ProbeOutcome::Answered {
+            ReplyKind::Echo | ReplyKind::TimeExceeded => ProbeOutcome::Answered {
                 rtt: now.since(p.sent_at),
             },
             ReplyKind::Unreachable(code) => ProbeOutcome::Unreachable { code },

@@ -17,11 +17,18 @@ use netwatch_history::{Measurement, Sample};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
-use netwatch_shared::{IdentityEpoch, Role, TargetId};
+use netwatch_shared::{HopTtl, Identity, IdentityEpoch, Role, TargetId};
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::clock::Clock;
+
+/// The hops probed toward every target (ADR-0002).
+const HOPS: [std::num::NonZeroU8; 3] = [
+    std::num::NonZeroU8::MIN,
+    std::num::NonZeroU8::MIN.saturating_add(1),
+    std::num::NonZeroU8::MIN.saturating_add(2),
+];
 
 /// The default echo targets (ADR-0009). Configuration replaces these later.
 const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 3] = [
@@ -69,23 +76,39 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (pin_tx, pin) = watch::channel::<Option<Binding>>(None);
-    let (samples_tx, mut samples) = mpsc::channel::<Sample>(1024);
-    // Targets every 5 s with a 2 s timeout (ADR-0009). Valid for ICMP's sequence space.
+    let (resolutions_tx, mut resolutions) = mpsc::channel::<probe::Resolution>(1024);
+    // Targets every 5 s with a 2 s timeout; hops every 1 s with a 0.9 s timeout
+    // (ADR-0009). Both are valid for ICMP's sequence space.
     let echo = StreamConfig::new(
         Time::new::<second>(5.0),
         Time::new::<second>(2.0),
         SequenceSpace::ICMP,
     )
     .context("echo stream configuration")?;
+    let hop = StreamConfig::new(
+        Time::new::<second>(1.0),
+        Time::new::<second>(0.9),
+        SequenceSpace::ICMP,
+    )
+    .context("hop stream configuration")?;
     for (id, destination) in DEFAULT_ECHO_TARGETS {
-        tokio::spawn(probe::run_target(
-            Role::Target(TargetId::new(id)),
-            destination,
-            echo,
-            pin.clone(),
-            samples_tx.clone(),
-            clock,
-        ));
+        let target = TargetId::new(id);
+        let mut streams = vec![(Role::Target(target), None, echo)];
+        for ttl in HOPS {
+            let ttl = HopTtl::new(ttl);
+            streams.push((Role::Hop { target, ttl }, Some(ttl), hop));
+        }
+        for (role, ttl, config) in streams {
+            tokio::spawn(probe::run_role(
+                role,
+                destination,
+                ttl,
+                config,
+                pin.clone(),
+                resolutions_tx.clone(),
+                clock,
+            ));
+        }
     }
 
     loop {
@@ -106,7 +129,12 @@ async fn main() -> anyhow::Result<()> {
                     changed
                 });
             }
-            Some(sample) = samples.recv() => {
+            Some(resolution) = resolutions.recv() => {
+                let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
+                    handle(output, &observations_tx, &writes, &live, clock);
+                }) else {
+                    continue;
+                };
                 log_sample(&sample);
                 let _ = live.send(LiveMessage::from(&sample));
                 let _ = writes.send(persist::Write::Sample(sample));
@@ -154,6 +182,42 @@ fn handle(
             });
         }
     }
+}
+
+/// Turns a probe's resolution into a sample, attributed to the right epoch
+/// (ADR-0020, ADR-0025):
+/// - a target's sample carries its pin's epoch: the egress path it traveled
+/// - a hop's identity is whoever answered, so Topology learns about it first, and
+///   the sample carries the hop's resulting epoch
+///
+/// A hop that has never answered has no identity to attribute a loss to, so that
+/// loss isn't recorded as a sample.
+fn attribute(
+    resolution: probe::Resolution,
+    topology: &mut Topology,
+    clock: Clock,
+    mut emit: impl FnMut(Output),
+) -> Option<Sample> {
+    let epoch = match resolution.role {
+        Role::Hop { .. } => {
+            if let Some(responder) = resolution.responder {
+                for output in topology.observe(Observation::ProbeIdentified {
+                    role: resolution.role.clone(),
+                    identity: Identity::Address(responder),
+                }) {
+                    emit(output);
+                }
+            }
+            topology.binding(&resolution.role)?.epoch
+        }
+        _ => resolution.pin.epoch,
+    };
+    Some(Sample {
+        role: resolution.role,
+        epoch,
+        at: clock.wall_now(),
+        measurement: resolution.measurement,
+    })
 }
 
 fn log_sample(sample: &Sample) {

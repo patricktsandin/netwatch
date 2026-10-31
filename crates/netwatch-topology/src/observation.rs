@@ -23,6 +23,15 @@ pub enum Observation {
         /// The role that is now unbound.
         role: Role,
     },
+    /// Probing identified `role`: the address that answered a hop probe (ADR-0025).
+    /// This doesn't come from the kernel's notifications, so it is never buffered and
+    /// never affected by a resync. It always takes effect immediately.
+    ProbeIdentified {
+        /// The role that was identified.
+        role: Role,
+        /// The identity that answered for it.
+        identity: Identity,
+    },
     /// Notifications were lost (`ENOBUFS`), and the adapter has **already drained**
     /// its socket, discarding everything that was queued on it. Reporting this
     /// before the drain finishes breaks convergence (ADR-0021).
@@ -36,7 +45,8 @@ pub enum Observation {
 pub struct Snapshot {
     /// The generation of the [`Command::Resync`](crate::Command::Resync) this answers.
     pub generation: ResyncGeneration,
-    /// Every bound role. A role that is missing from the map is unbound.
+    /// Every bound global role (`Role::is_global`). A global role that is missing
+    /// from the map is unbound. Other roles are ignored.
     pub bindings: BTreeMap<Role, Identity>,
 }
 

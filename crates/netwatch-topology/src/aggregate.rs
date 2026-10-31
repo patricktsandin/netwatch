@@ -96,6 +96,9 @@ impl Topology {
             Observation::RoleVanished { role } => {
                 self.change(RoleChange::Vanished { role }, &mut outputs);
             }
+            Observation::ProbeIdentified { role, identity } => {
+                self.bind(role, identity, &mut outputs);
+            }
             Observation::NotificationsLost => self.lose(&mut outputs),
             Observation::SnapshotReceived(snapshot) => self.resync(snapshot, &mut outputs),
         }
@@ -155,6 +158,7 @@ impl Topology {
             return;
         }
         let mut target = snapshot.bindings;
+        target.retain(|role, _| role.is_global());
         for change in mem::take(buffered) {
             match change {
                 RoleChange::Bound { role, identity } => {
@@ -165,7 +169,15 @@ impl Topology {
                 }
             }
         }
-        let affected: BTreeSet<Role> = self.bindings.keys().chain(target.keys()).cloned().collect();
+        // Only the global roles come from the kernel, so only they are reconciled.
+        // Roles identified by Probing are left alone (ADR-0025).
+        let affected: BTreeSet<Role> = self
+            .bindings
+            .keys()
+            .chain(target.keys())
+            .filter(|role| role.is_global())
+            .cloned()
+            .collect();
         for role in affected {
             match target.remove(&role) {
                 Some(identity) => self.bind(role, identity, outputs),
