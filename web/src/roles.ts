@@ -27,8 +27,10 @@ export function compareRoles(a: RoleKey, b: RoleKey): number {
   return 0;
 }
 
-/** A role's label, for people. */
-export function label(key: RoleKey): string {
+/** A role's label, for people. `names` maps target role keys (`target:1`) to their
+ *  configured names; targets without one are numbered. */
+export function label(key: RoleKey, names: ReadonlyMap<string, string> = new Map()): string {
+  const target = (id: number | undefined): string => names.get(`target:${String(id)}`) ?? `target ${String(id)}`;
   const l = layer(key);
   const [first, second] = numbers(key);
   switch (l) {
@@ -41,8 +43,8 @@ export function label(key: RoleKey): string {
     case "local-interface":
       return "Local interface";
     case "hop":
-      return `Hop ${String(second)} → target ${String(first)}`;
+      return `Hop ${String(second)} → ${target(first)}`;
     case "target":
-      return `Target ${String(first)}`;
+      return names.get(key) ?? `Target ${String(first)}`;
   }
 }

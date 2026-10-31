@@ -14,7 +14,7 @@ the ADRs.
 Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
 - **Topology:** NIC, tunnel, and local interface followed via rtnetlink, with
   resync after `ENOBUFS`. Epochs persist across restarts.
-- **Probing:** ICMP echo to targets every 5 s. Hops 1–3 per target every 1 s via
+- **Probing:** ICMP echo and DNS (`. IN NS`) to targets every 5 s. Hops 1–3 per target every 1 s via
   `IP_RECVERR`, with hop 1 shared across targets. Loopback baseline every 1 s.
 - **Host health:** snmp/netstat/softnet counters and PSI, graded every 1 s.
 - **History:** raw samples in SQLite with 7-day pruning.
@@ -22,7 +22,7 @@ Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
   hop status.
 
 Not yet built, roughly in priority order:
-- DNS and HTTPS probes
+- HTTPS probes, and DNS through the system resolver
 - IPv6 default targets, and IPv6 egress for the global roles
 - NIC counters (`IFLA_STATS64`, ethtool), Wi-Fi (nl80211), cellular (ModemManager)
 - 1m/1h rollups with the verified merge algebra

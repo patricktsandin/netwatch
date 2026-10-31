@@ -62,14 +62,7 @@ impl ProbeSocket {
         }
         enable_recverr(&socket, family)?;
         socket.set_nonblocking(true)?;
-        // SAFETY: the `AsyncFd` takes ownership of the `Socket`, and nothing else holds
-        // its descriptor, so the descriptor stays open and refers to the same socket
-        // for as long as the `AsyncFd` exists, which is all `register` requires.
-        #[allow(unsafe_code)]
-        let socket = unsafe {
-            AsyncFd::register_with_interest(socket, Interest::READABLE | Interest::ERROR)
-        }
-        .map_err(io::Error::from)?;
+        let socket = register(socket, Interest::READABLE | Interest::ERROR)?;
         Ok(Self {
             socket,
             destination: SocketAddr::new(destination, 0),
@@ -81,19 +74,11 @@ impl ProbeSocket {
     /// [`SendFailure`], never as an error: a failed send is an outcome (ADR-0015).
     pub fn send(&self, sequence: ProbeSequence, token: ProbeIndex) -> Result<(), SendFailure> {
         let packet = icmp::echo_request(self.family, sequence, token);
-        match self
-            .socket
+        self.socket
             .get_ref()
             .send_to(&packet, &self.destination.into())
-        {
-            Ok(_) => Ok(()),
-            Err(error) => Err(match error.raw_os_error() {
-                Some(libc::ENODEV | libc::ENXIO) => SendFailure::InterfaceGone,
-                Some(libc::ENETUNREACH | libc::EHOSTUNREACH) => SendFailure::NoRoute,
-                Some(errno) => SendFailure::Other(errno),
-                None => SendFailure::Other(0),
-            }),
-        }
+            .map(drop)
+            .map_err(send_failure)
     }
 
     /// Waits for the next reply or ICMP error that answers one of our probes.
@@ -161,6 +146,25 @@ impl ProbeSocket {
             }),
         )
     }
+}
+
+/// The domain's reason for a failed send (ADR-0015: a failed send is an outcome).
+pub(crate) fn send_failure(error: io::Error) -> SendFailure {
+    match error.raw_os_error() {
+        Some(libc::ENODEV | libc::ENXIO) => SendFailure::InterfaceGone,
+        Some(libc::ENETUNREACH | libc::EHOSTUNREACH) => SendFailure::NoRoute,
+        Some(errno) => SendFailure::Other(errno),
+        None => SendFailure::Other(0),
+    }
+}
+
+/// Wraps a socket for readiness notifications.
+pub(crate) fn register(socket: Socket, interest: Interest) -> io::Result<AsyncFd<Socket>> {
+    // SAFETY: the `AsyncFd` takes ownership of the `Socket`, and nothing else holds
+    // its descriptor, so the descriptor stays open and refers to the same socket
+    // for as long as the `AsyncFd` exists, which is all `register` requires.
+    #[allow(unsafe_code)]
+    unsafe { AsyncFd::register_with_interest(socket, interest) }.map_err(io::Error::from)
 }
 
 /// The first `len` bytes of a buffer the kernel has just filled.

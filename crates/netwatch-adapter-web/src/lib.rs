@@ -4,6 +4,7 @@
 //! - `GET /api/roles`: every role that has samples
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
 //! - `GET /api/events?since_us=<µs>`: topology events, oldest first
+//! - `GET /api/targets`: every configured target's name
 //! - `GET /api/kernel`: the kernel layer's latest report
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - everything else: the SPA from `web/dist`, embedded in release builds
@@ -27,7 +28,7 @@ use netwatch_shared::{Role, WallTime};
 use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
-pub use api::{EventPoint, KernelReportView, LiveMessage, RoleSummary, SamplePoint};
+pub use api::{EventPoint, KernelReportView, LiveMessage, RoleSummary, SamplePoint, TargetView};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -39,6 +40,7 @@ struct AppState {
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
     kernel: watch::Receiver<Option<KernelReportView>>,
+    targets: std::sync::Arc<Vec<TargetView>>,
 }
 
 /// Serves the API and the SPA on `address` until the process ends.
@@ -47,11 +49,13 @@ pub async fn serve(
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
     kernel: watch::Receiver<Option<KernelReportView>>,
+    targets: Vec<TargetView>,
 ) -> std::io::Result<()> {
     let app = Router::new()
         .route("/api/roles", get(roles))
         .route("/api/samples", get(samples))
         .route("/api/events", get(events))
+        .route("/api/targets", get(target_list))
         .route("/api/kernel", get(kernel_report))
         .route("/api/live", get(live_socket))
         .fallback(spa)
@@ -59,6 +63,7 @@ pub async fn serve(
             database,
             live,
             kernel,
+            targets: std::sync::Arc::new(targets),
         });
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "serving the UI");
@@ -128,6 +133,10 @@ async fn events(
     let since = WallTime::from_unix_micros(query.since_us);
     let events = read(&state, move |store| store.events(since)).await?;
     Ok(Json(events.into_iter().map(EventPoint::from).collect()))
+}
+
+async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {
+    Json(state.targets.as_ref().clone())
 }
 
 async fn kernel_report(State(state): State<AppState>) -> Json<Option<KernelReportView>> {

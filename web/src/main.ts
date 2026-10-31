@@ -14,6 +14,7 @@ import {
   parseMicros,
   parsePoints,
   parseRoles,
+  parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
 import type { KernelReport, Marker, Micros, Point, RoleKey } from "./model";
@@ -35,6 +36,7 @@ interface Row {
 const rows = new Map<RoleKey, Row>();
 let markers: Marker[] = [];
 let kernel: KernelReport | null = null;
+let names: ReadonlyMap<string, string> = new Map();
 let zoom: { min: number; max: number } | null = null;
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
@@ -62,7 +64,7 @@ function addRow(key: RoleKey): Row {
   const head = element("header", "row-head");
   const statusEl = element("span", "status unknown", "unknown");
   const valueEl = element("span", "value");
-  const titleEl = element("h2", "row-title", label(key));
+  const titleEl = element("h2", "row-title", label(key, names));
   head.append(titleEl, statusEl, valueEl);
   const plotEl = element("div", "plot");
   rowEl.append(head, plotEl);
@@ -91,6 +93,12 @@ function addRow(key: RoleKey): Row {
   };
   rows.set(key, row);
   return row;
+}
+
+function sharedWindow(): { min: number; max: number } {
+  const firsts = [...rows.values()].flatMap((r) => (r.points[0] === undefined ? [] : [r.points[0].at]));
+  const now = nowMicros() / 1e6;
+  return { min: firsts.length > 0 ? Math.min(...firsts) / 1e6 : now - 60, max: now };
 }
 
 function setZoom(min: number, max: number): void {
@@ -129,7 +137,10 @@ function kernelSummary(): string {
 
 function render(row: Row, key: RoleKey): void {
   row.chart.update(row.points);
-  if (zoom !== null) row.chart.setWindow(zoom.min, zoom.max);
+  // Every row shares one time axis (ADR-0005): the zoom if there is one, otherwise
+  // from the earliest point of any row up to now.
+  const window = zoom ?? sharedWindow();
+  row.chart.setWindow(window.min, window.max);
   const downstream = downstreamOf(key).flatMap((k) => {
     const other = rows.get(k);
     return other === undefined ? [] : [ownStatus(other)];
@@ -169,7 +180,7 @@ function renderIdentities(): void {
   );
   for (const [key, row] of rows) {
     const identity = open.get(key)?.detail;
-    row.titleEl.textContent = key.startsWith("hop") && identity != null ? `${label(key)} · ${identity}` : label(key);
+    row.titleEl.textContent = key.startsWith("hop") && identity != null ? `${label(key, names)} · ${identity}` : label(key, names);
   }
 }
 
@@ -180,6 +191,7 @@ async function backfill(from: Micros): Promise<void> {
   ]);
   markers = markers.concat(events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)));
   kernel = parseKernel(await fetchJson("/api/kernel"));
+  names = parseTargetNames(await fetchJson("/api/targets"));
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);

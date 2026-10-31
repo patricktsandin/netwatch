@@ -42,6 +42,7 @@ fn every_kind_of_measurement_round_trips() {
         Measurement::RoundTrip(Time::new::<microsecond>(3_688.0)),
         Measurement::Lost(Loss::TimedOut),
         Measurement::Lost(Loss::Unreachable(3)),
+        Measurement::Lost(Loss::Refused(2)),
         Measurement::Lost(Loss::SendFailed),
     ];
     let samples: Vec<Sample> = (0..)
@@ -103,6 +104,35 @@ fn epochs_are_tracked_from_their_events() {
         ["epoch-started", "epoch-ended"]
     );
     assert_eq!(events[0].detail.as_deref(), Some("eth0 (ifindex 5)"));
+}
+
+#[test]
+fn a_version_one_database_migrates_without_losing_samples() {
+    let path = fresh("migrate-from-1");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/0001-initial.sql"))
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO samples (role, epoch, at_us, rtt_us, loss, unreachable_code)
+                 VALUES ('target:1', 1, 5, NULL, 'unreachable', 3);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+    }
+
+    let store = Store::open(&path).unwrap();
+
+    let read = store
+        .samples(
+            &Role::Target(TargetId::new(1)),
+            WallTime::from_unix_micros(0),
+        )
+        .unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0].measurement, Measurement::Lost(Loss::Unreachable(3)));
 }
 
 #[test]

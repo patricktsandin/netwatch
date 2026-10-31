@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use netwatch_adapter_web::{EventPoint, KernelReportView, LiveMessage};
+use netwatch_adapter_web::{EventPoint, KernelReportView, LiveMessage, TargetView};
 use netwatch_history::{Measurement, Sample};
 use netwatch_host_health::KernelWatch;
 use netwatch_probing::{SequenceSpace, StreamConfig};
@@ -40,6 +40,30 @@ const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 3] = [
     (3, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
 ];
 
+/// The default DNS targets (ADR-0009, ADR-0027): the same public resolvers, queried
+/// over DNS. Their ids are the echo ids plus 10.
+const DEFAULT_DNS_TARGETS: [(u32, IpAddr); 3] = [
+    (11, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
+    (12, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+    (13, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
+];
+
+/// Every target's name for the UI, by role key.
+fn target_names() -> Vec<TargetView> {
+    let echo = DEFAULT_ECHO_TARGETS
+        .iter()
+        .map(|&(id, address)| (id, format!("{address} (ICMP)")));
+    let dns = DEFAULT_DNS_TARGETS
+        .iter()
+        .map(|&(id, address)| (id, format!("{address} (DNS)")));
+    echo.chain(dns)
+        .map(|(id, name)| TargetView {
+            key: Role::Target(TargetId::new(id)).key(),
+            name,
+        })
+        .collect()
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -64,7 +88,9 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn({
         let live = live.clone();
         async move {
-            if let Err(error) = netwatch_adapter_web::serve(listen, database, live, kernel).await {
+            if let Err(error) =
+                netwatch_adapter_web::serve(listen, database, live, kernel, target_names()).await
+            {
                 tracing::error!(%error, "the UI server stopped");
             }
         }
@@ -117,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(probe::run_role(
         Role::Kernel,
         IpAddr::V4(Ipv4Addr::LOCALHOST),
-        None,
+        probe::ProbeKind::Echo(None),
         baseline,
         kernel_pin,
         resolutions_tx.clone(),
@@ -141,13 +167,25 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(probe::run_role(
                 role,
                 destination,
-                ttl,
+                probe::ProbeKind::Echo(ttl),
                 config,
                 pin.clone(),
                 resolutions_tx.clone(),
                 clock,
             ));
         }
+    }
+
+    for (id, server) in DEFAULT_DNS_TARGETS {
+        tokio::spawn(probe::run_role(
+            Role::Target(TargetId::new(id)),
+            server,
+            probe::ProbeKind::Dns,
+            echo,
+            pin.clone(),
+            resolutions_tx.clone(),
+            clock,
+        ));
     }
 
     // The kernel layer's counters and pressure, read every second (ADR-0008).

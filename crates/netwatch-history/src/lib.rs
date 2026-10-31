@@ -50,13 +50,15 @@ pub enum Measurement {
     Lost(Loss),
 }
 
-/// Why a probe got no answer.
+/// Why a probe got no usable answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Loss {
     /// No answer within the timeout.
     TimedOut,
     /// An ICMP destination-unreachable error, with its code.
     Unreachable(u8),
+    /// The server answered with an error, with its code (a DNS rcode).
+    Refused(u8),
     /// The probe couldn't be sent.
     SendFailed,
 }

@@ -17,6 +17,6 @@ epoch: number,
  */
 rtt_us: number | null, 
 /**
- * Why it wasn't answered: `timed-out`, `unreachable`, or `send-failed`.
+ * Why it wasn't answered: `timed-out`, `unreachable`, `refused`, or `send-failed`.
  */
 loss: string | null, };

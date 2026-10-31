@@ -79,6 +79,9 @@ pub enum ReplyKind {
     /// A time-exceeded error: the answer to a hop probe, from the router at that
     /// hop.
     TimeExceeded,
+    /// The server answered, but with an error, such as DNS SERVFAIL or REFUSED (the
+    /// rcode).
+    Refused(u8),
 }
 
 /// The one outcome every probe gets. These are never collapsed into a missing value.
@@ -95,6 +98,11 @@ pub enum ProbeOutcome {
     Unreachable {
         /// The error's ICMP code.
         code: UnreachableCode,
+    },
+    /// The server answered with an error code, such as a DNS rcode.
+    Refused {
+        /// The error code.
+        code: u8,
     },
     /// The probe could not be sent.
     SendFailed {
@@ -262,6 +270,7 @@ impl ProbeStream {
                 rtt: now.since(p.sent_at),
             },
             ReplyKind::Unreachable(code) => ProbeOutcome::Unreachable { code },
+            ReplyKind::Refused(code) => ProbeOutcome::Refused { code },
         };
         vec![Output::Resolved {
             index: p.index,

@@ -72,7 +72,7 @@ function epoch(value: unknown, what: string): Epoch {
   return n as Epoch;
 }
 
-const LOSS_REASONS: readonly LossReason[] = ["timed-out", "unreachable", "send-failed"];
+const LOSS_REASONS: readonly LossReason[] = ["timed-out", "unreachable", "refused", "send-failed"];
 const EVENT_KINDS: readonly EventKind[] = [
   "epoch-started",
   "epoch-ended",
@@ -116,6 +116,18 @@ export function parseMarker(value: unknown): Marker {
 
 export function parseRoles(value: unknown): readonly RoleKey[] {
   return array(value, "roles").map((r) => roleKey(record<RoleSummary>(r, "role").key, "role.key"));
+}
+
+/** Target names by role key, from `/api/targets`. */
+export function parseTargetNames(value: unknown): ReadonlyMap<string, string> {
+  return new Map(
+    array(value, "targets").map((t) => {
+      const target = record<{ key: string; name: string }>(t, "target");
+      const name = target.name;
+      if (typeof name !== "string") throw new ParseError("target.name: expected a string");
+      return [roleKey(target.key, "target.key"), name];
+    }),
+  );
 }
 
 export function parsePoints(value: unknown): readonly Point[] {

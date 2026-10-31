@@ -5,7 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 
-use netwatch_adapter_sockets::ProbeSocket;
+use netwatch_adapter_sockets::{DnsSocket, ProbeSocket, Received};
 use netwatch_history::{Loss, Measurement};
 use netwatch_probing::{Output, ProbeOutcome, ProbeStream, StreamConfig};
 use netwatch_shared::{HopTtl, Identity, Role};
@@ -23,6 +23,52 @@ pub struct Resolution {
     pub measurement: Measurement,
 }
 
+/// What a stream sends.
+#[derive(Debug, Clone, Copy)]
+pub enum ProbeKind {
+    /// ICMP echo; with a TTL, a hop probe.
+    Echo(Option<HopTtl>),
+    /// A DNS query for `. IN NS`.
+    Dns,
+}
+
+/// A stream's socket, whichever kind it is.
+enum Socket {
+    Icmp(ProbeSocket),
+    Dns(DnsSocket),
+}
+
+impl Socket {
+    fn open(
+        kind: ProbeKind,
+        destination: IpAddr,
+        pin: std::num::NonZeroU32,
+    ) -> std::io::Result<Self> {
+        Ok(match kind {
+            ProbeKind::Echo(ttl) => Socket::Icmp(ProbeSocket::open(destination, pin, ttl)?),
+            ProbeKind::Dns => Socket::Dns(DnsSocket::open(destination, pin)?),
+        })
+    }
+
+    fn send(
+        &self,
+        sequence: netwatch_probing::ProbeSequence,
+        index: netwatch_probing::ProbeIndex,
+    ) -> Result<(), netwatch_probing::SendFailure> {
+        match self {
+            Socket::Icmp(socket) => socket.send(sequence, index),
+            Socket::Dns(socket) => socket.send(sequence),
+        }
+    }
+
+    async fn recv(&self) -> std::io::Result<Received> {
+        match self {
+            Socket::Icmp(socket) => socket.recv().await,
+            Socket::Dns(socket) => socket.recv().await,
+        }
+    }
+}
+
 /// Keeps one role probed (a target, or one hop toward it when `ttl` is set) through
 /// whatever the current egress pin is. When the pin changes, a new stream starts on
 /// a socket pinned to the new interface. The old stream is retired, and lives on
@@ -30,7 +76,7 @@ pub struct Resolution {
 pub async fn run_role(
     role: Role,
     destination: IpAddr,
-    ttl: Option<HopTtl>,
+    kind: ProbeKind,
     config: StreamConfig,
     mut pins: watch::Receiver<Option<Binding>>,
     resolutions: mpsc::Sender<Resolution>,
@@ -45,7 +91,7 @@ pub async fn run_role(
         if let Some(pin) = pin
             && let Identity::Interface { index, name } = &pin.identity
         {
-            match ProbeSocket::open(destination, index.get(), ttl) {
+            match Socket::open(kind, destination, index.get()) {
                 Ok(socket) => {
                     let (retire, retired) = oneshot::channel();
                     retire_current = Some(retire);
@@ -74,7 +120,7 @@ pub async fn run_role(
 async fn run_stream(
     role: Role,
     pin: Binding,
-    socket: ProbeSocket,
+    socket: Socket,
     mut stream: ProbeStream,
     mut retired: oneshot::Receiver<()>,
     resolutions: mpsc::Sender<Resolution>,
@@ -137,6 +183,7 @@ fn measurement(outcome: ProbeOutcome) -> Measurement {
         ProbeOutcome::Answered { rtt } => Measurement::RoundTrip(rtt),
         ProbeOutcome::TimedOut => Measurement::Lost(Loss::TimedOut),
         ProbeOutcome::Unreachable { code } => Measurement::Lost(Loss::Unreachable(code.0)),
+        ProbeOutcome::Refused { code } => Measurement::Lost(Loss::Refused(code)),
         ProbeOutcome::SendFailed { .. } => Measurement::Lost(Loss::SendFailed),
     }
 }

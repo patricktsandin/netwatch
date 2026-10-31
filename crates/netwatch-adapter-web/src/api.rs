@@ -20,6 +20,16 @@ pub struct RoleSummary {
     pub latest_us: i64,
 }
 
+/// A configured target, for labeling its rows.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct TargetView {
+    /// The target's role key, for example `target:11`.
+    pub key: String,
+    /// A name for people, for example `1.1.1.1 (DNS)`.
+    pub name: String,
+}
+
 /// One sample. Exactly one of `rtt_us` and `loss` is set (ADR-0004).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]
@@ -33,7 +43,7 @@ pub struct SamplePoint {
     /// The round-trip time in µs, if answered.
     #[ts(type = "number | null")]
     pub rtt_us: Option<i64>,
-    /// Why it wasn't answered: `timed-out`, `unreachable`, or `send-failed`.
+    /// Why it wasn't answered: `timed-out`, `unreachable`, `refused`, or `send-failed`.
     pub loss: Option<String>,
 }
 
@@ -149,6 +159,7 @@ fn loss_text(loss: Loss) -> &'static str {
     match loss {
         Loss::TimedOut => "timed-out",
         Loss::Unreachable(_) => "unreachable",
+        Loss::Refused(_) => "refused",
         Loss::SendFailed => "send-failed",
     }
 }

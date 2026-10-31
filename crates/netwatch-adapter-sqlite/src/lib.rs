@@ -18,7 +18,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 /// The schema, as an ordered list of migrations. The database's `user_version` is the
 /// number of migrations applied.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001-initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001-initial.sql"),
+    include_str!("../migrations/0002-refused-loss.sql"),
+];
 
 /// How long raw samples are kept (ADR-0006).
 pub const RAW_RETENTION_DAYS: i64 = 7;
@@ -109,7 +112,7 @@ impl Store {
         let transaction = self.connection.transaction()?;
         {
             let mut insert = transaction.prepare_cached(
-                "INSERT INTO samples (role, epoch, at_us, rtt_us, loss, unreachable_code)
+                "INSERT INTO samples (role, epoch, at_us, rtt_us, loss, loss_code)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for sample in samples {
@@ -119,6 +122,7 @@ impl Store {
                     Measurement::Lost(Loss::Unreachable(code)) => {
                         (None, Some("unreachable"), Some(code))
                     }
+                    Measurement::Lost(Loss::Refused(code)) => (None, Some("refused"), Some(code)),
                     Measurement::Lost(Loss::SendFailed) => (None, Some("send-failed"), None),
                 };
                 insert.execute(params![
@@ -206,7 +210,7 @@ impl Store {
     /// The role's samples at or after `since`, oldest first.
     pub fn samples(&self, role: &Role, since: WallTime) -> Result<Vec<StoredSample>, StoreError> {
         let mut query = self.connection.prepare_cached(
-            "SELECT at_us, epoch, rtt_us, loss, unreachable_code FROM samples
+            "SELECT at_us, epoch, rtt_us, loss, loss_code FROM samples
              WHERE role = ?1 AND at_us >= ?2 ORDER BY at_us",
         )?;
         let rows = query.query_map(params![role.key(), since.as_unix_micros()], |row| {
@@ -229,6 +233,7 @@ impl Store {
                 (None, Some("unreachable"), Some(code)) => {
                     Measurement::Lost(Loss::Unreachable(code))
                 }
+                (None, Some("refused"), Some(code)) => Measurement::Lost(Loss::Refused(code)),
                 (None, Some("send-failed"), _) => Measurement::Lost(Loss::SendFailed),
                 _ => continue, // The CHECK constraints make this unreachable.
             };
