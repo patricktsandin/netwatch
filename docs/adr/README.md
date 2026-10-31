@@ -25,3 +25,4 @@ to "Superseded".
 | [0017](0017-classicist-test-first.md) | Classicist, test-first testing | Accepted |
 | [0018](0018-feature-workflow.md) | Feature workflow: spec, types, tests, code, proofs | Accepted |
 | [0019](0019-frontend-verification.md) | Frontend verification | Accepted |
+| [0020](0020-pinned-probes-and-topology-resync.md) | Pin probes to identity epochs; resynchronize after lost notifications | Accepted |

@@ -43,6 +43,22 @@ words are defined elsewhere in this file.
 - **Identity epoch**: a span of time during which a *role* keeps the same *identity*.
   A new epoch begins whenever the identity changes. Aggregates never span epochs.
   Only the topology aggregate assigns epochs.
+- **Binding**: a *role*'s current *identity* together with its *identity epoch*. A role
+  with no identity is *unbound*.
+- **Pin**: the *binding* a *probe* is tied to when it is scheduled. The probe travels
+  only through the pinned identity, and its *sample* carries the pinned epoch
+  (ADR-0020).
+- **Notification**: a change message from the kernel (rtnetlink, nl80211, ModemManager),
+  translated into an *observation*. Notifications arrive after the change has already
+  taken effect.
+- **Notification loss**: notifications dropped because a netlink socket's buffer
+  overflowed (`ENOBUFS`). After a loss, the aggregate's view may be stale.
+- **Snapshot**: the full current state requested from the kernel by a *resync*.
+- **Resync**: requesting a *snapshot* after *notification loss* and reconciling it with
+  the current *bindings*.
+- **Synchronized / desynchronized**: whether the topology aggregate's view can be
+  trusted. It becomes desynchronized on *notification loss*, and synchronized again
+  after a *resync*.
 - **Egress path**: what the kernel resolves for a destination: egress interface,
   *gateway*, source address, and *tunnel* (if any), as `RTM_GETROUTE` reports it.
 - **Egress interface**: the interface an *egress path* leaves through.
@@ -60,6 +76,8 @@ words are defined elsewhere in this file.
 - **Topology event**: a *domain event* recording a change, such as a route change, a
   *gateway* change, a link going up or down, an address being added or removed, a new
   *identity epoch*, a *suspend gap*, or a *config drift*.
+  - The first ones defined in code are: `EpochStarted`, `EpochEnded`,
+    `Desynchronized`, and `Resynchronized`.
 
 ## Probing
 
