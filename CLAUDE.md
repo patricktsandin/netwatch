@@ -27,7 +27,7 @@ Not yet built, roughly in priority order:
 - ethtool driver stats, Wi-Fi (nl80211), cellular (ModemManager)
 - percentile bands on the rollup charts, and pan/zoom into history beyond the selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
-- eBPF drop reasons, `/dev/kmsg`, clock health, config drift, conntrack and qdisc
+- eBPF drop reasons, clock health, config drift, and qdisc
   stats (ADR-0008)
 - runtime target management through the API (configuration is a TOML file today)
 - kernel receive timestamps (`SO_TIMESTAMPING`)

@@ -13,6 +13,8 @@ use netwatch_topology::TopologyEvent;
 pub enum Write {
     Sample(Sample),
     Event(TopologyEvent, WallTime),
+    /// An event that isn't a topology event: a kernel log line, a disabled source.
+    Note(netwatch_adapter_sqlite::StoredEvent),
     /// Write everything received so far, then acknowledge. The API sends this before
     /// answering a backfill, so a backfill never misses a sample the live stream
     /// already sent (ADR-0029). The channel is FIFO, so "everything so far" includes
@@ -87,6 +89,11 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                     Ok(Write::Event(event, at)) => {
                         if let Err(error) = store.record_event(&event, at) {
                             tracing::error!(%error, "cannot record topology event");
+                        }
+                    }
+                    Ok(Write::Note(note)) => {
+                        if let Err(error) = store.record_note(&note) {
+                            tracing::error!(%error, "cannot record an event");
                         }
                     }
                     Ok(Write::Flush(done)) => {

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-host-health.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

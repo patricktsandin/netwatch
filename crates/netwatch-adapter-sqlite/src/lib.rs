@@ -206,6 +206,22 @@ impl Store {
         Ok(())
     }
 
+    /// Records an event that isn't a topology event, such as a kernel log line or a
+    /// disabled source, so the graphs can mark it.
+    pub fn record_note(&mut self, note: &StoredEvent) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO events (at_us, kind, role, epoch, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                note.at.as_unix_micros(),
+                note.kind,
+                note.role,
+                note.epoch,
+                note.detail
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Closes every epoch an earlier run left open, at `now`. A run that stops can't
     /// record its epochs' ends, but each of them ended no later than the restart, and
     /// the next run starts new epochs from scratch.

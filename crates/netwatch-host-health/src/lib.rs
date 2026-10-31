@@ -10,6 +10,7 @@
 //!   processing (`/proc/net/softnet_stat`), and pressure stall information
 //!   (`/proc/pressure`)
 //! - NIC: the device's own error and drop counters (`IFLA_STATS64`)
+//! - the kernel log: network-relevant lines from `/dev/kmsg`, classified by [`classify`]
 //!
 //! # Invariants
 //!
@@ -25,6 +26,10 @@
 //! This crate does no I/O (ADR-0012).
 
 use std::collections::BTreeMap;
+
+mod kernel_log;
+
+pub use kernel_log::{KernelLogKind, KernelLogLine, classify};
 
 use netwatch_verified::counter_increase;
 

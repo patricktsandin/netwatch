@@ -36,9 +36,16 @@ function overlay(points: () => readonly Point[], markers: () => readonly Marker[
         }
         ctx.lineWidth = devicePixelRatio;
         ctx.setLineDash([4 * devicePixelRatio, 3 * devicePixelRatio]);
-        ctx.strokeStyle = color("--marker");
+        // Identity changes are dashed purple; kernel log lines are dashed amber.
         for (const m of markers()) {
-          if (m.kind !== "epoch-started" && m.kind !== "desynchronized") continue;
+          const stroke =
+            m.kind === "epoch-started" || m.kind === "desynchronized"
+              ? color("--marker")
+              : m.kind === "kernel-log"
+                ? color("--kernel-log")
+                : null;
+          if (stroke === null) continue;
+          ctx.strokeStyle = stroke;
           const x = u.valToPos(seconds(m.at), "x", true);
           ctx.beginPath();
           ctx.moveTo(x, top);

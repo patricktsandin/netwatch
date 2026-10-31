@@ -7,6 +7,7 @@
   --line: #2f6fdf;
   --loss: #d9342b;
   --marker: #8a63d2;
+  --kernel-log: #c27c0e;
   --healthy: #1f8a4c;
   --degraded: #b7791f;
   --failing: #d9342b;
@@ -23,6 +24,7 @@
     --line: #6aa0ff;
     --loss: #ff6b61;
     --marker: #b597ff;
+    --kernel-log: #e5a83a;
     --healthy: #4cc283;
     --degraded: #e0a948;
     --failing: #ff6b61;

@@ -86,6 +86,8 @@ const EVENT_KINDS: readonly EventKind[] = [
   "epoch-ended",
   "desynchronized",
   "resynchronized",
+  "kernel-log",
+  "source-disabled",
 ];
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {

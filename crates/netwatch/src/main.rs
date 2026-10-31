@@ -229,6 +229,19 @@ async fn main() -> anyhow::Result<()> {
     // whenever the NIC changes (a failover).
     let mut nic_watch: Option<(InterfaceIndex, CounterWatch)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    // Network-relevant kernel log lines become event markers (ADR-0008). Reading the
+    // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
+    let (kmsg_tx, mut kmsg) = mpsc::channel::<String>(64);
+    if let Err(error) = netwatch_adapter_procfs::watch_kernel_log(kmsg_tx) {
+        tracing::warn!(%error, "kernel log disabled (needs CAP_SYSLOG)");
+        note(
+            "source-disabled",
+            format!("kernel log: {error} (needs CAP_SYSLOG)"),
+            &writes,
+            &live,
+            clock,
+        );
+    }
 
     loop {
         tokio::select! {
@@ -281,6 +294,12 @@ async fn main() -> anyhow::Result<()> {
                     log_sample(&sample);
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
+                }
+            }
+            Some(message) = kmsg.recv() => {
+                if let Some(line) = netwatch_host_health::classify(&message) {
+                    tracing::info!(kind = ?line.kind, interface = ?line.interface, "kernel log: {}", line.message);
+                    note("kernel-log", line.message, &writes, &live, clock);
                 }
             }
             _ = tokio::signal::ctrl_c() => break,
@@ -380,6 +399,27 @@ fn attribute(
         at: clock.wall_now(),
         measurement: resolution.measurement,
     })
+}
+
+/// Records an event that isn't a topology event, and shows it live.
+fn note(
+    kind: &str,
+    detail: String,
+    writes: &std::sync::mpsc::Sender<persist::Write>,
+    live: &broadcast::Sender<LiveMessage>,
+    clock: Clock,
+) {
+    let stored = netwatch_adapter_sqlite::StoredEvent {
+        at: clock.wall_now(),
+        kind: kind.to_owned(),
+        role: Some(Role::Kernel.key()),
+        epoch: None,
+        detail: Some(detail),
+    };
+    let _ = live.send(LiveMessage::Event {
+        event: EventPoint::from(stored.clone()),
+    });
+    let _ = writes.send(persist::Write::Note(stored));
 }
 
 /// Publishes a layer's health report to the UI, and logs it when something got worse.

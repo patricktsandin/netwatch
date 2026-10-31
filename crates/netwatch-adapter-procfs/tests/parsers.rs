@@ -68,3 +68,15 @@ fn sums_stat_table_columns_over_every_cpu() {
     );
     assert!(arp.contains_key("Arp.TableFulls"));
 }
+
+#[test]
+fn reads_the_text_of_a_kmsg_record() {
+    use netwatch_adapter_procfs::parse_kmsg_record;
+    assert_eq!(
+        parse_kmsg_record(
+            "6,1234,5678901,-;e1000e 0000:00:1f.6 eth0: NIC Link is Down\n SUBSYSTEM=net\n"
+        ),
+        Some("e1000e 0000:00:1f.6 eth0: NIC Link is Down")
+    );
+    assert_eq!(parse_kmsg_record("no separator"), None);
+}

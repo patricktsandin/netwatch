@@ -25,7 +25,13 @@ export interface Point {
   readonly measurement: Measurement;
 }
 
-export type EventKind = "epoch-started" | "epoch-ended" | "desynchronized" | "resynchronized";
+export type EventKind =
+  | "epoch-started"
+  | "epoch-ended"
+  | "desynchronized"
+  | "resynchronized"
+  | "kernel-log"
+  | "source-disabled";
 
 /** One topology event, drawn as an event marker on every row. */
 export interface Marker {

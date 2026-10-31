@@ -174,3 +174,46 @@ pub fn parse_pressure_some_avg10(text: &str) -> Option<f64> {
         .ok()
         .filter(|v: &f64| v.is_finite() && *v >= 0.0)
 }
+
+/// Starts tailing the kernel log (`/dev/kmsg`) from its current end, sending each
+/// message's text. Fails if the log can't be opened, which on Fedora means the
+/// process lacks `CAP_SYSLOG` (`kernel.dmesg_restrict=1`). The caller reports that
+/// as a disabled source (ADR-0007).
+pub fn watch_kernel_log(
+    messages: tokio::sync::mpsc::Sender<String>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut log = fs::File::open("/dev/kmsg")?;
+    // Only new messages: history before the daemon started isn't an event now.
+    log.seek(SeekFrom::End(0))?;
+    std::thread::Builder::new()
+        .name("kernel-log".to_owned())
+        .spawn(move || {
+            // Each read returns exactly one record.
+            let mut record = vec![0u8; 8192];
+            loop {
+                match log.read(&mut record) {
+                    Ok(0) => return,
+                    Ok(len) => {
+                        let text = String::from_utf8_lossy(&record[..len]);
+                        if let Some(message) = parse_kmsg_record(&text)
+                            && messages.blocking_send(message.to_owned()).is_err()
+                        {
+                            return;
+                        }
+                    }
+                    // EPIPE: records were overwritten before we read them; carry on.
+                    Err(error) if error.raw_os_error() == Some(32) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => return,
+                }
+            }
+        })
+}
+
+/// The message text of one `/dev/kmsg` record: `prio,seq,usec,flags;text`, then
+/// optional continuation lines (` KEY=value`), which are dropped.
+pub fn parse_kmsg_record(record: &str) -> Option<&str> {
+    let (_, rest) = record.split_once(';')?;
+    Some(rest.lines().next().unwrap_or("").trim_end())
+}
