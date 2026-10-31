@@ -139,6 +139,7 @@ pub struct ProbeStream {
     next_index: u64,
     next_due: Instant,
     in_flight: BTreeMap<ProbeSequence, InFlight>,
+    retired: bool,
 }
 
 impl ProbeStream {
@@ -149,7 +150,21 @@ impl ProbeStream {
             next_index: 0,
             next_due: first_due,
             in_flight: BTreeMap::new(),
+            retired: false,
         }
+    }
+
+    /// Stops sending, for example because the stream's pin has changed (ADR-0020).
+    /// The probes already in flight still get their outcomes: keep ticking and
+    /// passing replies in until [`is_idle`](Self::is_idle).
+    pub fn retire(&mut self) {
+        self.retired = true;
+    }
+
+    /// Whether a retired stream has resolved every probe it sent, so it can be
+    /// dropped without leaving any probe without an outcome.
+    pub fn is_idle(&self) -> bool {
+        self.retired && self.in_flight.is_empty()
     }
 
     /// When the stream next needs a [`tick`](Self::tick): its next send, or its
@@ -185,7 +200,7 @@ impl ProbeStream {
             })
             .collect();
 
-        if self.next_due <= now {
+        if !self.retired && self.next_due <= now {
             let cadence = self.config.cadence();
             while self.next_due.after(cadence) <= now {
                 self.next_due = self.next_due.after(cadence);

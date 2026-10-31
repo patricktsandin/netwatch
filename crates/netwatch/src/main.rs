@@ -3,9 +3,28 @@
 //!
 //! This is the only crate allowed to use `anyhow` (ADR-0015).
 
+mod clock;
+mod probe;
+
+use std::net::{IpAddr, Ipv4Addr};
+
 use anyhow::Context;
-use netwatch_topology::{Command, Observation, Output, Topology, TopologyEvent};
-use tokio::sync::mpsc;
+use netwatch_history::{Measurement, Sample};
+use netwatch_probing::{SequenceSpace, StreamConfig};
+use netwatch_shared::uom::si::f64::Time;
+use netwatch_shared::uom::si::time::{millisecond, second};
+use netwatch_shared::{Role, TargetId};
+use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
+use tokio::sync::{mpsc, watch};
+
+use crate::clock::Clock;
+
+/// The default echo targets (ADR-0009). Configuration replaces these later.
+const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 3] = [
+    (1, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
+    (2, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+    (3, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
+];
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -14,11 +33,32 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    let clock = Clock::start();
 
     let (observations_tx, mut observations) = mpsc::channel(256);
     let _watcher = netwatch_adapter_netlink::watch(observations_tx.clone())
         .context("starting the netlink topology watcher")?;
     let mut topology = Topology::new();
+
+    let (pin_tx, pin) = watch::channel::<Option<Binding>>(None);
+    let (samples_tx, mut samples) = mpsc::channel::<Sample>(1024);
+    // Targets every 5 s with a 2 s timeout (ADR-0009). Valid for ICMP's sequence space.
+    let echo = StreamConfig::new(
+        Time::new::<second>(5.0),
+        Time::new::<second>(2.0),
+        SequenceSpace::ICMP,
+    )
+    .context("echo stream configuration")?;
+    for (id, destination) in DEFAULT_ECHO_TARGETS {
+        tokio::spawn(probe::run_target(
+            Role::Target(TargetId::new(id)),
+            destination,
+            echo,
+            pin.clone(),
+            samples_tx.clone(),
+            clock,
+        ));
+    }
 
     loop {
         tokio::select! {
@@ -26,7 +66,19 @@ async fn main() -> anyhow::Result<()> {
                 for output in topology.observe(observation) {
                     handle(output, &observations_tx);
                 }
+                // Targets are pinned to the egress interface: the tunnel if there
+                // is one, otherwise the NIC (ADR-0020, ADR-0022).
+                let egress = topology
+                    .binding(&Role::Tunnel)
+                    .or_else(|| topology.binding(&Role::Nic))
+                    .cloned();
+                pin_tx.send_if_modified(|current| {
+                    let changed = *current != egress;
+                    *current = egress;
+                    changed
+                });
             }
+            Some(sample) = samples.recv() => log_sample(&sample),
             _ = tokio::signal::ctrl_c() => break,
         }
     }
@@ -35,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn handle(output: Output, observations: &mpsc::Sender<Observation>) {
     match output {
-        Output::Event(event) => log(&event),
+        Output::Event(event) => log_event(&event),
         Output::Command(Command::Resync { generation }) => {
             let observations = observations.clone();
             tokio::task::spawn_blocking(move || {
@@ -59,7 +111,21 @@ fn handle(output: Output, observations: &mpsc::Sender<Observation>) {
     }
 }
 
-fn log(event: &TopologyEvent) {
+fn log_sample(sample: &Sample) {
+    match sample.measurement {
+        Measurement::RoundTrip(rtt) => tracing::info!(
+            role = ?sample.role,
+            epoch = sample.epoch.get(),
+            rtt_ms = format!("{:.3}", rtt.get::<millisecond>()),
+            "sample"
+        ),
+        Measurement::Lost(loss) => {
+            tracing::info!(role = ?sample.role, epoch = sample.epoch.get(), ?loss, "sample");
+        }
+    }
+}
+
+fn log_event(event: &TopologyEvent) {
     match event {
         TopologyEvent::EpochStarted {
             epoch,

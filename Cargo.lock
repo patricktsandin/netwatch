@@ -591,8 +591,12 @@ dependencies = [
 name = "netwatch-adapter-sockets"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "netwatch-probing",
  "netwatch-shared",
+ "socket2",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

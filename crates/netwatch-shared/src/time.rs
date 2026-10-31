@@ -34,3 +34,20 @@ impl Instant {
         Instant(self.0.saturating_add(nanos as u64))
     }
 }
+
+/// A UTC timestamp in microseconds since the Unix epoch. It is used only to label
+/// samples and events, never to measure a duration (ADR-0004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WallTime(i64);
+
+impl WallTime {
+    /// Wraps microseconds since the Unix epoch.
+    pub const fn from_unix_micros(micros: i64) -> Self {
+        Self(micros)
+    }
+
+    /// Microseconds since the Unix epoch, as persisted.
+    pub const fn as_unix_micros(self) -> i64 {
+        self.0
+    }
+}

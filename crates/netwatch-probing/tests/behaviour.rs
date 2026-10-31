@@ -210,3 +210,18 @@ fn next_wake_is_the_earlier_of_the_next_send_and_the_next_timeout() {
 
     assert_eq!(stream.next_wake(), at(800));
 }
+
+#[test]
+fn retired_stream_stops_sending_but_still_resolves_what_is_in_flight() {
+    let mut stream = icmp_stream();
+    stream.tick(at(0));
+    stream.retire();
+
+    assert!(!stream.is_idle());
+    assert_eq!(
+        stream.tick(at(1_000)).len(),
+        1,
+        "only the timeout, no new send"
+    );
+    assert!(stream.is_idle());
+}

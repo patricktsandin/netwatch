@@ -29,3 +29,4 @@ to "Superseded".
 | [0021](0021-buffer-and-drain-during-resync.md) | Buffer notifications while desynchronized; drain the socket on loss | Accepted |
 | [0022](0022-global-roles-from-reference-egress.md) | Global roles follow the egress path to a reference destination | Accepted |
 | [0023](0023-probe-matching-tokens-and-sequence-window.md) | Probe matching: tokens where possible, a sequence window otherwise | Accepted |
+| [0024](0024-echo-probes-over-pinned-ping-sockets.md) | Echo probes over pinned ping sockets | Accepted |

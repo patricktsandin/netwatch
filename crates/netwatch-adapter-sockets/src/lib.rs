@@ -1,9 +1,19 @@
-//! Anti-corruption layer for probe I/O: ICMP/ICMPv6 datagram and raw sockets, UDP,
-//! `AF_PACKET` (ARP and neighbor solicitation), DNS, and HTTP(S).
+//! Anti-corruption layer for probe I/O (ADR-0007, ADR-0020, ADR-0023, ADR-0024).
 //!
-//! This crate carries out the Probing context's send *commands* and turns everything it
-//! receives into *observations*, including ICMP errors from `IP_RECVERR` and kernel
-//! timestamps. Every packet parser here has Kani proof harnesses (ADR-0016).
+//! This crate carries out the Probing context's send *commands* and turns what comes
+//! back into [`Reply`](netwatch_probing::Reply) values.
 //!
-//! At startup it detects which socket modes and capabilities are available, and
-//! reports the ones that are missing as *disabled sources* (ADR-0007).
+//! - [`icmp`] encodes echo requests and parses echo replies. It is pure, and proven
+//!   with Kani never to panic, for every possible input.
+//! - [`EchoSocket`] is an unprivileged ICMP or ICMPv6 datagram socket, pinned to one
+//!   interface with `SO_BINDTOIFINDEX` (ADR-0024), so that its probes can't take any
+//!   other path.
+//!
+//! Not yet implemented: ICMP errors through `IP_RECVERR` (which would give the
+//! `Unreachable` outcome and hop probes), raw-socket fallback, and kernel receive
+//! timestamps. Every receive timestamp is currently taken in userspace.
+
+pub mod icmp;
+mod socket;
+
+pub use socket::EchoSocket;

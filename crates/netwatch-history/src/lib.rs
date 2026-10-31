@@ -19,3 +19,44 @@
 //! *role*, *identity*, and *identity epoch*, and nothing more.
 //!
 //! This crate does no I/O. Persistence lives in `netwatch-adapter-sqlite` (ADR-0012).
+//!
+//! Status: only [`Sample`], the published language that other contexts write in,
+//! exists so far. Rollups and retention come next.
+
+use netwatch_shared::uom::si::f64::Time;
+use netwatch_shared::{IdentityEpoch, Role, WallTime};
+
+/// One measurement of one role (glossary: *sample*).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sample {
+    /// What was measured.
+    pub role: Role,
+    /// The epoch of the *pin* the probe traveled under. It names exactly the identity
+    /// that was measured (ADR-0020).
+    pub epoch: IdentityEpoch,
+    /// When the measurement was resolved.
+    pub at: WallTime,
+    /// What was measured.
+    pub measurement: Measurement,
+}
+
+/// A measurement's value: a round-trip time, or a loss together with its reason.
+/// These are never collapsed into a missing value (ADR-0004).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Measurement {
+    /// Answered after this round-trip time.
+    RoundTrip(Time),
+    /// Not answered.
+    Lost(Loss),
+}
+
+/// Why a probe got no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loss {
+    /// No answer within the timeout.
+    TimedOut,
+    /// An ICMP destination-unreachable error, with its code.
+    Unreachable(u8),
+    /// The probe couldn't be sent.
+    SendFailed,
+}

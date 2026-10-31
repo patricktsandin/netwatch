@@ -9,6 +9,10 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-probing.workspace = true
+socket2.workspace = true
+libc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true
