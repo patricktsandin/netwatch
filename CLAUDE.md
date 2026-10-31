@@ -5,9 +5,34 @@ daemon probes this host's path to the network layer by layer (kernel, NIC, tunne
 interface, hops 1–3 per target, and ICMP/DNS/HTTP(S) targets), follows every change in
 topology, stores samples in SQLite, and serves an embedded TypeScript SPA with graphs.
 
-Status: greenfield. The design lives in `docs/adr/` ([index](docs/adr/README.md)). Read the
-relevant ADRs before working on an area. This file holds the working rules. The reasons
-for them are in the ADRs.
+The design lives in `docs/adr/` ([index](docs/adr/README.md)). Read the relevant ADRs
+before working on an area. This file holds the working rules. The reasons for them are in
+the ADRs.
+
+## Status (keep this current)
+
+Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
+- **Topology:** NIC, tunnel, and local interface followed via rtnetlink, with
+  resync after `ENOBUFS`. Epochs persist across restarts.
+- **Probing:** ICMP echo to targets every 5 s. Hops 1–3 per target every 1 s via
+  `IP_RECVERR`, with hop 1 shared across targets. Loopback baseline every 1 s.
+- **Host health:** snmp/netstat/softnet counters and PSI, graded every 1 s.
+- **History:** raw samples in SQLite with 7-day pruning.
+- **UI:** layered stack, live stream with backfill, epoch markers, and rate-limit-aware
+  hop status.
+
+Not yet built, roughly in priority order:
+- DNS and HTTPS probes
+- IPv6 default targets, and IPv6 egress for the global roles
+- NIC counters (`IFLA_STATS64`, ethtool), Wi-Fi (nl80211), cellular (ModemManager)
+- 1m/1h rollups with the verified merge algebra
+- dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
+- eBPF drop reasons, `/dev/kmsg`, clock health, config drift, conntrack and qdisc
+  stats (ADR-0008)
+- a Quint spec of the UI's merge and backfill (ADR-0019), and of `ProbeIdentified`
+  (ADR-0025)
+- configuration (TOML), and runtime target management through the API
+- kernel receive timestamps (`SO_TIMESTAMPING`)
 
 ## Non-negotiables
 
@@ -97,7 +122,7 @@ If a later step shows an earlier one was wrong, go back and fix it there.
 - **Never make a change pass by weakening it.** Don't weaken a spec property, delete a
   proof, add `assume`, or `#[ignore]` a test. If something can't pass, raise it.
 
-## Layout (planned)
+## Layout
 
 ```
 docs/{glossary.md, context-map.md, adr/}
