@@ -82,6 +82,9 @@ pub enum ReplyKind {
     /// The server answered, but with an error, such as DNS SERVFAIL or REFUSED (the
     /// rcode).
     Refused(u8),
+    /// The server answered, but not with the expected response, such as the wrong
+    /// HTTP status (glossary: *expected response*).
+    Unexpected(u16),
 }
 
 /// The one outcome every probe gets. These are never collapsed into a missing value.
@@ -103,6 +106,11 @@ pub enum ProbeOutcome {
     Refused {
         /// The error code.
         code: u8,
+    },
+    /// A response arrived, but not the expected one.
+    UnexpectedResponse {
+        /// What arrived instead, such as the HTTP status.
+        code: u16,
     },
     /// The probe could not be sent.
     SendFailed {
@@ -271,6 +279,7 @@ impl ProbeStream {
             },
             ReplyKind::Unreachable(code) => ProbeOutcome::Unreachable { code },
             ReplyKind::Refused(code) => ProbeOutcome::Refused { code },
+            ReplyKind::Unexpected(code) => ProbeOutcome::UnexpectedResponse { code },
         };
         vec![Output::Resolved {
             index: p.index,

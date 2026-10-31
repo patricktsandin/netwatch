@@ -12,6 +12,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use netwatch_adapter_sockets::http::{Expected, HttpsTarget};
 use netwatch_adapter_web::{EventPoint, KernelReportView, LiveMessage, TargetView};
 use netwatch_history::{Measurement, Sample};
 use netwatch_host_health::KernelWatch;
@@ -48,6 +49,35 @@ const DEFAULT_DNS_TARGETS: [(u32, IpAddr); 3] = [
     (13, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
 ];
 
+/// The default HTTPS targets: endpoints built for connectivity checks (ADR-0009).
+/// Their ids start at 21.
+const DEFAULT_HTTPS_TARGETS: [(u32, HttpsTarget); 3] = [
+    (
+        21,
+        HttpsTarget {
+            host: "www.gstatic.com",
+            path: "/generate_204",
+            expected: Expected::Status(204),
+        },
+    ),
+    (
+        22,
+        HttpsTarget {
+            host: "cp.cloudflare.com",
+            path: "/generate_204",
+            expected: Expected::Status(204),
+        },
+    ),
+    (
+        23,
+        HttpsTarget {
+            host: "one.one.one.one",
+            path: "/cdn-cgi/trace",
+            expected: Expected::StatusWithBody(200, "colo="),
+        },
+    ),
+];
+
 /// Every target's name for the UI, by role key.
 fn target_names() -> Vec<TargetView> {
     let echo = DEFAULT_ECHO_TARGETS
@@ -56,7 +86,11 @@ fn target_names() -> Vec<TargetView> {
     let dns = DEFAULT_DNS_TARGETS
         .iter()
         .map(|&(id, address)| (id, format!("{address} (DNS)")));
+    let https = DEFAULT_HTTPS_TARGETS
+        .iter()
+        .map(|&(id, target)| (id, format!("https://{}{}", target.host, target.path)));
     echo.chain(dns)
+        .chain(https)
         .map(|(id, name)| TargetView {
             key: Role::Target(TargetId::new(id)).key(),
             name,
@@ -182,6 +216,24 @@ async fn main() -> anyhow::Result<()> {
             server,
             probe::ProbeKind::Dns,
             echo,
+            pin.clone(),
+            resolutions_tx.clone(),
+            clock,
+        ));
+    }
+
+    // HTTPS every 10 s with a 5 s timeout (ADR-0009).
+    let https = StreamConfig::new(
+        Time::new::<second>(10.0),
+        Time::new::<second>(5.0),
+        SequenceSpace::ICMP,
+    )
+    .context("https stream configuration")?;
+    for (id, target) in DEFAULT_HTTPS_TARGETS {
+        tokio::spawn(probe::run_https_role(
+            Role::Target(TargetId::new(id)),
+            target,
+            https,
             pin.clone(),
             resolutions_tx.clone(),
             clock,

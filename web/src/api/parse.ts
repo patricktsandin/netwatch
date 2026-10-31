@@ -72,7 +72,13 @@ function epoch(value: unknown, what: string): Epoch {
   return n as Epoch;
 }
 
-const LOSS_REASONS: readonly LossReason[] = ["timed-out", "unreachable", "refused", "send-failed"];
+const LOSS_REASONS: readonly LossReason[] = [
+  "timed-out",
+  "unreachable",
+  "refused",
+  "unexpected-response",
+  "send-failed",
+];
 const EVENT_KINDS: readonly EventKind[] = [
   "epoch-started",
   "epoch-ended",

@@ -21,6 +21,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001-initial.sql"),
     include_str!("../migrations/0002-refused-loss.sql"),
+    include_str!("../migrations/0003-unexpected-response.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -120,9 +121,14 @@ impl Store {
                     Measurement::RoundTrip(rtt) => (Some(micros(rtt)), None, None),
                     Measurement::Lost(Loss::TimedOut) => (None, Some("timed-out"), None),
                     Measurement::Lost(Loss::Unreachable(code)) => {
-                        (None, Some("unreachable"), Some(code))
+                        (None, Some("unreachable"), Some(u16::from(code)))
                     }
-                    Measurement::Lost(Loss::Refused(code)) => (None, Some("refused"), Some(code)),
+                    Measurement::Lost(Loss::Refused(code)) => {
+                        (None, Some("refused"), Some(u16::from(code)))
+                    }
+                    Measurement::Lost(Loss::UnexpectedResponse(code)) => {
+                        (None, Some("unexpected-response"), Some(code))
+                    }
                     Measurement::Lost(Loss::SendFailed) => (None, Some("send-failed"), None),
                 };
                 insert.execute(params![
@@ -219,7 +225,7 @@ impl Store {
                 row.get::<_, i64>(1)?,
                 row.get::<_, Option<i64>>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<u8>>(4)?,
+                row.get::<_, Option<u16>>(4)?,
             ))
         })?;
         let mut samples = Vec::new();
@@ -231,9 +237,14 @@ impl Store {
                 }
                 (None, Some("timed-out"), _) => Measurement::Lost(Loss::TimedOut),
                 (None, Some("unreachable"), Some(code)) => {
-                    Measurement::Lost(Loss::Unreachable(code))
+                    Measurement::Lost(Loss::Unreachable(u8::try_from(code).unwrap_or(u8::MAX)))
                 }
-                (None, Some("refused"), Some(code)) => Measurement::Lost(Loss::Refused(code)),
+                (None, Some("refused"), Some(code)) => {
+                    Measurement::Lost(Loss::Refused(u8::try_from(code).unwrap_or(u8::MAX)))
+                }
+                (None, Some("unexpected-response"), Some(code)) => {
+                    Measurement::Lost(Loss::UnexpectedResponse(code))
+                }
                 (None, Some("send-failed"), _) => Measurement::Lost(Loss::SendFailed),
                 _ => continue, // The CHECK constraints make this unreachable.
             };

@@ -184,6 +184,124 @@ fn measurement(outcome: ProbeOutcome) -> Measurement {
         ProbeOutcome::TimedOut => Measurement::Lost(Loss::TimedOut),
         ProbeOutcome::Unreachable { code } => Measurement::Lost(Loss::Unreachable(code.0)),
         ProbeOutcome::Refused { code } => Measurement::Lost(Loss::Refused(code)),
+        ProbeOutcome::UnexpectedResponse { code } => {
+            Measurement::Lost(Loss::UnexpectedResponse(code))
+        }
         ProbeOutcome::SendFailed { .. } => Measurement::Lost(Loss::SendFailed),
+    }
+}
+
+/// Keeps one HTTPS target probed through the current egress pin. Each probe is a
+/// request, run as its own task. The stream still owns scheduling and timeouts, and a
+/// request that is still running when its probe times out is aborted (ADR-0028).
+pub async fn run_https_role(
+    role: Role,
+    target: netwatch_adapter_sockets::http::HttpsTarget,
+    config: StreamConfig,
+    mut pins: watch::Receiver<Option<Binding>>,
+    resolutions: mpsc::Sender<Resolution>,
+    clock: Clock,
+) {
+    let mut retire_current: Option<oneshot::Sender<()>> = None;
+    loop {
+        let pin = pins.borrow_and_update().clone();
+        if let Some(retire) = retire_current.take() {
+            let _ = retire.send(());
+        }
+        if let Some(pin) = pin
+            && let Identity::Interface { name, .. } = &pin.identity
+        {
+            let (retire, retired) = oneshot::channel();
+            retire_current = Some(retire);
+            tokio::spawn(run_https_stream(
+                role.clone(),
+                target,
+                *name,
+                pin.clone(),
+                ProbeStream::new(config, clock.now()),
+                retired,
+                resolutions.clone(),
+                clock,
+            ));
+        }
+        if pins.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // One task's whole context; a struct would only rename it.
+async fn run_https_stream(
+    role: Role,
+    target: netwatch_adapter_sockets::http::HttpsTarget,
+    interface: netwatch_shared::InterfaceName,
+    pin: Binding,
+    mut stream: ProbeStream,
+    mut retired: oneshot::Receiver<()>,
+    resolutions: mpsc::Sender<Resolution>,
+    clock: Clock,
+) {
+    use netwatch_adapter_sockets::http::{self, HttpsResult};
+    use netwatch_probing::{ProbeIndex, ProbeSequence, Reply, ReplyKind, SendFailure};
+
+    let (done_tx, mut done) = mpsc::channel::<(ProbeIndex, ProbeSequence, HttpsResult)>(16);
+    let mut running: HashMap<ProbeIndex, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut retiring = false;
+    while !stream.is_idle() {
+        let outputs = tokio::select! {
+            () = tokio::time::sleep_until(clock.deadline(stream.next_wake())) => stream.tick(clock.now()),
+            Some((index, sequence, result)) = done.recv() => {
+                running.remove(&index);
+                match result {
+                    HttpsResult::Answered(phases) => {
+                        tracing::debug!(?role, ?phases, "https phases");
+                        let reply = Reply { sequence, token: Some(index), kind: ReplyKind::Echo };
+                        stream.reply(reply, clock.now())
+                    }
+                    HttpsResult::Unexpected { status } => {
+                        let reply = Reply { sequence, token: Some(index), kind: ReplyKind::Unexpected(status) };
+                        stream.reply(reply, clock.now())
+                    }
+                    HttpsResult::Failed(error) => {
+                        tracing::debug!(%error, ?role, "https probe failed");
+                        let cause = error.raw_os_error().map_or(SendFailure::Other(0), SendFailure::Other);
+                        stream.send_failed(index, cause)
+                    }
+                }
+            }
+            _ = &mut retired, if !retiring => {
+                retiring = true;
+                stream.retire();
+                Vec::new()
+            }
+        };
+        for output in outputs {
+            match output {
+                netwatch_probing::Output::Send { index, sequence } => {
+                    let done_tx = done_tx.clone();
+                    running.insert(
+                        index,
+                        tokio::spawn(async move {
+                            let result = http::probe(target, interface).await;
+                            let _ = done_tx.send((index, sequence, result)).await;
+                        }),
+                    );
+                }
+                netwatch_probing::Output::Resolved { index, outcome } => {
+                    if let Some(request) = running.remove(&index) {
+                        request.abort();
+                    }
+                    let resolution = Resolution {
+                        role: role.clone(),
+                        pin: pin.clone(),
+                        responder: None,
+                        measurement: measurement(outcome),
+                    };
+                    if resolutions.send(resolution).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 }

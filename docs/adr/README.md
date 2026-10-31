@@ -33,3 +33,4 @@ to "Superseded".
 | [0025](0025-hops-identified-by-probing.md) | Hops are identified by Probing, through ICMP errors | Accepted |
 | [0026](0026-shared-first-hop-and-rate-limit-display.md) | Share the first hop across targets; show hop-only loss as rate limiting | Accepted |
 | [0027](0027-dns-probes.md) | DNS probes: `. IN NS` over a pinned UDP socket | Accepted |
+| [0028](0028-https-probes-with-phase-timings.md) | HTTPS probes with phase timings | Accepted |

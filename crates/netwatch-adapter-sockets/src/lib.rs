@@ -18,6 +18,7 @@
 pub mod dns;
 mod dns_socket;
 pub mod errqueue;
+pub mod http;
 pub mod icmp;
 mod socket;
 

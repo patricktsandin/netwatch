@@ -43,7 +43,8 @@ pub struct SamplePoint {
     /// The round-trip time in µs, if answered.
     #[ts(type = "number | null")]
     pub rtt_us: Option<i64>,
-    /// Why it wasn't answered: `timed-out`, `unreachable`, `refused`, or `send-failed`.
+    /// Why it wasn't answered: `timed-out`, `unreachable`, `refused`,
+    /// `unexpected-response`, or `send-failed`.
     pub loss: Option<String>,
 }
 
@@ -160,6 +161,7 @@ fn loss_text(loss: Loss) -> &'static str {
         Loss::TimedOut => "timed-out",
         Loss::Unreachable(_) => "unreachable",
         Loss::Refused(_) => "refused",
+        Loss::UnexpectedResponse(_) => "unexpected-response",
         Loss::SendFailed => "send-failed",
     }
 }

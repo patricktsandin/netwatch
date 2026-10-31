@@ -13,6 +13,11 @@ socket2.workspace = true
 libc.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
 
 [lints]
 workspace = true

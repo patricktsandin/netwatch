@@ -43,6 +43,7 @@ fn every_kind_of_measurement_round_trips() {
         Measurement::Lost(Loss::TimedOut),
         Measurement::Lost(Loss::Unreachable(3)),
         Measurement::Lost(Loss::Refused(2)),
+        Measurement::Lost(Loss::UnexpectedResponse(302)),
         Measurement::Lost(Loss::SendFailed),
     ];
     let samples: Vec<Sample> = (0..)

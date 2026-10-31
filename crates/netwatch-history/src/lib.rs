@@ -59,6 +59,8 @@ pub enum Loss {
     Unreachable(u8),
     /// The server answered with an error, with its code (a DNS rcode).
     Refused(u8),
+    /// A response that wasn't the expected one, with what arrived (an HTTP status).
+    UnexpectedResponse(u16),
     /// The probe couldn't be sent.
     SendFailed,
 }
