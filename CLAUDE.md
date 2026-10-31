@@ -23,7 +23,7 @@ Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
 
 Not yet built, roughly in priority order:
 - persisting and graphing HTTPS phase timings, the `colo=` identity, and DNS through the system resolver
-- IPv6 default targets, and IPv6 egress for the global roles
+- IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC), and IPv6 DNS/HTTPS targets
 - ethtool driver stats, Wi-Fi (nl80211), cellular (ModemManager)
 - percentile bands on the rollup charts, and pan/zoom into history beyond the selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)

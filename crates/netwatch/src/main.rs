@@ -7,7 +7,7 @@ mod clock;
 mod persist;
 mod probe;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
@@ -35,11 +35,37 @@ const HOPS: [std::num::NonZeroU8; 3] = [
 ];
 
 /// The default echo targets (ADR-0009). Configuration replaces these later.
-const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 3] = [
+const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 6] = [
     (1, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
     (2, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
     (3, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
+    (
+        4,
+        IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+    ),
+    (
+        5,
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
+    ),
+    (
+        6,
+        IpAddr::V6(Ipv6Addr::new(0x2620, 0x00fe, 0, 0, 0, 0, 0, 0x00fe)),
+    ),
 ];
+
+/// The echo target whose hop-1 stream is shared by every echo target of the same
+/// address family (ADR-0026). IPv4 and IPv6 have different gateways.
+fn shares_first_hop_for(id: u32) -> u32 {
+    let family = |address: &IpAddr| address.is_ipv4();
+    let own = DEFAULT_ECHO_TARGETS
+        .iter()
+        .find(|&&(i, _)| i == id)
+        .map(|(_, a)| family(a));
+    DEFAULT_ECHO_TARGETS
+        .iter()
+        .find(|(_, address)| Some(family(address)) == own)
+        .map_or(id, |&(i, _)| i)
+}
 
 /// The default DNS targets (ADR-0009, ADR-0027): the same public resolvers, queried
 /// over DNS. Their ids are the echo ids plus 10.
@@ -192,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
             // Hop 1 is the gateway for every target pinned to the same interface, so
             // one shared stream serves them all (ADR-0026). Separate streams would
             // trip the gateway's ICMP rate limit and show loss that isn't there.
-            if ttl == HOPS[0] && id != DEFAULT_ECHO_TARGETS[0].0 {
+            if ttl == HOPS[0] && id != shares_first_hop_for(id) {
                 continue;
             }
             let ttl = HopTtl::new(ttl);
@@ -350,8 +376,9 @@ fn handle(
 /// role (ADR-0026). Each role then gets its own epoch and sample.
 fn fan_out(resolution: probe::Resolution) -> Vec<probe::Resolution> {
     match resolution.role {
-        Role::Hop { ttl, .. } if ttl.get() == HOPS[0] => DEFAULT_ECHO_TARGETS
+        Role::Hop { target, ttl } if ttl.get() == HOPS[0] => DEFAULT_ECHO_TARGETS
             .iter()
+            .filter(|&&(id, _)| shares_first_hop_for(id) == target.get())
             .map(|&(id, _)| probe::Resolution {
                 role: Role::Hop {
                     target: TargetId::new(id),
