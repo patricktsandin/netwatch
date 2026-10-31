@@ -147,6 +147,8 @@ pub struct LayerReportView {
     pub resets: Vec<String>,
     /// PSI `some avg10` in percent, if available.
     pub pressure: Option<PressureView>,
+    /// The connection-tracking table's fill level in percent, if conntrack is loaded.
+    pub conntrack_fill: Option<f64>,
 }
 
 /// One watched counter's growth.
@@ -197,6 +199,7 @@ impl From<&netwatch_host_health::LayerReport> for LayerReportView {
                 memory: p.memory,
                 io: p.io,
             }),
+            conntrack_fill: report.conntrack_fill,
         }
     }
 }

@@ -43,6 +43,12 @@ function integer(value: unknown, what: string): number {
   return value;
 }
 
+function optionalNumber(value: unknown, what: string): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ParseError(`${what}: expected a number`);
+  return value;
+}
+
 function nullableString(value: unknown, what: string): string | null {
   if (value === null || typeof value === "string") return value;
   throw new ParseError(`${what}: expected a string or null`);
@@ -188,6 +194,7 @@ export function parseLayerReport(value: unknown): LayerReport {
       return { name: inc.name, by: integer(inc.by, "layer.increase.by") };
     }),
     cpuPressure: cpu,
+    conntrackFill: optionalNumber(r.conntrack_fill, "layer.conntrack_fill"),
   };
 }
 

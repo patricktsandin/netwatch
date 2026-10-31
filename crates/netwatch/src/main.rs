@@ -250,7 +250,7 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .await;
                     if let (Ok(Ok(counters)), Some((_, watch))) = (counters, nic_watch.as_mut()) {
-                        let reading = netwatch_host_health::Reading { counters, pressure: None };
+                        let reading = netwatch_host_health::Reading { counters, ..Default::default() };
                         publish_layer(Role::Nic, &watch.observe(reading), &live, &layers_tx);
                     }
                 }

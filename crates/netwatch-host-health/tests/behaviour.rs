@@ -10,6 +10,7 @@ fn reading(counters: &[(&str, u64)], cpu: f64) -> Reading {
             memory: 0.0,
             io: 0.0,
         }),
+        conntrack_fill: None,
     }
 }
 
@@ -101,4 +102,16 @@ fn a_nic_missing_packets_is_failing_and_crc_errors_degrade() {
             .status,
         LayerStatus::Failing
     );
+}
+
+#[test]
+fn a_nearly_full_conntrack_table_degrades_and_a_full_one_fails() {
+    let mut watch = CounterWatch::new(KERNEL_RULES);
+    let with_fill = |fill: f64| Reading {
+        conntrack_fill: Some(fill),
+        ..reading(&[], 0.0)
+    };
+    watch.observe(with_fill(10.0));
+    assert_eq!(watch.observe(with_fill(85.0)).status, LayerStatus::Degraded);
+    assert_eq!(watch.observe(with_fill(100.0)).status, LayerStatus::Failing);
 }

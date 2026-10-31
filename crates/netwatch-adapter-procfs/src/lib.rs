@@ -5,8 +5,10 @@
 //! because kernel versions add new ones, and they reject nothing silently: a line
 //! that doesn't parse is skipped, never turned into a zero.
 //!
-//! Sources so far: `/proc/net/snmp`, `/proc/net/netstat`, `/proc/net/softnet_stat`, and
-//! `/proc/pressure/{cpu,memory,io}`. A source that can't be read (for example PSI on a
+//! Sources so far: `/proc/net/snmp`, `/proc/net/netstat`, `/proc/net/softnet_stat`,
+//! `/proc/pressure/{cpu,memory,io}`, the connection-tracking table
+//! (`/proc/net/stat/nf_conntrack` and its fill level), and the neighbor tables
+//! (`/proc/net/stat/{arp_cache,ndisc_cache}`). A source that can't be read (for example PSI on a
 //! kernel without `CONFIG_PSI`) is left out of the reading, never reported as zero.
 
 use std::collections::BTreeMap;
@@ -25,6 +27,45 @@ pub fn read() -> Reading {
     if let Ok(text) = fs::read_to_string("/proc/net/softnet_stat") {
         counters.extend(parse_softnet(&text));
     }
+    let stat_tables = [
+        (
+            "/proc/net/stat/nf_conntrack",
+            "Conntrack",
+            &[
+                ("drop", "Drop"),
+                ("early_drop", "EarlyDrop"),
+                ("insert_failed", "InsertFailed"),
+            ][..],
+        ),
+        (
+            "/proc/net/stat/arp_cache",
+            "Arp",
+            &[
+                ("table_fulls", "TableFulls"),
+                ("unresolved_discards", "UnresolvedDiscards"),
+            ][..],
+        ),
+        (
+            "/proc/net/stat/ndisc_cache",
+            "Ndisc",
+            &[
+                ("table_fulls", "TableFulls"),
+                ("unresolved_discards", "UnresolvedDiscards"),
+            ][..],
+        ),
+    ];
+    for (path, group, columns) in stat_tables {
+        if let Ok(text) = fs::read_to_string(path) {
+            counters.extend(parse_stat_table(&text, group, columns));
+        }
+    }
+    let conntrack_fill = match (
+        read_number("/proc/sys/net/netfilter/nf_conntrack_count"),
+        read_number("/proc/sys/net/netfilter/nf_conntrack_max"),
+    ) {
+        (Some(count), Some(max)) if max > 0 => Some(100.0 * count as f64 / max as f64),
+        _ => None,
+    };
     let avg10 = |resource: &str| {
         fs::read_to_string(format!("/proc/pressure/{resource}"))
             .ok()
@@ -34,7 +75,44 @@ pub fn read() -> Reading {
         (Some(cpu), Some(memory), Some(io)) => Some(Pressure { cpu, memory, io }),
         _ => None,
     };
-    Reading { counters, pressure }
+    Reading {
+        counters,
+        pressure,
+        conntrack_fill,
+    }
+}
+
+fn read_number(path: &str) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// `/proc/net/stat/*`: a header line naming the columns, then one line of hexadecimal
+/// values per CPU. Returns `Group.Name` → the total over every CPU, for each wanted
+/// `(column, Name)`.
+pub fn parse_stat_table(text: &str, group: &str, wanted: &[(&str, &str)]) -> BTreeMap<String, u64> {
+    let mut lines = text.lines();
+    let Some(header) = lines.next() else {
+        return BTreeMap::new();
+    };
+    let columns: Vec<&str> = header.split_whitespace().collect();
+    let mut totals = BTreeMap::new();
+    for line in lines {
+        let values: Vec<u64> = line
+            .split_whitespace()
+            .map_while(|v| u64::from_str_radix(v, 16).ok())
+            .collect();
+        for &(column, name) in wanted {
+            if let Some(&value) = columns
+                .iter()
+                .position(|c| *c == column)
+                .and_then(|i| values.get(i))
+            {
+                let total: &mut u64 = totals.entry(format!("{group}.{name}")).or_default();
+                *total = total.saturating_add(value);
+            }
+        }
+    }
+    totals
 }
 
 /// `/proc/net/snmp` and `/proc/net/netstat`: pairs of lines, a header naming the

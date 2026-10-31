@@ -42,3 +42,29 @@ fn malformed_input_is_skipped_not_zeroed() {
     assert_eq!(parse_pressure_some_avg10("full avg10=1.0\n"), None);
     assert_eq!(parse_pressure_some_avg10("some avg10=NaN\n"), None);
 }
+
+#[test]
+fn sums_stat_table_columns_over_every_cpu() {
+    use netwatch_adapter_procfs::parse_stat_table;
+    let text =
+        "entries drop insert_failed\n00000001 00000002 00000003\n00000001 00000004 00000005\n";
+    let counters = parse_stat_table(
+        text,
+        "Conntrack",
+        &[("drop", "Drop"), ("insert_failed", "InsertFailed")],
+    );
+    assert_eq!(counters.get("Conntrack.Drop"), Some(&6));
+    assert_eq!(counters.get("Conntrack.InsertFailed"), Some(&8));
+    let real = parse_stat_table(
+        include_str!("fixtures/stat_nf_conntrack"),
+        "Conntrack",
+        &[("drop", "Drop")],
+    );
+    assert!(real.contains_key("Conntrack.Drop"));
+    let arp = parse_stat_table(
+        include_str!("fixtures/stat_arp_cache"),
+        "Arp",
+        &[("table_fulls", "TableFulls")],
+    );
+    assert!(arp.contains_key("Arp.TableFulls"));
+}

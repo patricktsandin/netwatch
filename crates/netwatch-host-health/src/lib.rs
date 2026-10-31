@@ -55,6 +55,13 @@ pub const KERNEL_RULES: &[Rule] = &[
     ("TcpExt.TCPBacklogDrop", Severity::Degrades),
     ("Softnet.Dropped", Severity::Fails),
     ("Softnet.TimeSqueeze", Severity::Degrades),
+    ("Conntrack.Drop", Severity::Fails),
+    ("Conntrack.EarlyDrop", Severity::Degrades),
+    ("Conntrack.InsertFailed", Severity::Degrades),
+    ("Arp.TableFulls", Severity::Degrades),
+    ("Arp.UnresolvedDiscards", Severity::Degrades),
+    ("Ndisc.TableFulls", Severity::Degrades),
+    ("Ndisc.UnresolvedDiscards", Severity::Degrades),
 ];
 
 /// The NIC's own counters (`IFLA_STATS64`). Errors on the wire degrade it; packets
@@ -75,6 +82,10 @@ pub const NIC_RULES: &[Rule] = &[
 /// Above this share of time stalled on CPU (PSI `some avg10`, in percent), probe
 /// timing can't be trusted, so the kernel layer is `Degraded`.
 const CPU_PRESSURE_LIMIT: f64 = 20.0;
+/// Connection-tracking fill levels, in percent: nearly full degrades, and at the
+/// limit new connections are being dropped.
+const CONNTRACK_NEARLY_FULL: f64 = 80.0;
+const CONNTRACK_FULL: f64 = 99.0;
 
 /// One reading of every telemetry source, already parsed by the procfs adapter.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -83,6 +94,9 @@ pub struct Reading {
     pub counters: BTreeMap<String, u64>,
     /// PSI `some avg10` for CPU, memory, and I/O, in percent, if available.
     pub pressure: Option<Pressure>,
+    /// How full the connection-tracking table is, in percent, if conntrack is loaded.
+    /// A full table drops every new connection silently.
+    pub conntrack_fill: Option<f64>,
 }
 
 /// Pressure stall information: the share of the last 10 s in which some task
@@ -122,6 +136,8 @@ pub struct LayerReport {
     pub resets: Vec<String>,
     /// The latest pressure, if available.
     pub pressure: Option<Pressure>,
+    /// The connection-tracking table's fill level, in percent, if available.
+    pub conntrack_fill: Option<f64>,
 }
 
 /// Compares each reading of one layer with the previous one, by that layer's rules.
@@ -153,6 +169,7 @@ impl CounterWatch {
                 increases: BTreeMap::new(),
                 resets: Vec::new(),
                 pressure: reading.pressure,
+                conntrack_fill: reading.conntrack_fill,
             };
         };
         let mut increases = BTreeMap::new();
@@ -174,6 +191,9 @@ impl CounterWatch {
             }
         }
         let pressured = reading.pressure.is_some_and(|p| p.cpu > CPU_PRESSURE_LIMIT);
+        let conntrack = reading.conntrack_fill.unwrap_or(0.0);
+        severe |= conntrack >= CONNTRACK_FULL;
+        let pressured = pressured || conntrack >= CONNTRACK_NEARLY_FULL;
         let status = if severe {
             LayerStatus::Failing
         } else if !increases.is_empty() || pressured {
@@ -186,6 +206,7 @@ impl CounterWatch {
             increases,
             resets,
             pressure: reading.pressure,
+            conntrack_fill: reading.conntrack_fill,
         }
     }
 }

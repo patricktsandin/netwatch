@@ -151,8 +151,9 @@ function layerSummary(key: RoleKey): string {
   const report = layers.get(key);
   if (report === undefined) return "";
   const cpu = report.cpuPressure === null ? "" : `CPU pressure ${report.cpuPressure.toFixed(1)}%`;
+  const conntrack = report.conntrackFill === null ? "" : `conntrack ${report.conntrackFill.toFixed(1)}% full`;
   const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
-  return [cpu, ...grew].filter((s) => s !== "").join(" · ");
+  return [cpu, conntrack, ...grew].filter((s) => s !== "").join(" · ");
 }
 
 function render(row: Row, key: RoleKey): void {

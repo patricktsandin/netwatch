@@ -41,6 +41,7 @@ export interface LayerReport {
   readonly status: "healthy" | "degraded" | "failing" | "unknown";
   readonly increases: readonly { readonly name: string; readonly by: number }[];
   readonly cpuPressure: number | null;
+  readonly conntrackFill: number | null;
 }
 
 export type Live =

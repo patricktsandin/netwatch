@@ -21,4 +21,8 @@ resets: Array<string>,
 /**
  * PSI `some avg10` in percent, if available.
  */
-pressure: PressureView | null, };
+pressure: PressureView | null, 
+/**
+ * The connection-tracking table's fill level in percent, if conntrack is loaded.
+ */
+conntrack_fill: number | null, };
