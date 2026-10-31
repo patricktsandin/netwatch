@@ -37,6 +37,10 @@ dns = "8.8.8.8"
 [[target]]
 id = 13
 dns = "9.9.9.9"
+# The resolver this host actually uses (the first non-loopback upstream).
+[[target]]
+id = 14
+dns = "system"
 
 # HTTPS, which must answer with `expect_status` (and contain `expect_body`, if
 # given). A captive portal's 200 is a failure (ADR-0028).

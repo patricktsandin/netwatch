@@ -38,8 +38,7 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   TLC-exhaustive and conformance-tested.
 
 Not yet built, roughly in priority order:
-- persisting and graphing HTTPS phase timings, the `colo=` identity, and DNS through
-  the system resolver
+- persisting and graphing HTTPS phase timings, and the `colo=` identity
 - IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC),
   and IPv6 DNS/HTTPS targets
 - ethtool driver stats, Wi-Fi (nl80211), cellular (ModemManager)

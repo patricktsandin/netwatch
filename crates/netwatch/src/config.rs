@@ -52,7 +52,8 @@ struct RawTarget {
     id: u32,
     name: Option<String>,
     icmp: Option<IpAddr>,
-    dns: Option<IpAddr>,
+    /// A server address, or `"system"` for the system's own upstream resolver.
+    dns: Option<String>,
     https: Option<String>,
     expect_status: Option<u16>,
     expect_body: Option<String>,
@@ -97,9 +98,15 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
                 t.id
             );
         }
+        let system = t.dns.as_deref() == Some("system");
         let probe = match (t.icmp, t.dns, t.https) {
             (Some(address), None, None) => TargetProbe::Echo(address),
-            (None, Some(server), None) => TargetProbe::Dns(server),
+            (None, Some(server), None) if server == "system" => TargetProbe::Dns(
+                system_resolver().context("no upstream resolver found for dns = \"system\"")?,
+            ),
+            (None, Some(server), None) => TargetProbe::Dns(server.parse().with_context(|| {
+                format!("dns = {server:?} is neither an address nor \"system\"")
+            })?),
             (None, None, Some(url)) => {
                 TargetProbe::Https(https(&url, t.expect_status, t.expect_body)?)
             }
@@ -110,6 +117,9 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
         };
         let name = t.name.unwrap_or_else(|| match &probe {
             TargetProbe::Echo(address) => format!("{address} (ICMP)"),
+            TargetProbe::Dns(server) if system => {
+                format!("system resolver {server} (DNS)")
+            }
             TargetProbe::Dns(server) => format!("{server} (DNS)"),
             TargetProbe::Https(target) => format!("https://{}{}", target.host, target.path),
         });
@@ -127,6 +137,25 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
         database: raw.database,
         targets,
     })
+}
+
+/// The first upstream resolver the system uses (ADR-0009). With systemd-resolved,
+/// `/etc/resolv.conf` names only its local stub, and probing that would measure
+/// loopback, so the upstream list in `/run/systemd/resolve/resolv.conf` comes first.
+fn system_resolver() -> Option<IpAddr> {
+    ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"]
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .find_map(|text| first_upstream(&text))
+}
+
+/// The first `nameserver` in a resolv.conf that isn't a loopback address.
+fn first_upstream(resolv_conf: &str) -> Option<IpAddr> {
+    resolv_conf
+        .lines()
+        .filter_map(|line| line.strip_prefix("nameserver"))
+        .filter_map(|rest| rest.trim().parse::<IpAddr>().ok())
+        .find(|address| !address.is_loopback())
 }
 
 fn https(url: &str, status: Option<u16>, body: Option<String>) -> anyhow::Result<HttpsTarget> {
@@ -159,7 +188,7 @@ mod tests {
     #[test]
     fn the_built_in_defaults_are_valid() {
         let config = parse(DEFAULTS).unwrap();
-        assert_eq!(config.targets.len(), 12);
+        assert_eq!(config.targets.len(), 13);
         assert_eq!(config.listen, "127.0.0.1:8732".parse().unwrap());
     }
 
@@ -185,6 +214,13 @@ mod tests {
             (target.host.as_str(), target.path.as_str()),
             ("example.com", "/")
         );
+    }
+
+    #[test]
+    fn the_system_resolver_skips_loopback_stubs() {
+        let resolv = "# generated\nnameserver 127.0.0.53\nnameserver 192.168.1.1\nsearch lan\n";
+        assert_eq!(first_upstream(resolv), Some("192.168.1.1".parse().unwrap()));
+        assert_eq!(first_upstream("nameserver 127.0.0.53\n"), None);
     }
 
     #[test]
