@@ -1,15 +1,18 @@
 # Deploying netwatch
 
+The supported way to install is the RPM:
+
 ```sh
-(cd web && npm ci && npm run build)          # the UI is embedded at build time
-cargo build --release
-sudo install -m 0755 target/release/netwatch /usr/local/bin/netwatch
-sudo install -m 0644 deploy/netwatch.sysusers /usr/lib/sysusers.d/netwatch.conf
-sudo systemd-sysusers
-sudo install -m 0644 deploy/netwatch.service /etc/systemd/system/netwatch.service
-sudo systemctl daemon-reload
+./packaging/build-rpm.sh                       # builds from HEAD into target/rpmbuild
+sudo dnf install target/rpmbuild/RPMS/x86_64/netwatch-*.rpm
 sudo systemctl enable --now netwatch
 ```
+
+The package installs the binary to `/usr/bin`, the unit, the `netwatch` system user
+(created by RPM from `/usr/lib/sysusers.d/netwatch.conf`), the configuration at
+`/etc/netwatch/netwatch.toml` (kept across upgrades), and the state directory
+`/var/lib/netwatch`. Building needs `cargo` (via rustup) and `npm` on `PATH`, plus
+network access.
 
 The UI is then at <http://127.0.0.1:8732>. ICMP echo probes use unprivileged ping
 sockets, so the `netwatch` group must be within `net.ipv4.ping_group_range`. On Fedora

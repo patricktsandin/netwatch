@@ -1,5 +1,6 @@
 # netwatch: continuous network monitor (ADR-0007).
-# Install: see deploy/README.md.
+# Installed by the netwatch RPM (packaging/netwatch.spec). Settings and targets live in
+# /etc/netwatch/netwatch.toml; nothing here overrides them.
 [Unit]
 Description=netwatch network monitor
 Documentation=file:///usr/share/doc/netwatch/README.md
@@ -10,9 +11,8 @@ After=network-online.target
 Type=simple
 User=netwatch
 Group=netwatch
-ExecStart=/usr/local/bin/netwatch
-Environment=NETWATCH_DB=/var/lib/netwatch/netwatch.db
-Environment=NETWATCH_LISTEN=127.0.0.1:8732
+ExecStart=/usr/bin/netwatch
+Environment=NETWATCH_CONFIG=/etc/netwatch/netwatch.toml
 StateDirectory=netwatch
 Restart=on-failure
 RestartSec=5
