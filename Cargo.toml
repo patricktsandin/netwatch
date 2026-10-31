@@ -27,6 +27,8 @@ vstd = "=0.0.0-2026-10-25-0158"
 
 cargo_metadata = "0.23"
 thiserror = "2"
+itf = "0.4"
+serde = { version = "1", features = ["derive"] }
 
 [workspace.lints.rust]
 missing_docs = "warn"            # every public item has an interface comment (ADR-0011)

@@ -12,3 +12,7 @@ netwatch-verified.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+itf.workspace = true
+serde.workspace = true
