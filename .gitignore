@@ -1,7 +1,9 @@
-/target/
-/web/node_modules/
-/web/dist/
 /_apalache-out/
 *.db
 *.db-shm
 *.db-wal
+/specs/_apalache-out/
+/specs/tmp/
+/target/
+/web/dist/
+/web/node_modules/

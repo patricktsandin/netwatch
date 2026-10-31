@@ -140,8 +140,8 @@ cargo fmt --check
 cd web && npm ci && npm run build                  # needed before a release build embeds it
 cd web && npm run dev                              # proxies /api and /ws to the daemon
 cd web && npx tsc --noEmit && npx vitest run && npx eslint .
-quint typecheck specs/*.qnt
-quint verify --invariant=<name> specs/<file>.qnt   # Apalache
+./scripts/check-specs.sh                           # every spec: typecheck, simulate, exhaustive TLC (~1 min)
+quint run specs/<f>.qnt --invariant=<name> --verbosity=3   # print a counterexample trace
 cargo kani
 cargo verus verify -p netwatch-verified        # Verus proofs; format verified code with `cargo verus fmt`
 ```
