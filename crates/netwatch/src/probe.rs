@@ -215,7 +215,7 @@ pub async fn run_https_role(
             retire_current = Some(retire);
             tokio::spawn(run_https_stream(
                 role.clone(),
-                target,
+                target.clone(),
                 *name,
                 pin.clone(),
                 ProbeStream::new(config, clock.now()),
@@ -279,6 +279,7 @@ async fn run_https_stream(
             match output {
                 netwatch_probing::Output::Send { index, sequence } => {
                     let done_tx = done_tx.clone();
+                    let target = target.clone();
                     running.insert(
                         index,
                         tokio::spawn(async move {

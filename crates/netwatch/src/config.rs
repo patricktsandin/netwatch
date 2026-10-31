@@ -1,0 +1,194 @@
+//! Configuration: a TOML file, parsed once into validated values (ADR-0014).
+//!
+//! The daemon reads the file named by `NETWATCH_CONFIG`, or
+//! `/etc/netwatch/netwatch.toml` if it exists, or else the built-in defaults
+//! (`deploy/netwatch.toml`). `NETWATCH_DB` and `NETWATCH_LISTEN` override the file.
+
+use std::collections::BTreeSet;
+use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
+
+use anyhow::{Context, bail};
+use netwatch_adapter_sockets::http::{Expected, HttpsTarget};
+use netwatch_shared::TargetId;
+use serde::Deserialize;
+
+const DEFAULTS: &str = include_str!("../../../deploy/netwatch.toml");
+const SYSTEM_PATH: &str = "/etc/netwatch/netwatch.toml";
+
+#[derive(Debug)]
+pub struct Config {
+    pub listen: SocketAddr,
+    pub database: PathBuf,
+    pub targets: Vec<Target>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub id: TargetId,
+    pub name: String,
+    pub probe: TargetProbe,
+}
+
+#[derive(Debug, Clone)]
+pub enum TargetProbe {
+    Echo(IpAddr),
+    Dns(IpAddr),
+    Https(HttpsTarget),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    listen: String,
+    database: PathBuf,
+    #[serde(rename = "target", default)]
+    targets: Vec<RawTarget>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTarget {
+    id: u32,
+    name: Option<String>,
+    icmp: Option<IpAddr>,
+    dns: Option<IpAddr>,
+    https: Option<String>,
+    expect_status: Option<u16>,
+    expect_body: Option<String>,
+}
+
+/// Loads the configuration from wherever it lives, then applies the environment's
+/// overrides.
+pub fn load() -> anyhow::Result<Config> {
+    let (text, origin) = match std::env::var_os("NETWATCH_CONFIG") {
+        Some(path) => (
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?,
+            PathBuf::from(path).display().to_string(),
+        ),
+        None if std::path::Path::new(SYSTEM_PATH).exists() => (
+            std::fs::read_to_string(SYSTEM_PATH).context("reading /etc/netwatch/netwatch.toml")?,
+            SYSTEM_PATH.to_owned(),
+        ),
+        None => (DEFAULTS.to_owned(), "built-in defaults".to_owned()),
+    };
+    let mut config = parse(&text).with_context(|| format!("invalid configuration in {origin}"))?;
+    if let Some(database) = std::env::var_os("NETWATCH_DB") {
+        config.database = PathBuf::from(database);
+    }
+    if let Ok(listen) = std::env::var("NETWATCH_LISTEN") {
+        config.listen = listen
+            .parse()
+            .context("NETWATCH_LISTEN must be an address:port")?;
+    }
+    tracing::info!(%origin, targets = config.targets.len(), "configuration loaded");
+    Ok(config)
+}
+
+pub fn parse(text: &str) -> anyhow::Result<Config> {
+    let raw: RawConfig = toml::from_str(text)?;
+    let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    for t in raw.targets {
+        if !seen.insert(t.id) {
+            bail!(
+                "target id {} is used twice; ids must be unique and stable",
+                t.id
+            );
+        }
+        let probe = match (t.icmp, t.dns, t.https) {
+            (Some(address), None, None) => TargetProbe::Echo(address),
+            (None, Some(server), None) => TargetProbe::Dns(server),
+            (None, None, Some(url)) => {
+                TargetProbe::Https(https(&url, t.expect_status, t.expect_body)?)
+            }
+            _ => bail!(
+                "target {} must have exactly one of icmp, dns, or https",
+                t.id
+            ),
+        };
+        let name = t.name.unwrap_or_else(|| match &probe {
+            TargetProbe::Echo(address) => format!("{address} (ICMP)"),
+            TargetProbe::Dns(server) => format!("{server} (DNS)"),
+            TargetProbe::Https(target) => format!("https://{}{}", target.host, target.path),
+        });
+        targets.push(Target {
+            id: TargetId::new(t.id),
+            name,
+            probe,
+        });
+    }
+    Ok(Config {
+        listen: raw
+            .listen
+            .parse()
+            .context("listen must be an address:port")?,
+        database: raw.database,
+        targets,
+    })
+}
+
+fn https(url: &str, status: Option<u16>, body: Option<String>) -> anyhow::Result<HttpsTarget> {
+    let Some(rest) = url.strip_prefix("https://") else {
+        bail!("{url:?} must start with https://");
+    };
+    let (host, path) = rest
+        .find('/')
+        .map_or((rest, "/"), |slash| rest.split_at(slash));
+    if host.is_empty() || host.contains(['@', ':', '?', '#']) {
+        bail!("{url:?} must name a plain host (no userinfo, port, query, or fragment)");
+    }
+    let Some(status) = status else {
+        bail!("https target {url:?} needs expect_status");
+    };
+    Ok(HttpsTarget {
+        host: host.to_owned(),
+        path: path.to_owned(),
+        expected: match body {
+            Some(text) => Expected::StatusWithBody(status, text),
+            None => Expected::Status(status),
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_built_in_defaults_are_valid() {
+        let config = parse(DEFAULTS).unwrap();
+        assert_eq!(config.targets.len(), 12);
+        assert_eq!(config.listen, "127.0.0.1:8732".parse().unwrap());
+    }
+
+    #[test]
+    fn duplicate_ids_are_rejected() {
+        let text = "listen = \"127.0.0.1:1\"\ndatabase = \"x\"\n[[target]]\nid = 1\nicmp = \"1.1.1.1\"\n[[target]]\nid = 1\ndns = \"1.1.1.1\"\n";
+        assert!(parse(text).unwrap_err().to_string().contains("used twice"));
+    }
+
+    #[test]
+    fn a_target_needs_exactly_one_kind() {
+        let text = "listen = \"127.0.0.1:1\"\ndatabase = \"x\"\n[[target]]\nid = 1\nicmp = \"1.1.1.1\"\ndns = \"1.1.1.1\"\n";
+        assert!(parse(text).is_err());
+    }
+
+    #[test]
+    fn https_needs_a_plain_host_and_an_expected_status() {
+        assert!(https("http://example.com/", Some(200), None).is_err());
+        assert!(https("https://user@example.com/", Some(200), None).is_err());
+        assert!(https("https://example.com/", None, None).is_err());
+        let target = https("https://example.com", Some(204), None).unwrap();
+        assert_eq!(
+            (target.host.as_str(), target.path.as_str()),
+            ("example.com", "/")
+        );
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected() {
+        assert!(parse("listen = \"127.0.0.1:1\"\ndatabase = \"x\"\nlisten_on = 1\n").is_err());
+    }
+}

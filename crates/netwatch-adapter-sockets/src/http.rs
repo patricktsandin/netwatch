@@ -20,21 +20,21 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 /// What an HTTPS target must answer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expected {
     /// Exactly this status, and any body.
     Status(u16),
     /// Exactly this status, with a body containing this text.
-    StatusWithBody(u16, &'static str),
+    StatusWithBody(u16, String),
 }
 
 /// One HTTPS endpoint built for connectivity checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpsTarget {
     /// The host name, also used for SNI and certificate verification.
-    pub host: &'static str,
-    /// The path to request.
-    pub path: &'static str,
+    pub host: String,
+    /// The path to request, starting with `/`.
+    pub path: String,
     /// What it must answer.
     pub expected: Expected,
 }
@@ -97,7 +97,7 @@ pub async fn probe(target: HttpsTarget, pin: InterfaceName) -> HttpsResult {
 
 async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsResult> {
     let start = Instant::now();
-    let address = tokio::net::lookup_host((target.host, 443))
+    let address = tokio::net::lookup_host((target.host.as_str(), 443))
         .await?
         .find(std::net::SocketAddr::is_ipv4)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no IPv4 address"))?;
@@ -108,7 +108,7 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
     let tcp = socket.connect(address).await?;
     let connected = Instant::now();
 
-    let name = ServerName::try_from(target.host)
+    let name = ServerName::try_from(target.host.clone())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let stream = tls().connect(name, tcp).await?;
     let secured = Instant::now();
@@ -118,8 +118,8 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
             .await
             .map_err(io::Error::other)?;
     let driver = tokio::spawn(connection);
-    let request = hyper::Request::get(target.path)
-        .header(hyper::header::HOST, target.host)
+    let request = hyper::Request::get(target.path.as_str())
+        .header(hyper::header::HOST, target.host.as_str())
         .header(hyper::header::USER_AGENT, "netwatch")
         .body(Empty::new())
         .map_err(io::Error::other)?;
@@ -139,7 +139,7 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
 
     let matches = match target.expected {
         Expected::Status(expected) => status == expected,
-        Expected::StatusWithBody(expected, text) => {
+        Expected::StatusWithBody(expected, ref text) => {
             status == expected && body.windows(text.len()).any(|w| w == text.as_bytes())
         }
     };

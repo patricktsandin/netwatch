@@ -4,15 +4,14 @@
 //! This is the only crate allowed to use `anyhow` (ADR-0015).
 
 mod clock;
+mod config;
 mod persist;
 mod probe;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
-use std::path::PathBuf;
 
 use anyhow::Context;
-use netwatch_adapter_sockets::http::{Expected, HttpsTarget};
 use netwatch_adapter_web::{EventPoint, LayerReportView, LiveMessage, TargetView};
 use netwatch_history::{Measurement, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES};
@@ -26,6 +25,7 @@ use netwatch_topology::{Binding, Command, Observation, Output, Topology, Topolog
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::clock::Clock;
+use crate::config::{Config, TargetProbe};
 
 /// The hops probed toward every target (ADR-0002).
 const HOPS: [std::num::NonZeroU8; 3] = [
@@ -34,92 +34,36 @@ const HOPS: [std::num::NonZeroU8; 3] = [
     std::num::NonZeroU8::MIN.saturating_add(2),
 ];
 
-/// The default echo targets (ADR-0009). Configuration replaces these later.
-const DEFAULT_ECHO_TARGETS: [(u32, IpAddr); 6] = [
-    (1, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
-    (2, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
-    (3, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
-    (
-        4,
-        IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
-    ),
-    (
-        5,
-        IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
-    ),
-    (
-        6,
-        IpAddr::V6(Ipv6Addr::new(0x2620, 0x00fe, 0, 0, 0, 0, 0, 0x00fe)),
-    ),
-];
+/// Every echo target, with the address it probes.
+fn echo_targets(config: &Config) -> Vec<(TargetId, IpAddr)> {
+    config
+        .targets
+        .iter()
+        .filter_map(|t| match t.probe {
+            TargetProbe::Echo(address) => Some((t.id, address)),
+            _ => None,
+        })
+        .collect()
+}
 
 /// The echo target whose hop-1 stream is shared by every echo target of the same
 /// address family (ADR-0026). IPv4 and IPv6 have different gateways.
-fn shares_first_hop_for(id: u32) -> u32 {
+fn shares_first_hop_for(echo: &[(TargetId, IpAddr)], id: TargetId) -> TargetId {
     let family = |address: &IpAddr| address.is_ipv4();
-    let own = DEFAULT_ECHO_TARGETS
-        .iter()
-        .find(|&&(i, _)| i == id)
-        .map(|(_, a)| family(a));
-    DEFAULT_ECHO_TARGETS
-        .iter()
+    let own = echo.iter().find(|&&(i, _)| i == id).map(|(_, a)| family(a));
+    echo.iter()
         .find(|(_, address)| Some(family(address)) == own)
         .map_or(id, |&(i, _)| i)
 }
 
-/// The default DNS targets (ADR-0009, ADR-0027): the same public resolvers, queried
-/// over DNS. Their ids are the echo ids plus 10.
-const DEFAULT_DNS_TARGETS: [(u32, IpAddr); 3] = [
-    (11, IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))),
-    (12, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
-    (13, IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
-];
-
-/// The default HTTPS targets: endpoints built for connectivity checks (ADR-0009).
-/// Their ids start at 21.
-const DEFAULT_HTTPS_TARGETS: [(u32, HttpsTarget); 3] = [
-    (
-        21,
-        HttpsTarget {
-            host: "www.gstatic.com",
-            path: "/generate_204",
-            expected: Expected::Status(204),
-        },
-    ),
-    (
-        22,
-        HttpsTarget {
-            host: "cp.cloudflare.com",
-            path: "/generate_204",
-            expected: Expected::Status(204),
-        },
-    ),
-    (
-        23,
-        HttpsTarget {
-            host: "one.one.one.one",
-            path: "/cdn-cgi/trace",
-            expected: Expected::StatusWithBody(200, "colo="),
-        },
-    ),
-];
-
 /// Every target's name for the UI, by role key.
-fn target_names() -> Vec<TargetView> {
-    let echo = DEFAULT_ECHO_TARGETS
+fn target_names(config: &Config) -> Vec<TargetView> {
+    config
+        .targets
         .iter()
-        .map(|&(id, address)| (id, format!("{address} (ICMP)")));
-    let dns = DEFAULT_DNS_TARGETS
-        .iter()
-        .map(|&(id, address)| (id, format!("{address} (DNS)")));
-    let https = DEFAULT_HTTPS_TARGETS
-        .iter()
-        .map(|&(id, target)| (id, format!("https://{}{}", target.host, target.path)));
-    echo.chain(dns)
-        .chain(https)
-        .map(|(id, name)| TargetView {
-            key: Role::Target(TargetId::new(id)).key(),
-            name,
+        .map(|t| TargetView {
+            key: Role::Target(t.id).key(),
+            name: t.name.clone(),
         })
         .collect()
 }
@@ -132,17 +76,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let clock = Clock::start();
-    let database =
-        std::env::var_os("NETWATCH_DB").map_or_else(|| PathBuf::from("netwatch.db"), PathBuf::from);
+    let config = config::load()?;
+    let database = config.database.clone();
     let resume_after = persist::last_epoch(&database)
         .with_context(|| format!("opening {}", database.display()))?;
     let writes = persist::spawn(database.clone(), clock)?;
 
     // The UI listens on localhost only, unless configured otherwise (ADR-0007).
-    let listen: SocketAddr = std::env::var("NETWATCH_LISTEN")
-        .unwrap_or_else(|_| "127.0.0.1:8732".to_owned())
-        .parse()
-        .context("NETWATCH_LISTEN must be an address:port")?;
+    let listen = config.listen;
+    let names = target_names(&config);
     let (live, _) = broadcast::channel::<LiveMessage>(1024);
     let flush: netwatch_adapter_web::Flush = {
         let writes = writes.clone();
@@ -158,8 +100,7 @@ async fn main() -> anyhow::Result<()> {
         let live = live.clone();
         async move {
             if let Err(error) =
-                netwatch_adapter_web::serve(listen, database, live, layers, target_names(), flush)
-                    .await
+                netwatch_adapter_web::serve(listen, database, live, layers, names, flush).await
             {
                 tracing::error!(%error, "the UI server stopped");
             }
@@ -220,14 +161,14 @@ async fn main() -> anyhow::Result<()> {
         clock,
     ));
 
-    for (id, destination) in DEFAULT_ECHO_TARGETS {
-        let target = TargetId::new(id);
+    let echo_targets = echo_targets(&config);
+    for &(target, destination) in &echo_targets {
         let mut streams = vec![(Role::Target(target), None, echo)];
         for ttl in HOPS {
             // Hop 1 is the gateway for every target pinned to the same interface, so
             // one shared stream serves them all (ADR-0026). Separate streams would
             // trip the gateway's ICMP rate limit and show loss that isn't there.
-            if ttl == HOPS[0] && id != shares_first_hop_for(id) {
+            if ttl == HOPS[0] && target != shares_first_hop_for(&echo_targets, target) {
                 continue;
             }
             let ttl = HopTtl::new(ttl);
@@ -246,9 +187,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    for (id, server) in DEFAULT_DNS_TARGETS {
+    for (id, server) in config.targets.iter().filter_map(|t| match t.probe {
+        TargetProbe::Dns(server) => Some((t.id, server)),
+        _ => None,
+    }) {
         tokio::spawn(probe::run_role(
-            Role::Target(TargetId::new(id)),
+            Role::Target(id),
             server,
             probe::ProbeKind::Dns,
             echo,
@@ -265,9 +209,12 @@ async fn main() -> anyhow::Result<()> {
         SequenceSpace::ICMP,
     )
     .context("https stream configuration")?;
-    for (id, target) in DEFAULT_HTTPS_TARGETS {
+    for (id, target) in config.targets.iter().filter_map(|t| match &t.probe {
+        TargetProbe::Https(target) => Some((t.id, target.clone())),
+        _ => None,
+    }) {
         tokio::spawn(probe::run_https_role(
-            Role::Target(TargetId::new(id)),
+            Role::Target(id),
             target,
             https,
             pin.clone(),
@@ -325,7 +272,7 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
             Some(resolution) = resolutions.recv() => {
-                for resolution in fan_out(resolution) {
+                for resolution in fan_out(resolution, &echo_targets) {
                     let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
                         handle(output, &observations_tx, &writes, &live, clock);
                     }) else {
@@ -383,16 +330,13 @@ fn handle(
 
 /// The shared first-hop stream's resolutions, copied to every target's first-hop
 /// role (ADR-0026). Each role then gets its own epoch and sample.
-fn fan_out(resolution: probe::Resolution) -> Vec<probe::Resolution> {
+fn fan_out(resolution: probe::Resolution, echo: &[(TargetId, IpAddr)]) -> Vec<probe::Resolution> {
     match resolution.role {
-        Role::Hop { target, ttl } if ttl.get() == HOPS[0] => DEFAULT_ECHO_TARGETS
+        Role::Hop { target, ttl } if ttl.get() == HOPS[0] => echo
             .iter()
-            .filter(|&&(id, _)| shares_first_hop_for(id) == target.get())
+            .filter(|&&(id, _)| shares_first_hop_for(echo, id) == target)
             .map(|&(id, _)| probe::Resolution {
-                role: Role::Hop {
-                    target: TargetId::new(id),
-                    ttl,
-                },
+                role: Role::Hop { target: id, ttl },
                 pin: resolution.pin.clone(),
                 responder: resolution.responder,
                 measurement: resolution.measurement,

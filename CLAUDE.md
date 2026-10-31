@@ -29,7 +29,7 @@ Not yet built, roughly in priority order:
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
 - eBPF drop reasons, `/dev/kmsg`, clock health, config drift, conntrack and qdisc
   stats (ADR-0008)
-- configuration (TOML), and runtime target management through the API
+- runtime target management through the API (configuration is a TOML file today)
 - kernel receive timestamps (`SO_TIMESTAMPING`)
 
 ## Non-negotiables
