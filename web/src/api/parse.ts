@@ -3,14 +3,13 @@
 // coerced.
 
 import type { EventPoint } from "./generated/EventPoint";
-import type { KernelReportView } from "./generated/KernelReportView";
-import type { LiveMessage } from "./generated/LiveMessage";
+import type { LayerReportView } from "./generated/LayerReportView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
 import type {
   Epoch,
   EventKind,
-  KernelReport,
+  LayerReport,
   Live,
   LossReason,
   Marker,
@@ -57,9 +56,6 @@ function roleKey(value: unknown, what: string): RoleKey {
   }
   return value as RoleKey;
 }
-
-/** The kernel layer's role key. */
-export const KERNEL_ROLE: RoleKey = roleKey("kernel", "KERNEL_ROLE");
 
 const micros = (value: unknown, what: string): Micros => integer(value, what) as Micros;
 
@@ -124,6 +120,14 @@ export function parseRoles(value: unknown): readonly RoleKey[] {
   return array(value, "roles").map((r) => roleKey(record<RoleSummary>(r, "role").key, "role.key"));
 }
 
+/** Every layer's latest report by role key, from `/api/layers`. */
+export function parseLayers(value: unknown): ReadonlyMap<RoleKey, LayerReport> {
+  const all = record<Record<string, unknown>>(value, "layers");
+  return new Map(
+    Object.entries(all).map(([key, report]) => [roleKey(key, "layers key"), parseLayerReport(report)]),
+  );
+}
+
 /** Target names by role key, from `/api/targets`. */
 export function parseTargetNames(value: unknown): ReadonlyMap<string, string> {
   return new Map(
@@ -144,29 +148,28 @@ export function parseMarkers(value: unknown): readonly Marker[] {
   return array(value, "events").map(parseMarker);
 }
 
-const STATUSES: readonly KernelReport["status"][] = ["healthy", "degraded", "failing", "unknown"];
+const STATUSES: readonly LayerReport["status"][] = ["healthy", "degraded", "failing", "unknown"];
 
-export function parseKernel(value: unknown): KernelReport | null {
-  if (value === null) return null;
-  const r = record<KernelReportView>(value, "kernel");
-  const pressure = r.pressure === null ? null : record<{ cpu: number }>(r.pressure, "kernel.pressure");
+export function parseLayerReport(value: unknown): LayerReport {
+  const r = record<LayerReportView>(value, "layer");
+  const pressure = r.pressure === null ? null : record<{ cpu: number }>(r.pressure, "layer.pressure");
   const cpu = pressure === null ? null : pressure.cpu;
   if (cpu !== null && (typeof cpu !== "number" || !Number.isFinite(cpu))) {
-    throw new ParseError("kernel.pressure.cpu: expected a number");
+    throw new ParseError("layer.pressure.cpu: expected a number");
   }
   return {
-    status: oneOf(r.status, STATUSES, "kernel.status"),
-    increases: array(r.increases, "kernel.increases").map((i) => {
-      const inc = record<{ name: string; by: number }>(i, "kernel.increase");
-      if (typeof inc.name !== "string") throw new ParseError("kernel.increase.name: expected a string");
-      return { name: inc.name, by: integer(inc.by, "kernel.increase.by") };
+    status: oneOf(r.status, STATUSES, "layer.status"),
+    increases: array(r.increases, "layer.increases").map((i) => {
+      const inc = record<{ name: string; by: number }>(i, "layer.increase");
+      if (typeof inc.name !== "string") throw new ParseError("layer.increase.name: expected a string");
+      return { name: inc.name, by: integer(inc.by, "layer.increase.by") };
     }),
     cpuPressure: cpu,
   };
 }
 
 export function parseLive(value: unknown): Live {
-  const m = record<LiveMessage & { role: unknown; point: unknown; event: unknown; report: unknown }>(
+  const m = record<{ type: unknown; role: unknown; point: unknown; event: unknown; report: unknown }>(
     value,
     "live",
   );
@@ -175,11 +178,8 @@ export function parseLive(value: unknown): Live {
       return { type: "sample", role: roleKey(m.role, "live.role"), point: parsePoint(m.point) };
     case "event":
       return { type: "event", marker: parseMarker(m.event) };
-    case "kernel": {
-      const report = parseKernel(m.report);
-      if (report === null) throw new ParseError("live.kernel: missing report");
-      return { type: "kernel", report };
-    }
+    case "layer":
+      return { type: "layer", role: roleKey(m.role, "live.role"), report: parseLayerReport(m.report) };
     default:
       throw new ParseError(`live: unknown type ${JSON.stringify(m.type)}`);
   }

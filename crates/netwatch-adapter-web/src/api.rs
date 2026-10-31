@@ -83,17 +83,19 @@ pub enum LiveMessage {
         /// The event.
         event: EventPoint,
     },
-    /// The kernel layer's latest report.
-    Kernel {
+    /// A layer's latest health report.
+    Layer {
+        /// The layer's role key: `kernel` or `nic`.
+        role: String,
         /// The report.
-        report: KernelReportView,
+        report: LayerReportView,
     },
 }
 
-/// The kernel layer's state (ADR-0008).
+/// A layer's health (ADR-0008).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]
-pub struct KernelReportView {
+pub struct LayerReportView {
     /// `healthy`, `degraded`, `failing`, or `unknown`.
     pub status: String,
     /// Watched counters that grew since the previous reading.
@@ -127,15 +129,15 @@ pub struct PressureView {
     pub io: f64,
 }
 
-impl From<&netwatch_host_health::KernelReport> for KernelReportView {
-    fn from(report: &netwatch_host_health::KernelReport) -> Self {
-        use netwatch_host_health::KernelStatus;
-        KernelReportView {
+impl From<&netwatch_host_health::LayerReport> for LayerReportView {
+    fn from(report: &netwatch_host_health::LayerReport) -> Self {
+        use netwatch_host_health::LayerStatus;
+        LayerReportView {
             status: match report.status {
-                KernelStatus::Healthy => "healthy",
-                KernelStatus::Degraded => "degraded",
-                KernelStatus::Failing => "failing",
-                KernelStatus::Unknown => "unknown",
+                LayerStatus::Healthy => "healthy",
+                LayerStatus::Degraded => "degraded",
+                LayerStatus::Failing => "failing",
+                LayerStatus::Unknown => "unknown",
             }
             .to_owned(),
             increases: report

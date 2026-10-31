@@ -5,7 +5,7 @@
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
 //! - `GET /api/events?since_us=<µs>`: topology events, oldest first
 //! - `GET /api/targets`: every configured target's name
-//! - `GET /api/kernel`: the kernel layer's latest report
+//! - `GET /api/layers`: each layer's latest health report, by role key
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
@@ -14,6 +14,7 @@
 
 pub mod api;
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -28,7 +29,7 @@ use netwatch_shared::{Role, WallTime};
 use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
-pub use api::{EventPoint, KernelReportView, LiveMessage, RoleSummary, SamplePoint, TargetView};
+pub use api::{EventPoint, LayerReportView, LiveMessage, RoleSummary, SamplePoint, TargetView};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -39,7 +40,7 @@ struct Spa;
 struct AppState {
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
-    kernel: watch::Receiver<Option<KernelReportView>>,
+    layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: std::sync::Arc<Vec<TargetView>>,
 }
 
@@ -48,7 +49,7 @@ pub async fn serve(
     address: SocketAddr,
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
-    kernel: watch::Receiver<Option<KernelReportView>>,
+    layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: Vec<TargetView>,
 ) -> std::io::Result<()> {
     let app = Router::new()
@@ -56,13 +57,13 @@ pub async fn serve(
         .route("/api/samples", get(samples))
         .route("/api/events", get(events))
         .route("/api/targets", get(target_list))
-        .route("/api/kernel", get(kernel_report))
+        .route("/api/layers", get(layer_reports))
         .route("/api/live", get(live_socket))
         .fallback(spa)
         .with_state(AppState {
             database,
             live,
-            kernel,
+            layers,
             targets: std::sync::Arc::new(targets),
         });
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -139,8 +140,8 @@ async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {
     Json(state.targets.as_ref().clone())
 }
 
-async fn kernel_report(State(state): State<AppState>) -> Json<Option<KernelReportView>> {
-    Json(state.kernel.borrow().clone())
+async fn layer_reports(State(state): State<AppState>) -> Json<BTreeMap<String, LayerReportView>> {
+    Json(state.layers.borrow().clone())
 }
 
 async fn live_socket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {

@@ -4,10 +4,12 @@
 //! # Responsibility
 //!
 //! This crate interprets raw *counter readings* and *gauges* from the kernel's
-//! *telemetry sources*, and grades the kernel layer's *status*. So far the sources
-//! are: protocol counters (`/proc/net/snmp`, `/proc/net/netstat`), per-CPU packet
-//! processing (`/proc/net/softnet_stat`), and pressure stall information
-//! (`/proc/pressure`).
+//! *telemetry sources*, and grades the *status* of the kernel layer and the NIC
+//! layer. So far the sources are:
+//! - kernel: protocol counters (`/proc/net/snmp`, `/proc/net/netstat`), per-CPU packet
+//!   processing (`/proc/net/softnet_stat`), and pressure stall information
+//!   (`/proc/pressure`)
+//! - NIC: the device's own error and drop counters (`IFLA_STATS64`)
 //!
 //! # Invariants
 //!
@@ -18,7 +20,7 @@
 //! # What it hides
 //!
 //! Which counters matter, and which direction counts as "bad" for each. Callers get a
-//! [`KernelReport`]: a status, the counters that got worse, and the pressure.
+//! [`LayerReport`]: a status, the counters that got worse, and any pressure.
 //!
 //! This crate does no I/O (ADR-0012).
 
@@ -26,26 +28,49 @@ use std::collections::BTreeMap;
 
 use netwatch_verified::counter_increase;
 
-/// The kernel counters that mean packets were dropped or mangled on this host:
-/// any increase in them is bad (ADR-0008).
-pub const WATCHED: &[&str] = &[
-    "Ip.InDiscards",
-    "Ip.InHdrErrors",
-    "Ip.OutNoRoutes",
-    "Ip.ReasmFails",
-    "Udp.RcvbufErrors",
-    "Udp.SndbufErrors",
-    "Udp.InCsumErrors",
-    "TcpExt.ListenOverflows",
-    "TcpExt.ListenDrops",
-    "TcpExt.TCPBacklogDrop",
-    "Softnet.Dropped",
-    "Softnet.TimeSqueeze",
+/// How bad an increase in a watched counter is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Something got worse, but the layer still works.
+    Degrades,
+    /// The layer itself is losing packets.
+    Fails,
+}
+
+/// A counter to watch, and how bad its increase is.
+pub type Rule = (&'static str, Severity);
+
+/// The kernel counters that mean packets were dropped or mangled on this host
+/// (ADR-0008). Drops the host itself made are severe.
+pub const KERNEL_RULES: &[Rule] = &[
+    ("Ip.InDiscards", Severity::Fails),
+    ("Ip.InHdrErrors", Severity::Degrades),
+    ("Ip.OutNoRoutes", Severity::Degrades),
+    ("Ip.ReasmFails", Severity::Degrades),
+    ("Udp.RcvbufErrors", Severity::Degrades),
+    ("Udp.SndbufErrors", Severity::Degrades),
+    ("Udp.InCsumErrors", Severity::Degrades),
+    ("TcpExt.ListenOverflows", Severity::Degrades),
+    ("TcpExt.ListenDrops", Severity::Degrades),
+    ("TcpExt.TCPBacklogDrop", Severity::Degrades),
+    ("Softnet.Dropped", Severity::Fails),
+    ("Softnet.TimeSqueeze", Severity::Degrades),
 ];
 
-/// Drops in these mean the host itself discarded packets it should have handled,
-/// which makes the kernel layer `Failing` rather than `Degraded`.
-const SEVERE: &[&str] = &["Softnet.Dropped", "Ip.InDiscards"];
+/// The NIC's own counters (`IFLA_STATS64`). Errors on the wire degrade it; packets
+/// the device or driver dropped or missed fail it.
+pub const NIC_RULES: &[Rule] = &[
+    ("Link.RxErrors", Severity::Degrades),
+    ("Link.TxErrors", Severity::Degrades),
+    ("Link.RxCrcErrors", Severity::Degrades),
+    ("Link.RxFrameErrors", Severity::Degrades),
+    ("Link.TxCarrierErrors", Severity::Degrades),
+    ("Link.Collisions", Severity::Degrades),
+    ("Link.RxDropped", Severity::Fails),
+    ("Link.TxDropped", Severity::Fails),
+    ("Link.RxMissedErrors", Severity::Fails),
+    ("Link.RxFifoErrors", Severity::Fails),
+];
 
 /// Above this share of time stalled on CPU (PSI `some avg10`, in percent), probe
 /// timing can't be trusted, so the kernel layer is `Degraded`.
@@ -72,24 +97,24 @@ pub struct Pressure {
     pub io: f64,
 }
 
-/// How the kernel layer is doing (glossary: *status*).
+/// How a layer is doing (glossary: *status*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KernelStatus {
+pub enum LayerStatus {
     /// Nothing got worse.
     Healthy,
     /// Some watched counter grew, or the CPU is under pressure.
     Degraded,
-    /// The host itself dropped packets.
+    /// The layer itself dropped packets.
     Failing,
     /// Not enough readings yet to tell.
     Unknown,
 }
 
-/// The kernel layer's state after a reading.
+/// A layer's state after a reading.
 #[derive(Debug, Clone, PartialEq)]
-pub struct KernelReport {
+pub struct LayerReport {
     /// The graded status.
-    pub status: KernelStatus,
+    pub status: LayerStatus,
     /// Watched counters that grew since the previous reading, by how much.
     pub increases: BTreeMap<String, u64>,
     /// Counters that went backwards: reset or wrapped, so their difference means
@@ -99,24 +124,32 @@ pub struct KernelReport {
     pub pressure: Option<Pressure>,
 }
 
-/// Compares each reading with the previous one.
-#[derive(Debug, Default)]
-pub struct KernelWatch {
+/// Compares each reading of one layer with the previous one, by that layer's rules.
+///
+/// A watch must only ever see one source. When the source changes, such as the NIC
+/// after a failover, start a new watch: another device's counters aren't
+/// comparable.
+#[derive(Debug)]
+pub struct CounterWatch {
+    rules: &'static [Rule],
     previous: Option<Reading>,
 }
 
-impl KernelWatch {
+impl CounterWatch {
     /// A watch with no readings yet.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(rules: &'static [Rule]) -> Self {
+        Self {
+            rules,
+            previous: None,
+        }
     }
 
     /// Takes a reading and reports what changed since the previous one. The first
     /// reading has nothing to compare against, so it reports `Unknown`.
-    pub fn observe(&mut self, reading: Reading) -> KernelReport {
+    pub fn observe(&mut self, reading: Reading) -> LayerReport {
         let Some(previous) = self.previous.replace(reading.clone()) else {
-            return KernelReport {
-                status: KernelStatus::Unknown,
+            return LayerReport {
+                status: LayerStatus::Unknown,
                 increases: BTreeMap::new(),
                 resets: Vec::new(),
                 pressure: reading.pressure,
@@ -124,7 +157,8 @@ impl KernelWatch {
         };
         let mut increases = BTreeMap::new();
         let mut resets = Vec::new();
-        for &name in WATCHED {
+        let mut severe = false;
+        for &(name, severity) in self.rules {
             let (Some(&before), Some(&now)) =
                 (previous.counters.get(name), reading.counters.get(name))
             else {
@@ -134,20 +168,20 @@ impl KernelWatch {
                 Some(0) => {}
                 Some(increase) => {
                     increases.insert(name.to_owned(), increase);
+                    severe |= severity == Severity::Fails;
                 }
                 None => resets.push(name.to_owned()),
             }
         }
-        let severe = increases.keys().any(|name| SEVERE.contains(&name.as_str()));
         let pressured = reading.pressure.is_some_and(|p| p.cpu > CPU_PRESSURE_LIMIT);
         let status = if severe {
-            KernelStatus::Failing
+            LayerStatus::Failing
         } else if !increases.is_empty() || pressured {
-            KernelStatus::Degraded
+            LayerStatus::Degraded
         } else {
-            KernelStatus::Healthy
+            LayerStatus::Healthy
         };
-        KernelReport {
+        LayerReport {
             status,
             increases,
             resets,

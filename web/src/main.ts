@@ -6,9 +6,8 @@ import "uplot/dist/uPlot.min.css";
 import "./style.css";
 
 import {
-  KERNEL_ROLE,
   ParseError,
-  parseKernel,
+  parseLayers,
   parseLive,
   parseMarkers,
   parseMicros,
@@ -17,7 +16,7 @@ import {
   parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
-import type { KernelReport, Marker, Micros, Point, RoleKey } from "./model";
+import type { LayerReport, Marker, Micros, Point, RoleKey } from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
 import { pathAware, status, worse, type Status } from "./status";
@@ -28,6 +27,7 @@ const STALE_AFTER_US = 15 * 1e6;
 interface Row {
   points: Point[];
   chart: Chart;
+  plotEl: HTMLElement;
   titleEl: HTMLElement;
   statusEl: HTMLElement;
   valueEl: HTMLElement;
@@ -35,7 +35,7 @@ interface Row {
 
 const rows = new Map<RoleKey, Row>();
 let markers: Marker[] = [];
-let kernel: KernelReport | null = null;
+const layers = new Map<RoleKey, LayerReport>();
 let names: ReadonlyMap<string, string> = new Map();
 let zoom: { min: number; max: number } | null = null;
 
@@ -89,6 +89,7 @@ function addRow(key: RoleKey): Row {
     statusEl,
     valueEl,
     titleEl,
+    plotEl,
     chart,
   };
   rows.set(key, row);
@@ -123,15 +124,18 @@ function ownStatus(row: Row): Status {
   return status(row.points, nowMicros(), STALE_AFTER_US);
 }
 
-/** The kernel row combines its loopback baseline with the counters and pressure. */
-function kernelStatus(row: Row): Status {
-  return kernel === null ? ownStatus(row) : worse(ownStatus(row), kernel.status);
+/** A layer row combines its probes, if any, with its health report (ADR-0008). */
+function layerStatus(key: RoleKey, row: Row): Status {
+  const report = layers.get(key);
+  if (report === undefined) return ownStatus(row);
+  return row.points.length === 0 ? report.status : worse(ownStatus(row), report.status);
 }
 
-function kernelSummary(): string {
-  if (kernel === null) return "";
-  const cpu = kernel.cpuPressure === null ? "" : `CPU pressure ${kernel.cpuPressure.toFixed(1)}%`;
-  const grew = kernel.increases.map((i) => `${i.name} +${String(i.by)}`);
+function layerSummary(key: RoleKey): string {
+  const report = layers.get(key);
+  if (report === undefined) return "";
+  const cpu = report.cpuPressure === null ? "" : `CPU pressure ${report.cpuPressure.toFixed(1)}%`;
+  const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
   return [cpu, ...grew].filter((s) => s !== "").join(" · ");
 }
 
@@ -145,7 +149,8 @@ function render(row: Row, key: RoleKey): void {
     const other = rows.get(k);
     return other === undefined ? [] : [ownStatus(other)];
   });
-  const own = key === KERNEL_ROLE ? kernelStatus(row) : ownStatus(row);
+  row.plotEl.hidden = row.points.length === 0;
+  const own = layerStatus(key, row);
   const s = pathAware(own, key.startsWith("hop:"), downstream);
   row.statusEl.className = `status ${s}`;
   row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
@@ -158,7 +163,7 @@ function render(row: Row, key: RoleKey): void {
       : last.measurement.kind === "round-trip"
         ? `${last.measurement.rttMs.toFixed(2)} ms`
         : last.measurement.reason;
-  const extra = key === KERNEL_ROLE ? kernelSummary() : "";
+  const extra = layerSummary(key);
   row.valueEl.textContent = [extra, latestValue].filter((s) => s !== "").join(" · ");
 }
 
@@ -190,7 +195,10 @@ async function backfill(from: Micros): Promise<void> {
     fetchJson(`/api/events?since_us=${String(from)}`).then(parseMarkers),
   ]);
   markers = markers.concat(events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)));
-  kernel = parseKernel(await fetchJson("/api/kernel"));
+  for (const [key, report] of parseLayers(await fetchJson("/api/layers"))) {
+    layers.set(key, report);
+    render(addRow(key), key);
+  }
   names = parseTargetNames(await fetchJson("/api/targets"));
   await Promise.all(
     roles.map(async (key) => {
@@ -225,12 +233,10 @@ function connect(): void {
           render(row, live.role);
           break;
         }
-        case "kernel": {
-          kernel = live.report;
-          const row = rows.get(KERNEL_ROLE);
-          if (row !== undefined) render(row, KERNEL_ROLE);
+        case "layer":
+          layers.set(live.role, live.report);
+          render(addRow(live.role), live.role);
           break;
-        }
         case "event":
           markers.push(live.marker);
           renderIdentities();

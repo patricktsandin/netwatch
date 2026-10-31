@@ -27,7 +27,7 @@ use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
 use netwatch_topology::{Observation, ResyncGeneration, Snapshot, egress};
 use tokio::sync::mpsc;
 
-pub use resolve::resolve_egress;
+pub use resolve::{link_counters, resolve_egress};
 
 // Legacy multicast group bitmasks from <linux/rtnetlink.h>.
 const RTMGRP_LINK: u32 = 0x1;

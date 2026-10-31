@@ -1,5 +1,6 @@
 //! `RTM_GETROUTE` and `RTM_GETLINK` requests, parsed into an [`EgressPath`].
 
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU32;
@@ -60,6 +61,35 @@ pub fn resolve_egress() -> io::Result<Option<EgressPath>> {
         kind,
         source,
     }))
+}
+
+/// The device counters (`IFLA_STATS64`) of interface `index`, by `Link.Name`, for the
+/// NIC layer's health (ADR-0008).
+pub fn link_counters(index: NonZeroU32) -> io::Result<BTreeMap<String, u64>> {
+    let link = get_link(&connect()?, index)?;
+    let stats = link
+        .attributes
+        .iter()
+        .find_map(|a| match a {
+            LinkAttribute::Stats64(stats) => Some(stats),
+            _ => None,
+        })
+        .ok_or_else(|| invalid_data("RTM_NEWLINK reply has no IFLA_STATS64"))?;
+    Ok(BTreeMap::from(
+        [
+            ("RxErrors", stats.rx_errors),
+            ("TxErrors", stats.tx_errors),
+            ("RxDropped", stats.rx_dropped),
+            ("TxDropped", stats.tx_dropped),
+            ("Collisions", stats.collisions),
+            ("RxCrcErrors", stats.rx_crc_errors),
+            ("RxFrameErrors", stats.rx_frame_errors),
+            ("RxFifoErrors", stats.rx_fifo_errors),
+            ("RxMissedErrors", stats.rx_missed_errors),
+            ("TxCarrierErrors", stats.tx_carrier_errors),
+        ]
+        .map(|(name, value)| (format!("Link.{name}"), value)),
+    ))
 }
 
 fn connect() -> io::Result<Socket> {

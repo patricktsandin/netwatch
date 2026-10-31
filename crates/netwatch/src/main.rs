@@ -13,9 +13,9 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use netwatch_adapter_sockets::http::{Expected, HttpsTarget};
-use netwatch_adapter_web::{EventPoint, KernelReportView, LiveMessage, TargetView};
+use netwatch_adapter_web::{EventPoint, LayerReportView, LiveMessage, TargetView};
 use netwatch_history::{Measurement, Sample};
-use netwatch_host_health::KernelWatch;
+use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -118,12 +118,13 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("NETWATCH_LISTEN must be an address:port")?;
     let (live, _) = broadcast::channel::<LiveMessage>(1024);
-    let (kernel_tx, kernel) = watch::channel::<Option<KernelReportView>>(None);
+    let (layers_tx, layers) =
+        watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     tokio::spawn({
         let live = live.clone();
         async move {
             if let Err(error) =
-                netwatch_adapter_web::serve(listen, database, live, kernel, target_names()).await
+                netwatch_adapter_web::serve(listen, database, live, layers, target_names()).await
             {
                 tracing::error!(%error, "the UI server stopped");
             }
@@ -241,7 +242,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // The kernel layer's counters and pressure, read every second (ADR-0008).
-    let mut kernel_watch = KernelWatch::new();
+    let mut kernel_watch = CounterWatch::new(KERNEL_RULES);
+    // The NIC's counters only compare within one device, so the watch restarts
+    // whenever the NIC changes (a failover).
+    let mut nic_watch: Option<(InterfaceIndex, CounterWatch)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
 
     loop {
@@ -250,12 +254,24 @@ async fn main() -> anyhow::Result<()> {
                 let Ok(reading) = tokio::task::spawn_blocking(netwatch_adapter_procfs::read).await else {
                     continue;
                 };
-                let report = KernelReportView::from(&kernel_watch.observe(reading));
-                if !report.increases.is_empty() {
-                    tracing::warn!(status = %report.status, increases = ?report.increases, "kernel counters grew");
+                publish_layer(Role::Kernel, &kernel_watch.observe(reading), &live, &layers_tx);
+                let nic = topology.binding(&Role::Nic).and_then(|b| match b.identity {
+                    Identity::Interface { index, .. } => Some(index),
+                    Identity::Address(_) => None,
+                });
+                if let Some(index) = nic {
+                    if nic_watch.as_ref().is_none_or(|(watched, _)| *watched != index) {
+                        nic_watch = Some((index, CounterWatch::new(NIC_RULES)));
+                    }
+                    let counters = tokio::task::spawn_blocking(move || {
+                        netwatch_adapter_netlink::link_counters(index.get())
+                    })
+                    .await;
+                    if let (Ok(Ok(counters)), Some((_, watch))) = (counters, nic_watch.as_mut()) {
+                        let reading = netwatch_host_health::Reading { counters, pressure: None };
+                        publish_layer(Role::Nic, &watch.observe(reading), &live, &layers_tx);
+                    }
                 }
-                let _ = live.send(LiveMessage::Kernel { report: report.clone() });
-                kernel_tx.send_replace(Some(report));
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
@@ -384,6 +400,26 @@ fn attribute(
         at: clock.wall_now(),
         measurement: resolution.measurement,
     })
+}
+
+/// Publishes a layer's health report to the UI, and logs it when something got worse.
+fn publish_layer(
+    role: Role,
+    report: &netwatch_host_health::LayerReport,
+    live: &broadcast::Sender<LiveMessage>,
+    layers: &watch::Sender<std::collections::BTreeMap<String, LayerReportView>>,
+) {
+    let view = LayerReportView::from(report);
+    if !view.increases.is_empty() {
+        tracing::warn!(?role, status = %view.status, increases = ?view.increases, "counters grew");
+    }
+    let _ = live.send(LiveMessage::Layer {
+        role: role.key(),
+        report: view.clone(),
+    });
+    layers.send_modify(|all| {
+        all.insert(role.key(), view);
+    });
 }
 
 fn log_sample(sample: &Sample) {

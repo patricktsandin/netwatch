@@ -3,9 +3,9 @@ import type { CounterIncrease } from "./CounterIncrease";
 import type { PressureView } from "./PressureView";
 
 /**
- * The kernel layer's state (ADR-0008).
+ * A layer's health (ADR-0008).
  */
-export type KernelReportView = { 
+export type LayerReportView = { 
 /**
  * `healthy`, `degraded`, `failing`, or `unknown`.
  */
