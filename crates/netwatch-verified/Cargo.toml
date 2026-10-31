@@ -1,0 +1,16 @@
+[package]
+name = "netwatch-verified"
+description = "Verus-verified algorithms shared by the domain contexts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+vstd.workspace = true
+
+[package.metadata.verus]
+verify = true
+
+[lints]
+workspace = true

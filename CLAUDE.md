@@ -143,5 +143,5 @@ cd web && npx tsc --noEmit && npx vitest run && npx eslint .
 quint typecheck specs/*.qnt
 quint verify --invariant=<name> specs/<file>.qnt   # Apalache
 cargo kani
-verus crates/netwatch-verified/src/lib.rs
+cargo verus verify -p netwatch-verified        # Verus proofs; format verified code with `cargo verus fmt`
 ```

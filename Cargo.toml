@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.dependencies]
+netwatch-shared = { path = "crates/netwatch-shared" }
+netwatch-verified = { path = "crates/netwatch-verified" }
+netwatch-topology = { path = "crates/netwatch-topology" }
+netwatch-probing = { path = "crates/netwatch-probing" }
+netwatch-host-health = { path = "crates/netwatch-host-health" }
+netwatch-history = { path = "crates/netwatch-history" }
+netwatch-adapter-netlink = { path = "crates/netwatch-adapter-netlink" }
+netwatch-adapter-sockets = { path = "crates/netwatch-adapter-sockets" }
+netwatch-adapter-procfs = { path = "crates/netwatch-adapter-procfs" }
+netwatch-adapter-modem = { path = "crates/netwatch-adapter-modem" }
+netwatch-adapter-sqlite = { path = "crates/netwatch-adapter-sqlite" }
+netwatch-adapter-web = { path = "crates/netwatch-adapter-web" }
+
+# Pinned to the installed Verus release (see CLAUDE.md, "Commands").
+vstd = "=0.0.0-2026-10-25-0158"
+
+cargo_metadata = "0.23"
+
+[workspace.lints.rust]
+missing_docs = "warn"            # every public item has an interface comment (ADR-0011)
+unsafe_code = "deny"             # adapters that need it allow it locally, with a SAFETY comment
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_only)"] }
+
+[workspace.lints.clippy]
+unwrap_used = "deny"             # ADR-0015; tests are exempt via clippy.toml
+dbg_macro = "deny"
+todo = "warn"
+print_stdout = "warn"            # use `tracing`

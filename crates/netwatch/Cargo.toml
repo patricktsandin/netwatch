@@ -1,0 +1,25 @@
+[package]
+name = "netwatch"
+description = "Composition root: wires adapters to the domain and owns the runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+netwatch-topology.workspace = true
+netwatch-probing.workspace = true
+netwatch-host-health.workspace = true
+netwatch-history.workspace = true
+netwatch-adapter-netlink.workspace = true
+netwatch-adapter-sockets.workspace = true
+netwatch-adapter-procfs.workspace = true
+netwatch-adapter-modem.workspace = true
+netwatch-adapter-sqlite.workspace = true
+netwatch-adapter-web.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+cargo_metadata.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "netwatch-adapter-web"
+description = "Open host service: REST + WebSocket API and the embedded SPA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+netwatch-shared.workspace = true
+netwatch-history.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "netwatch-adapter-sockets"
+description = "Anti-corruption layer: probe socket I/O"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+netwatch-shared.workspace = true
+netwatch-probing.workspace = true
+
+[lints]
+workspace = true
