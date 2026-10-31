@@ -4,16 +4,19 @@
 //! This is the only crate allowed to use `anyhow` (ADR-0015).
 
 mod clock;
+mod persist;
 mod probe;
 
 use std::net::{IpAddr, Ipv4Addr};
+use std::num::NonZeroU64;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use netwatch_history::{Measurement, Sample};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
-use netwatch_shared::{Role, TargetId};
+use netwatch_shared::{IdentityEpoch, Role, TargetId};
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
 use tokio::sync::{mpsc, watch};
 
@@ -34,11 +37,20 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let clock = Clock::start();
+    let database =
+        std::env::var_os("NETWATCH_DB").map_or_else(|| PathBuf::from("netwatch.db"), PathBuf::from);
+    let resume_after = persist::last_epoch(&database)
+        .with_context(|| format!("opening {}", database.display()))?;
+    let writes = persist::spawn(database, clock)?;
 
     let (observations_tx, mut observations) = mpsc::channel(256);
     let _watcher = netwatch_adapter_netlink::watch(observations_tx.clone())
         .context("starting the netlink topology watcher")?;
-    let mut topology = Topology::new();
+    // Epochs stay unique across restarts, so stored samples never share one.
+    let mut topology = match resume_after.and_then(NonZeroU64::new) {
+        Some(last) => Topology::resuming_after(IdentityEpoch::new(last)),
+        None => Topology::new(),
+    };
 
     let (pin_tx, pin) = watch::channel::<Option<Binding>>(None);
     let (samples_tx, mut samples) = mpsc::channel::<Sample>(1024);
@@ -64,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
-                    handle(output, &observations_tx);
+                    handle(output, &observations_tx, &writes, clock);
                 }
                 // Targets are pinned to the egress interface: the tunnel if there
                 // is one, otherwise the NIC (ADR-0020, ADR-0022).
@@ -78,16 +90,27 @@ async fn main() -> anyhow::Result<()> {
                     changed
                 });
             }
-            Some(sample) = samples.recv() => log_sample(&sample),
+            Some(sample) = samples.recv() => {
+                log_sample(&sample);
+                let _ = writes.send(persist::Write::Sample(sample));
+            }
             _ = tokio::signal::ctrl_c() => break,
         }
     }
     Ok(())
 }
 
-fn handle(output: Output, observations: &mpsc::Sender<Observation>) {
+fn handle(
+    output: Output,
+    observations: &mpsc::Sender<Observation>,
+    writes: &std::sync::mpsc::Sender<persist::Write>,
+    clock: Clock,
+) {
     match output {
-        Output::Event(event) => log_event(&event),
+        Output::Event(event) => {
+            log_event(&event);
+            let _ = writes.send(persist::Write::Event(event, clock.wall_now()));
+        }
         Output::Command(Command::Resync { generation }) => {
             let observations = observations.clone();
             tokio::task::spawn_blocking(move || {

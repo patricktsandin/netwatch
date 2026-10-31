@@ -65,3 +65,49 @@ impl HopTtl {
         self.0
     }
 }
+
+impl Role {
+    /// A stable text key, used wherever a role crosses a boundary as text: database
+    /// rows, API paths, the UI. `nic`, `tunnel`, `local-interface`, `hop:<target>:<ttl>`,
+    /// `target:<id>`.
+    pub fn key(&self) -> String {
+        match self {
+            Role::Nic => "nic".to_owned(),
+            Role::Tunnel => "tunnel".to_owned(),
+            Role::LocalInterface => "local-interface".to_owned(),
+            Role::Hop { target, ttl } => format!("hop:{}:{}", target.get(), ttl.get()),
+            Role::Target(target) => format!("target:{}", target.get()),
+        }
+    }
+
+    /// Parses a [`key`](Self::key). `None` for anything else.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "nic" => Some(Role::Nic),
+            "tunnel" => Some(Role::Tunnel),
+            "local-interface" => Some(Role::LocalInterface),
+            _ => {
+                let mut parts = key.split(':');
+                let role = match (parts.next()?, parts.next(), parts.next()) {
+                    ("target", Some(id), None) => Role::Target(TargetId(canonical(id)?)),
+                    ("hop", Some(id), Some(ttl)) => Role::Hop {
+                        target: TargetId(canonical(id)?),
+                        ttl: HopTtl(NonZeroU8::new(u8::try_from(canonical(ttl)?).ok()?)?),
+                    },
+                    _ => return None,
+                };
+                parts.next().is_none().then_some(role)
+            }
+        }
+    }
+}
+
+/// A decimal number written the way `key` writes it: digits only, no sign, and no
+/// leading zeros. Accepting only that form makes `from_key` the exact inverse of
+/// `key`.
+fn canonical(digits: &str) -> Option<u32> {
+    let valid = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'));
+    valid.then(|| digits.parse().ok()).flatten()
+}

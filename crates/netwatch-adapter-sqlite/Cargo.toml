@@ -9,6 +9,9 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-history.workspace = true
+netwatch-topology.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

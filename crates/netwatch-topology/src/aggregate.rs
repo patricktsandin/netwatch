@@ -74,6 +74,17 @@ impl Topology {
         }
     }
 
+    /// A view like [`new`](Self::new), except that its first epoch comes after
+    /// `last`, the highest epoch allocated before a restart. Epochs stay unique across
+    /// restarts, so persisted samples from different runs never share one.
+    pub fn resuming_after(last: IdentityEpoch) -> Self {
+        Self {
+            epochs: MonotonicCounter::resuming_after(last.get().get())
+                .expect("u64 epochs cannot be exhausted: one change per ns lasts 584 years"),
+            ..Self::new()
+        }
+    }
+
     /// Applies one observation, returning the events and commands it caused, in
     /// order.
     pub fn observe(&mut self, observation: Observation) -> Vec<Output> {

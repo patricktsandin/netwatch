@@ -41,6 +41,23 @@ impl MonotonicCounter {
         MonotonicCounter { next: 1 }
     }
 
+    /// A counter that resumes after `last`, the highest number handed out by an
+    /// earlier counter (for example, the last epoch stored before a restart). `None` if
+    /// `last` is `u64::MAX`, because nothing would be left to hand out.
+    pub fn resuming_after(last: u64) -> (counter: Option<Self>)
+        ensures
+            match counter {
+                Some(c) => c.peek() == last + 1,
+                None => last == u64::MAX,
+            },
+    {
+        if last == u64::MAX {
+            None
+        } else {
+            Some(MonotonicCounter { next: last + 1 })
+        }
+    }
+
     /// The next number, or `None` once the `u64` space is used up.
     ///
     /// At one allocation per nanosecond, the space lasts 584 years. Callers may treat

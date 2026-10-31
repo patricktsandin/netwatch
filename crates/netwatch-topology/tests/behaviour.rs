@@ -289,3 +289,12 @@ fn snapshot_while_synchronized_is_ignored() {
     assert_eq!(outputs, vec![]);
     assert_eq!(topology.binding(&Role::Nic), None);
 }
+
+#[test]
+fn a_resumed_view_continues_after_the_last_stored_epoch() {
+    let mut topology = Topology::resuming_after(epoch(41));
+
+    let outputs = topology.observe(observed(Role::Nic, eth0()));
+
+    assert_eq!(outputs, vec![started(42, Role::Nic, eth0())]);
+}
