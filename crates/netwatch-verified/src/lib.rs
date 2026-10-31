@@ -7,7 +7,7 @@
 //! - reply matching and probe-sequence wraparound (used by Probing): [`sequence_of`]
 //! - counter wraparound and counter-reset detection (used by Host health):
 //!   [`counter_increase`]
-//! - the merge algebra for rollups and percentiles (used by History)
+//! - the merge algebra for rollups (used by History): [`Summary`]
 //! - identity-epoch advancement (used by Topology): [`MonotonicCounter`]
 //!
 //! # Rules
@@ -24,7 +24,9 @@
 mod counter;
 mod monotonic_counter;
 mod sequence;
+mod summary;
 
 pub use counter::counter_increase;
 pub use monotonic_counter::MonotonicCounter;
 pub use sequence::sequence_of;
+pub use summary::Summary;
