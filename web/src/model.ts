@@ -36,6 +36,14 @@ export interface Marker {
   readonly detail: string | null;
 }
 
+/** The kernel layer's latest report (ADR-0008). */
+export interface KernelReport {
+  readonly status: "healthy" | "degraded" | "failing" | "unknown";
+  readonly increases: readonly { readonly name: string; readonly by: number }[];
+  readonly cpuPressure: number | null;
+}
+
 export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
-  | { readonly type: "event"; readonly marker: Marker };
+  | { readonly type: "event"; readonly marker: Marker }
+  | { readonly type: "kernel"; readonly report: KernelReport };

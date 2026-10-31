@@ -12,12 +12,15 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use netwatch_adapter_web::{EventPoint, LiveMessage};
+use netwatch_adapter_web::{EventPoint, KernelReportView, LiveMessage};
 use netwatch_history::{Measurement, Sample};
+use netwatch_host_health::KernelWatch;
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
-use netwatch_shared::{HopTtl, Identity, IdentityEpoch, Role, TargetId};
+use netwatch_shared::{
+    HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId,
+};
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -57,10 +60,11 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("NETWATCH_LISTEN must be an address:port")?;
     let (live, _) = broadcast::channel::<LiveMessage>(1024);
+    let (kernel_tx, kernel) = watch::channel::<Option<KernelReportView>>(None);
     tokio::spawn({
         let live = live.clone();
         async move {
-            if let Err(error) = netwatch_adapter_web::serve(listen, database, live).await {
+            if let Err(error) = netwatch_adapter_web::serve(listen, database, live, kernel).await {
                 tracing::error!(%error, "the UI server stopped");
             }
         }
@@ -91,6 +95,35 @@ async fn main() -> anyhow::Result<()> {
         SequenceSpace::ICMP,
     )
     .context("hop stream configuration")?;
+    // The stack baseline (ADR-0008): ICMP echo over loopback, which the kernel always
+    // numbers ifindex 1 (LOOPBACK_IFINDEX).
+    let loopback = Identity::Interface {
+        index: InterfaceIndex::new(std::num::NonZeroU32::MIN),
+        name: InterfaceName::parse(b"lo").context("\"lo\" is a valid interface name")?,
+    };
+    for output in topology.observe(Observation::ProbeIdentified {
+        role: Role::Kernel,
+        identity: loopback,
+    }) {
+        handle(output, &observations_tx, &writes, &live, clock);
+    }
+    let (_kernel_pin_tx, kernel_pin) = watch::channel(topology.binding(&Role::Kernel).cloned());
+    let baseline = StreamConfig::new(
+        Time::new::<second>(1.0),
+        Time::new::<second>(0.5),
+        SequenceSpace::ICMP,
+    )
+    .context("loopback stream configuration")?;
+    tokio::spawn(probe::run_role(
+        Role::Kernel,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        None,
+        baseline,
+        kernel_pin,
+        resolutions_tx.clone(),
+        clock,
+    ));
+
     for (id, destination) in DEFAULT_ECHO_TARGETS {
         let target = TargetId::new(id);
         let mut streams = vec![(Role::Target(target), None, echo)];
@@ -117,8 +150,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The kernel layer's counters and pressure, read every second (ADR-0008).
+    let mut kernel_watch = KernelWatch::new();
+    let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+
     loop {
         tokio::select! {
+            _ = kernel_tick.tick() => {
+                let Ok(reading) = tokio::task::spawn_blocking(netwatch_adapter_procfs::read).await else {
+                    continue;
+                };
+                let report = KernelReportView::from(&kernel_watch.observe(reading));
+                if !report.increases.is_empty() {
+                    tracing::warn!(status = %report.status, increases = ?report.increases, "kernel counters grew");
+                }
+                let _ = live.send(LiveMessage::Kernel { report: report.clone() });
+                kernel_tx.send_replace(Some(report));
+            }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
                     handle(output, &observations_tx, &writes, &live, clock);

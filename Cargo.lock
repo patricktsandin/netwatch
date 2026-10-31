@@ -961,6 +961,7 @@ dependencies = [
  "axum",
  "netwatch-adapter-sqlite",
  "netwatch-history",
+ "netwatch-host-health",
  "netwatch-shared",
  "rust-embed",
  "serde",

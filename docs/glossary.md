@@ -36,6 +36,8 @@ words are defined elsewhere in this file.
 
 - **Layer**: one level of the monitored path: *kernel layer*, *NIC layer*, *tunnel layer*,
   *local interface layer*, *hop layer*, *target layer*.
+- **Kernel role**: the role of the *kernel layer*. It is bound to the loopback
+  interface, and its samples are *loopback probes*: the stack baseline.
 - **Role**: a logical position that is measured continuously, like "the NIC", "hop 2 toward
   target X", or "target X". Series are keyed by role.
 - **Identity**: the concrete thing behind a *role* at a given moment, such as an interface,

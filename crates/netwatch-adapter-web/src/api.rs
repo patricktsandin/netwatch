@@ -72,6 +72,77 @@ pub enum LiveMessage {
         /// The event.
         event: EventPoint,
     },
+    /// The kernel layer's latest report.
+    Kernel {
+        /// The report.
+        report: KernelReportView,
+    },
+}
+
+/// The kernel layer's state (ADR-0008).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct KernelReportView {
+    /// `healthy`, `degraded`, `failing`, or `unknown`.
+    pub status: String,
+    /// Watched counters that grew since the previous reading.
+    pub increases: Vec<CounterIncrease>,
+    /// Counters that went backwards (reset), whose difference means nothing.
+    pub resets: Vec<String>,
+    /// PSI `some avg10` in percent, if available.
+    pub pressure: Option<PressureView>,
+}
+
+/// One watched counter's growth.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct CounterIncrease {
+    /// `Group.Name`, as in `/proc/net/snmp`.
+    pub name: String,
+    /// How much it grew.
+    #[ts(type = "number")]
+    pub by: u64,
+}
+
+/// Pressure stall information, in percent.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct PressureView {
+    /// Stalled on CPU.
+    pub cpu: f64,
+    /// Stalled on memory.
+    pub memory: f64,
+    /// Stalled on I/O.
+    pub io: f64,
+}
+
+impl From<&netwatch_host_health::KernelReport> for KernelReportView {
+    fn from(report: &netwatch_host_health::KernelReport) -> Self {
+        use netwatch_host_health::KernelStatus;
+        KernelReportView {
+            status: match report.status {
+                KernelStatus::Healthy => "healthy",
+                KernelStatus::Degraded => "degraded",
+                KernelStatus::Failing => "failing",
+                KernelStatus::Unknown => "unknown",
+            }
+            .to_owned(),
+            increases: report
+                .increases
+                .iter()
+                .map(|(name, &by)| CounterIncrease {
+                    name: name.clone(),
+                    by,
+                })
+                .collect(),
+            resets: report.resets.clone(),
+            pressure: report.pressure.map(|p| PressureView {
+                cpu: p.cpu,
+                memory: p.memory,
+                io: p.io,
+            }),
+        }
+    }
 }
 
 fn loss_text(loss: Loss) -> &'static str {

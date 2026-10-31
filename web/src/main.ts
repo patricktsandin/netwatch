@@ -5,12 +5,21 @@
 import "uplot/dist/uPlot.min.css";
 import "./style.css";
 
-import { ParseError, parseLive, parseMarkers, parseMicros, parsePoints, parseRoles } from "./api/parse";
+import {
+  KERNEL_ROLE,
+  ParseError,
+  parseKernel,
+  parseLive,
+  parseMarkers,
+  parseMicros,
+  parsePoints,
+  parseRoles,
+} from "./api/parse";
 import { createChart, type Chart } from "./chart";
-import type { Marker, Micros, Point, RoleKey } from "./model";
+import type { KernelReport, Marker, Micros, Point, RoleKey } from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
-import { pathAware, status, type Status } from "./status";
+import { pathAware, status, worse, type Status } from "./status";
 
 const WINDOW_US = 3600 * 1e6;
 const STALE_AFTER_US = 15 * 1e6;
@@ -18,12 +27,14 @@ const STALE_AFTER_US = 15 * 1e6;
 interface Row {
   points: Point[];
   chart: Chart;
+  titleEl: HTMLElement;
   statusEl: HTMLElement;
   valueEl: HTMLElement;
 }
 
 const rows = new Map<RoleKey, Row>();
 let markers: Marker[] = [];
+let kernel: KernelReport | null = null;
 let zoom: { min: number; max: number } | null = null;
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
@@ -51,7 +62,8 @@ function addRow(key: RoleKey): Row {
   const head = element("header", "row-head");
   const statusEl = element("span", "status unknown", "unknown");
   const valueEl = element("span", "value");
-  head.append(element("h2", "row-title", label(key)), statusEl, valueEl);
+  const titleEl = element("h2", "row-title", label(key));
+  head.append(titleEl, statusEl, valueEl);
   const plotEl = element("div", "plot");
   rowEl.append(head, plotEl);
   rowEl.dataset["role"] = key;
@@ -74,6 +86,7 @@ function addRow(key: RoleKey): Row {
     },
     statusEl,
     valueEl,
+    titleEl,
     chart,
   };
   rows.set(key, row);
@@ -102,6 +115,18 @@ function ownStatus(row: Row): Status {
   return status(row.points, nowMicros(), STALE_AFTER_US);
 }
 
+/** The kernel row combines its loopback baseline with the counters and pressure. */
+function kernelStatus(row: Row): Status {
+  return kernel === null ? ownStatus(row) : worse(ownStatus(row), kernel.status);
+}
+
+function kernelSummary(): string {
+  if (kernel === null) return "";
+  const cpu = kernel.cpuPressure === null ? "" : `CPU pressure ${kernel.cpuPressure.toFixed(1)}%`;
+  const grew = kernel.increases.map((i) => `${i.name} +${String(i.by)}`);
+  return [cpu, ...grew].filter((s) => s !== "").join(" · ");
+}
+
 function render(row: Row, key: RoleKey): void {
   row.chart.update(row.points);
   if (zoom !== null) row.chart.setWindow(zoom.min, zoom.max);
@@ -109,14 +134,21 @@ function render(row: Row, key: RoleKey): void {
     const other = rows.get(k);
     return other === undefined ? [] : [ownStatus(other)];
   });
-  const s = pathAware(ownStatus(row), key.startsWith("hop:"), downstream);
+  const own = key === KERNEL_ROLE ? kernelStatus(row) : ownStatus(row);
+  const s = pathAware(own, key.startsWith("hop:"), downstream);
   row.statusEl.className = `status ${s}`;
   row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
   row.statusEl.title =
     s === "rate-limited" ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP." : "";
   const last = row.points.at(-1);
-  row.valueEl.textContent =
-    last === undefined ? "" : last.measurement.kind === "round-trip" ? `${last.measurement.rttMs.toFixed(2)} ms` : last.measurement.reason;
+  const latestValue =
+    last === undefined
+      ? ""
+      : last.measurement.kind === "round-trip"
+        ? `${last.measurement.rttMs.toFixed(2)} ms`
+        : last.measurement.reason;
+  const extra = key === KERNEL_ROLE ? kernelSummary() : "";
+  row.valueEl.textContent = [extra, latestValue].filter((s) => s !== "").join(" · ");
 }
 
 /** The current identity of each global role, from the latest unended epoch. */
@@ -129,11 +161,16 @@ function renderIdentities(): void {
     if (m.kind === "epoch-started") open.set(m.role, m);
     if (m.kind === "epoch-ended" && open.get(m.role)?.epoch === m.epoch) open.delete(m.role);
   }
+  // Global roles go in the header; a hop's router goes in its own row's title.
   el.replaceChildren(
     ...[...open.entries()]
-      .filter(([role]) => !role.startsWith("target"))
+      .filter(([role]) => !role.startsWith("target") && !role.startsWith("hop"))
       .map(([role, m]) => element("span", "identity", `${role}: ${m.detail ?? "?"} (epoch ${String(m.epoch)})`)),
   );
+  for (const [key, row] of rows) {
+    const identity = open.get(key)?.detail;
+    row.titleEl.textContent = key.startsWith("hop") && identity != null ? `${label(key)} · ${identity}` : label(key);
+  }
 }
 
 async function backfill(from: Micros): Promise<void> {
@@ -142,6 +179,7 @@ async function backfill(from: Micros): Promise<void> {
     fetchJson(`/api/events?since_us=${String(from)}`).then(parseMarkers),
   ]);
   markers = markers.concat(events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)));
+  kernel = parseKernel(await fetchJson("/api/kernel"));
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);
@@ -173,6 +211,12 @@ function connect(): void {
           const row = addRow(live.role);
           row.points = merge(row.points, [live.point]);
           render(row, live.role);
+          break;
+        }
+        case "kernel": {
+          kernel = live.report;
+          const row = rows.get(KERNEL_ROLE);
+          if (row !== undefined) render(row, KERNEL_ROLE);
           break;
         }
         case "event":

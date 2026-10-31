@@ -3,10 +3,21 @@
 // coerced.
 
 import type { EventPoint } from "./generated/EventPoint";
+import type { KernelReportView } from "./generated/KernelReportView";
 import type { LiveMessage } from "./generated/LiveMessage";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
-import type { Epoch, EventKind, Live, LossReason, Marker, Micros, Point, RoleKey } from "../model";
+import type {
+  Epoch,
+  EventKind,
+  KernelReport,
+  Live,
+  LossReason,
+  Marker,
+  Micros,
+  Point,
+  RoleKey,
+} from "../model";
 
 export class ParseError extends Error {
   override readonly name = "ParseError";
@@ -38,7 +49,7 @@ function nullableString(value: unknown, what: string): string | null {
   throw new ParseError(`${what}: expected a string or null`);
 }
 
-const ROLE_KEY = /^(nic|tunnel|local-interface|target:(0|[1-9]\d*)|hop:(0|[1-9]\d*):([1-9]\d*))$/;
+const ROLE_KEY = /^(kernel|nic|tunnel|local-interface|target:(0|[1-9]\d*)|hop:(0|[1-9]\d*):([1-9]\d*))$/;
 
 function roleKey(value: unknown, what: string): RoleKey {
   if (typeof value !== "string" || !ROLE_KEY.test(value)) {
@@ -46,6 +57,9 @@ function roleKey(value: unknown, what: string): RoleKey {
   }
   return value as RoleKey;
 }
+
+/** The kernel layer's role key. */
+export const KERNEL_ROLE: RoleKey = roleKey("kernel", "KERNEL_ROLE");
 
 const micros = (value: unknown, what: string): Micros => integer(value, what) as Micros;
 
@@ -112,13 +126,42 @@ export function parseMarkers(value: unknown): readonly Marker[] {
   return array(value, "events").map(parseMarker);
 }
 
+const STATUSES: readonly KernelReport["status"][] = ["healthy", "degraded", "failing", "unknown"];
+
+export function parseKernel(value: unknown): KernelReport | null {
+  if (value === null) return null;
+  const r = record<KernelReportView>(value, "kernel");
+  const pressure = r.pressure === null ? null : record<{ cpu: number }>(r.pressure, "kernel.pressure");
+  const cpu = pressure === null ? null : pressure.cpu;
+  if (cpu !== null && (typeof cpu !== "number" || !Number.isFinite(cpu))) {
+    throw new ParseError("kernel.pressure.cpu: expected a number");
+  }
+  return {
+    status: oneOf(r.status, STATUSES, "kernel.status"),
+    increases: array(r.increases, "kernel.increases").map((i) => {
+      const inc = record<{ name: string; by: number }>(i, "kernel.increase");
+      if (typeof inc.name !== "string") throw new ParseError("kernel.increase.name: expected a string");
+      return { name: inc.name, by: integer(inc.by, "kernel.increase.by") };
+    }),
+    cpuPressure: cpu,
+  };
+}
+
 export function parseLive(value: unknown): Live {
-  const m = record<LiveMessage & { role: unknown; point: unknown; event: unknown }>(value, "live");
+  const m = record<LiveMessage & { role: unknown; point: unknown; event: unknown; report: unknown }>(
+    value,
+    "live",
+  );
   switch (m.type) {
     case "sample":
       return { type: "sample", role: roleKey(m.role, "live.role"), point: parsePoint(m.point) };
     case "event":
       return { type: "event", marker: parseMarker(m.event) };
+    case "kernel": {
+      const report = parseKernel(m.report);
+      if (report === null) throw new ParseError("live.kernel: missing report");
+      return { type: "kernel", report };
+    }
     default:
       throw new ParseError(`live: unknown type ${JSON.stringify(m.type)}`);
   }

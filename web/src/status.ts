@@ -21,6 +21,12 @@ export function status(points: readonly Point[], now: Micros, staleAfterUs: numb
   return lost * 2 < recent.length ? "degraded" : "failing";
 }
 
+/** The worse of two statuses: failing, then degraded, then healthy, then unknown. */
+export function worse(a: Status, b: Status): Status {
+  const rank: Record<Status, number> = { unknown: 0, healthy: 1, degraded: 2, failing: 3 };
+  return rank[a] >= rank[b] ? a : b;
+}
+
 /** A role's status, with loss at a hop reinterpreted where the path says so. */
 export type RowStatus = Status | "rate-limited";
 

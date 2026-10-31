@@ -6,14 +6,17 @@ use std::num::NonZeroU8;
 /// the identity behind it, so history stays continuous across failover and
 /// reroutes.
 ///
-/// The kernel layer has no role: it is the host itself and has no identity that
-/// could change.
+/// The kernel layer's role, [`Role::Kernel`], is bound to the loopback interface,
+/// whose identity never changes. It still needs a role, because its stack-baseline
+/// series needs a key.
 ///
 /// The derived `Ord` (declaration order, then fields) is the order in which the
 /// topology aggregate visits roles during a resync. Epoch allocation depends on
 /// it, and `specs/topology.qnt` assumes it, so don't reorder the variants.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
+    /// The host's own network stack, measured over loopback (ADR-0008).
+    Kernel,
     /// The physical device under the current egress path.
     Nic,
     /// The VPN interface the egress path goes through, if any.
@@ -78,6 +81,7 @@ impl Role {
     /// `target:<id>`.
     pub fn key(&self) -> String {
         match self {
+            Role::Kernel => "kernel".to_owned(),
             Role::Nic => "nic".to_owned(),
             Role::Tunnel => "tunnel".to_owned(),
             Role::LocalInterface => "local-interface".to_owned(),
@@ -89,6 +93,7 @@ impl Role {
     /// Parses a [`key`](Self::key). `None` for anything else.
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
+            "kernel" => Some(Role::Kernel),
             "nic" => Some(Role::Nic),
             "tunnel" => Some(Role::Tunnel),
             "local-interface" => Some(Role::LocalInterface),

@@ -10,6 +10,7 @@ publish.workspace = true
 netwatch-shared.workspace = true
 netwatch-history.workspace = true
 netwatch-adapter-sqlite.workspace = true
+netwatch-host-health.workspace = true
 axum.workspace = true
 rust-embed.workspace = true
 serde.workspace = true

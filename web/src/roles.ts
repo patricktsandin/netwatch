@@ -3,7 +3,7 @@
 
 import type { RoleKey } from "./model";
 
-const LAYER_ORDER = ["nic", "tunnel", "local-interface", "hop", "target"] as const;
+const LAYER_ORDER = ["kernel", "nic", "tunnel", "local-interface", "hop", "target"] as const;
 type Layer = (typeof LAYER_ORDER)[number];
 
 function layer(key: RoleKey): Layer {
@@ -32,6 +32,8 @@ export function label(key: RoleKey): string {
   const l = layer(key);
   const [first, second] = numbers(key);
   switch (l) {
+    case "kernel":
+      return "Kernel (loopback)";
     case "nic":
       return "NIC";
     case "tunnel":

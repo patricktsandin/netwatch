@@ -4,6 +4,7 @@
 //! - `GET /api/roles`: every role that has samples
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
 //! - `GET /api/events?since_us=<µs>`: topology events, oldest first
+//! - `GET /api/kernel`: the kernel layer's latest report
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
@@ -24,9 +25,9 @@ use axum::{Json, Router};
 use netwatch_adapter_sqlite::Store;
 use netwatch_shared::{Role, WallTime};
 use serde::Deserialize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
-pub use api::{EventPoint, LiveMessage, RoleSummary, SamplePoint};
+pub use api::{EventPoint, KernelReportView, LiveMessage, RoleSummary, SamplePoint};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -37,6 +38,7 @@ struct Spa;
 struct AppState {
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
+    kernel: watch::Receiver<Option<KernelReportView>>,
 }
 
 /// Serves the API and the SPA on `address` until the process ends.
@@ -44,14 +46,20 @@ pub async fn serve(
     address: SocketAddr,
     database: PathBuf,
     live: broadcast::Sender<LiveMessage>,
+    kernel: watch::Receiver<Option<KernelReportView>>,
 ) -> std::io::Result<()> {
     let app = Router::new()
         .route("/api/roles", get(roles))
         .route("/api/samples", get(samples))
         .route("/api/events", get(events))
+        .route("/api/kernel", get(kernel_report))
         .route("/api/live", get(live_socket))
         .fallback(spa)
-        .with_state(AppState { database, live });
+        .with_state(AppState {
+            database,
+            live,
+            kernel,
+        });
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "serving the UI");
     axum::serve(listener, app).await
@@ -120,6 +128,10 @@ async fn events(
     let since = WallTime::from_unix_micros(query.since_us);
     let events = read(&state, move |store| store.events(since)).await?;
     Ok(Json(events.into_iter().map(EventPoint::from).collect()))
+}
+
+async fn kernel_report(State(state): State<AppState>) -> Json<Option<KernelReportView>> {
+    Json(state.kernel.borrow().clone())
 }
 
 async fn live_socket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {

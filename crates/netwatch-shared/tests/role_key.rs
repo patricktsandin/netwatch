@@ -8,6 +8,7 @@ use netwatch_shared::{HopTtl, Role, TargetId};
 
 fn every_kind_of_role() -> Vec<Role> {
     vec![
+        Role::Kernel,
         Role::Nic,
         Role::Tunnel,
         Role::LocalInterface,
