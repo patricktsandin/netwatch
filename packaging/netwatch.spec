@@ -35,6 +35,8 @@ served on localhost.
 cargo build --release --locked -p netwatch
 
 %install
+# deploy/README.md would collide with README.md among the docs.
+cp deploy/README.md DEPLOYING.md
 install -D -m 0755 target/release/netwatch %{buildroot}%{_bindir}/netwatch
 install -D -m 0644 deploy/netwatch.service %{buildroot}%{_unitdir}/netwatch.service
 install -D -m 0644 deploy/netwatch.sysusers %{buildroot}%{_sysusersdir}/netwatch.conf
@@ -58,7 +60,7 @@ grep -q '^database = "%{_sharedstatedir}/netwatch/netwatch.db"$' \
 %systemd_postun_with_restart netwatch.service
 
 %files
-%doc README.md deploy/README.md docs/adr docs/glossary.md docs/context-map.md
+%doc README.md DEPLOYING.md docs/adr docs/glossary.md docs/context-map.md
 %{_bindir}/netwatch
 %{_unitdir}/netwatch.service
 %{_sysusersdir}/netwatch.conf
