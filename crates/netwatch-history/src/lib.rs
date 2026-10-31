@@ -20,8 +20,12 @@
 //!
 //! This crate does no I/O. Persistence lives in `netwatch-adapter-sqlite` (ADR-0012).
 //!
-//! Status: only [`Sample`], the published language that other contexts write in,
-//! exists so far. Rollups and retention come next.
+//! Status: samples and their rollups ([`roll_up`], [`coarsen`]) exist. Persisting
+//! the rollup tiers and their retention comes next.
+
+mod rollup;
+
+pub use rollup::{Histogram, Rollup, Tier, coarsen, roll_up};
 
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::{IdentityEpoch, Role, WallTime};
