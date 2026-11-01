@@ -4,6 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>netwatch</title>
+    <script>
+      // The saved theme, applied before the first paint (main.ts owns the switch).
+      try {
+        const theme = localStorage.getItem("netwatch-theme");
+        if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+      } catch {}
+    </script>
   </head>
   <body>
     <header class="top">
@@ -17,6 +24,11 @@
       <button id="reset-zoom" hidden>Reset zoom</button>
       <button id="open-report">Report</button>
       <button id="open-settings">Settings</button>
+      <select id="theme" aria-label="Theme">
+        <option value="auto">Auto</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
     </header>
     <dialog id="settings-dialog" class="wide"></dialog>
     <dialog id="report-dialog">

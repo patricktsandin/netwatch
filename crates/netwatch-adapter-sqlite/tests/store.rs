@@ -335,3 +335,78 @@ mod readings {
         );
     }
 }
+
+mod flush {
+    use super::*;
+    use netwatch_history::Reading;
+    use netwatch_shared::Gauge;
+
+    #[test]
+    fn a_flush_empties_history_but_keeps_epochs_unique() {
+        let mut store = Store::open(&fresh("flush")).unwrap();
+        store
+            .write_samples(&[sample(1_000_000, Measurement::Lost(Loss::TimedOut))])
+            .unwrap();
+        store
+            .write_readings(&[Reading {
+                role: Role::Nic,
+                epoch: epoch(1),
+                at: WallTime::from_unix_micros(1_000_000),
+                gauge: Gauge::RxThroughput,
+                value: 1.0,
+            }])
+            .unwrap();
+        let nic = Identity::Interface {
+            index: InterfaceIndex::new(NonZeroU32::new(2).unwrap()),
+            name: InterfaceName::parse(b"eth0").unwrap(),
+        };
+        for (n, ended) in [(5, true), (9, true), (7, false)] {
+            store
+                .record_event(
+                    &TopologyEvent::EpochStarted {
+                        epoch: epoch(n),
+                        role: Role::Nic,
+                        identity: nic.clone(),
+                    },
+                    WallTime::from_unix_micros(0),
+                )
+                .unwrap();
+            if ended {
+                store
+                    .record_event(
+                        &TopologyEvent::EpochEnded {
+                            epoch: epoch(n),
+                            role: Role::Nic,
+                        },
+                        WallTime::from_unix_micros(1),
+                    )
+                    .unwrap();
+            }
+        }
+        store.flush_history().unwrap();
+        assert!(store.roles().unwrap().is_empty());
+        assert!(
+            store
+                .events(WallTime::from_unix_micros(0))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.last_epoch().unwrap(),
+            Some(9),
+            "the highest epoch is kept"
+        );
+        let kept = store
+            .epoch_identities(
+                WallTime::from_unix_micros(0),
+                WallTime::from_unix_micros(i64::MAX),
+            )
+            .unwrap();
+        let kept: Vec<u64> = kept.keys().map(|e| e.get().get()).collect();
+        assert_eq!(
+            kept,
+            [7, 9],
+            "open epochs and the highest survive; closed ones go"
+        );
+    }
+}

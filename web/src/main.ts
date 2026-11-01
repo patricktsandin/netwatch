@@ -393,6 +393,12 @@ function connect(): void {
           incidents = upsertIncident(incidents, live.incident);
           redraw(live.incident.role);
           break;
+        case "cleared":
+          // All history was flushed (ADR-0038): start over from the empty store.
+          markers = [];
+          incidents = [];
+          rebuild();
+          break;
         case "reading": {
           // Live readings are raw, so they only join the raw range.
           if (range !== "hour") break;
@@ -410,6 +416,33 @@ function connect(): void {
     if (banner !== null) banner.hidden = false;
     setTimeout(connect, 2000);
   };
+}
+
+/** Drops every row and backfills the selected range: after a flush, or when the
+ *  theme changes, since charts take their colors when they're created. */
+function rebuild(): void {
+  for (const row of rows.values()) row.rowEl.remove();
+  rows.clear();
+  void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
+}
+
+// The theme: Auto follows the system; Light and Dark are remembered per browser.
+// index.html applies the saved choice before the first paint.
+const THEME_KEY = "netwatch-theme";
+const themeSelect = document.getElementById("theme");
+if (themeSelect instanceof HTMLSelectElement) {
+  themeSelect.value = document.documentElement.dataset["theme"] ?? "auto";
+  themeSelect.addEventListener("change", () => {
+    const theme = themeSelect.value;
+    if (theme === "light" || theme === "dark") document.documentElement.dataset["theme"] = theme;
+    else delete document.documentElement.dataset["theme"];
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // Storage may be unavailable; the choice then lasts until the page closes.
+    }
+    rebuild();
+  });
 }
 
 function redraw(key: RoleKey): void {

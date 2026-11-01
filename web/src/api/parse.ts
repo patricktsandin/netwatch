@@ -352,6 +352,8 @@ export function parseLive(value: unknown): Live {
       return { type: "event", marker: parseMarker(m.event) };
     case "incident":
       return { type: "incident", incident: parseIncident(m.incident) };
+    case "cleared":
+      return { type: "cleared" };
     case "reading":
       return { type: "reading", role: roleKey(m.role, "live.role"), reading: parseReading(m.reading) };
     case "statuses":

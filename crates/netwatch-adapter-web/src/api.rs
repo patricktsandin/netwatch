@@ -276,6 +276,8 @@ pub enum LiveMessage {
         /// The event.
         event: EventPoint,
     },
+    /// All history was flushed (ADR-0038): drop everything and backfill.
+    Cleared,
     /// A gauge reading.
     Reading {
         /// The role's key.

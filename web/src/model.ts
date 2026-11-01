@@ -104,6 +104,7 @@ export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }
   | { readonly type: "incident"; readonly incident: Incident }
+  | { readonly type: "cleared" }
   | { readonly type: "reading"; readonly role: RoleKey; readonly reading: Reading }
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
   | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }

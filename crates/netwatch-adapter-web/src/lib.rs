@@ -17,6 +17,7 @@
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
 //! - `GET /api/config`: the targets as the settings page edits them
 //! - `PUT /api/config`: replaces the targets, then the daemon restarts (ADR-0035)
+//! - `DELETE /api/history`: flushes all history (ADR-0038)
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - `GET /report?from_us=<µs>&until_us=<µs>`: an incident report as a printable page,
 //!   and `GET /report.txt?…` as plain text (ADR-0033)
@@ -59,6 +60,10 @@ struct Spa;
 /// Asks the writer to write everything it has received, and resolves once it has.
 pub type Flush = std::sync::Arc<dyn Fn() -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
 
+/// Asks the writer to delete all history (ADR-0038), and resolves with the outcome.
+pub type FlushHistory =
+    std::sync::Arc<dyn Fn() -> tokio::sync::oneshot::Receiver<Result<(), String>> + Send + Sync>;
+
 /// Reads and writes the configuration for the settings page (ADR-0035). The
 /// composition root owns the file format, so it implements this.
 pub trait Settings: Send + Sync {
@@ -97,6 +102,7 @@ struct AppState {
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: std::sync::Arc<Vec<TargetView>>,
     settings: std::sync::Arc<dyn Settings>,
+    flush_history: FlushHistory,
 }
 
 /// What the daemon gives the UI server: where history is, and its live views.
@@ -111,6 +117,8 @@ pub struct Daemon {
     pub targets: Vec<TargetView>,
     /// The flush barrier (ADR-0029).
     pub flush: Flush,
+    /// Deletes all history (ADR-0038).
+    pub flush_history: FlushHistory,
     /// Statuses and bindings.
     pub current: watch::Receiver<Current>,
     /// The configuration, for the settings page (ADR-0035).
@@ -133,6 +141,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
         .route("/api/config", get(config).put(save_config))
+        .route("/api/history", axum::routing::delete(delete_history))
         .route("/api/live", get(live_socket))
         .route("/report", get(report_page))
         .route("/report.txt", get(report_text))
@@ -145,6 +154,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
             layers: daemon.layers,
             targets: std::sync::Arc::new(daemon.targets),
             settings: daemon.settings,
+            flush_history: daemon.flush_history,
         });
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "serving the UI");
@@ -505,6 +515,30 @@ async fn save_config(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !from_the_ui(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "history can only be flushed from the netwatch UI".to_owned(),
+        ));
+    }
+    (state.flush_history)()
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the writer has stopped".to_owned(),
+            )
+        })?
+        .map_err(|message| (StatusCode::INTERNAL_SERVER_ERROR, message))?;
+    // Every open UI drops what it holds and backfills from the empty store.
+    let _ = state.live.send(LiveMessage::Cleared);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -117,10 +117,19 @@ async fn main() -> anyhow::Result<()> {
             database: database.clone(),
             writes: writes.clone(),
         });
+    let flush_history: netwatch_adapter_web::FlushHistory = {
+        let writes = writes.clone();
+        std::sync::Arc::new(move || {
+            let (done, result) = tokio::sync::oneshot::channel();
+            let _ = writes.send(persist::Write::FlushHistory(done));
+            result
+        })
+    };
     tokio::spawn({
         let live = live.clone();
         async move {
             let daemon = netwatch_adapter_web::Daemon {
+                flush_history,
                 database,
                 live,
                 layers,

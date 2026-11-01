@@ -21,7 +21,7 @@ point: SamplePoint, } | { "type": "event",
 /**
  * The event.
  */
-event: EventPoint, } | { "type": "reading", 
+event: EventPoint, } | { "type": "cleared" } | { "type": "reading", 
 /**
  * The role's key.
  */

@@ -24,6 +24,9 @@ pub enum Write {
     /// already sent (ADR-0029). The channel is FIFO, so "everything so far" includes
     /// every sample broadcast before the request.
     Flush(tokio::sync::oneshot::Sender<()>),
+    /// Delete all history (ADR-0038), then report how it went. The batch held so far
+    /// is discarded first, so nothing from before the flush lands after it.
+    FlushHistory(tokio::sync::oneshot::Sender<Result<(), String>>),
 }
 
 const BATCH: usize = 256;
@@ -114,6 +117,16 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                         if let Err(error) = store.write_incident(&incident) {
                             tracing::error!(%error, "cannot record an incident");
                         }
+                    }
+                    Ok(Write::FlushHistory(done)) => {
+                        batch.clear();
+                        readings.clear();
+                        let result = store.flush_history().map_err(|e| e.to_string());
+                        match &result {
+                            Ok(()) => tracing::warn!("all history flushed"),
+                            Err(error) => tracing::error!(%error, "cannot flush history"),
+                        }
+                        let _ = done.send(result);
                     }
                     Ok(Write::Flush(done)) => {
                         if !batch.is_empty()

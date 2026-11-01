@@ -135,6 +135,37 @@ export async function openSettings(onSaved: () => void): Promise<void> {
     : `Read-only: ${config.reason ?? "the configuration can't be edited"}.`;
   const actions = el("div", { className: "actions" });
   actions.append(add, el("span", { className: "spacer" }), close, save);
-  dialog.replaceChildren(el("h2", { textContent: "Targets" }), status, list, actions);
+
+  // Flushing history (ADR-0038) can't be undone, so it asks first.
+  const flushStatus = el("p", { className: "hint" });
+  const flush = el("button", { textContent: "Flush all data…", type: "button", className: "danger" });
+  flush.addEventListener("click", () => {
+    if (
+      !confirm("Delete all recorded history: samples, readings, rollups, incidents, and events? This can't be undone.")
+    ) {
+      return;
+    }
+    flush.disabled = true;
+    flushStatus.textContent = "Flushing…";
+    void fetch("/api/history", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", "X-Netwatch": "1" },
+    }).then(async (r) => {
+      flush.disabled = false;
+      flushStatus.textContent = r.ok ? "All history flushed. Graphs start over from now." : await r.text();
+      flushStatus.className = r.ok ? "hint" : "hint error";
+    });
+  });
+  const danger = el("div", { className: "danger-zone" });
+  danger.append(
+    el("h2", { textContent: "History" }),
+    el("p", {
+      className: "hint",
+      textContent: "Targets and settings are kept; everything recorded so far is deleted.",
+    }),
+    flush,
+    flushStatus,
+  );
+  dialog.replaceChildren(el("h2", { textContent: "Targets" }), status, list, actions, danger);
   dialog.showModal();
 }

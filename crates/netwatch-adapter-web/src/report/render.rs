@@ -169,8 +169,11 @@ fn stats_html(out: &mut String, stats: &[PathStats], label: Label<'_>) {
 const STYLE: &str = "
 :root { --bg: #fff; --text: #1d1f23; --muted: #6b7079; --border: #e4e4e1; --outage: #d9342b;
   --degradation: #b7791f; --lossy: #fdf0ef; color-scheme: light; }
-@media (prefers-color-scheme: dark) { :root { --bg: #131417; --text: #e8e9ec; --muted: #9198a3;
-  --border: #2c2f35; --outage: #ff6b61; --degradation: #e0a948; --lossy: #3a2321; color-scheme: dark; } }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=\"light\"]) { --bg: #131417; --text: #e8e9ec;
+  --muted: #9198a3; --border: #2c2f35; --outage: #ff6b61; --degradation: #e0a948; --lossy: #3a2321;
+  color-scheme: dark; } }
+:root[data-theme=\"dark\"] { --bg: #131417; --text: #e8e9ec; --muted: #9198a3; --border: #2c2f35;
+  --outage: #ff6b61; --degradation: #e0a948; --lossy: #3a2321; color-scheme: dark; }
 body { margin: 0 auto; max-width: 1000px; padding: 24px 16px; background: var(--bg); color: var(--text);
   font: 14px/1.45 system-ui, sans-serif; }
 h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 16px; margin: 28px 0 8px; }
@@ -191,6 +194,11 @@ button { font: inherit; padding: 4px 12px; border: 1px solid var(--border); bord
 @media print { button, details { display: none; } body { max-width: none; } }
 ";
 
+/// The theme the UI's switch saved (same origin, so same storage), applied before
+/// the first paint.
+const THEME: &str = "<script>try { const t = localStorage.getItem('netwatch-theme'); \
+if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>";
+
 /// The report as a self-contained HTML page: printable (or saved as PDF from the
 /// browser), with the plain text alongside for copying into an email.
 pub fn html(report: &Report, label: Label<'_>) -> String {
@@ -199,7 +207,7 @@ pub fn html(report: &Report, label: Label<'_>) -> String {
         out,
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>Incident report</title><style>{STYLE}</style></head><body>"
+         <title>Incident report</title><style>{STYLE}</style>{THEME}</head><body>"
     );
     let _ = write!(
         out,

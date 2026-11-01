@@ -617,6 +617,25 @@ impl Store {
         Ok(identities)
     }
 
+    /// Deletes all history (ADR-0038): samples, readings, rollups, incidents, and
+    /// events, in one transaction. Open epochs and the highest epoch ever allocated
+    /// are kept, so a restart's epochs never collide with ones still in use.
+    pub fn flush_history(&mut self) -> Result<(), StoreError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute_batch(
+            "DELETE FROM samples;
+             DELETE FROM readings;
+             DELETE FROM rollups;
+             DELETE FROM reading_rollups;
+             DELETE FROM incidents;
+             DELETE FROM events;
+             DELETE FROM epochs
+             WHERE ended_us IS NOT NULL AND epoch < (SELECT MAX(epoch) FROM epochs);",
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// The highest epoch ever stored, so that a restarted daemon's epochs don't
     /// collide with earlier ones.
     pub fn last_epoch(&self) -> Result<Option<i64>, StoreError> {

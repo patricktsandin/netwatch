@@ -44,7 +44,9 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - A live stream with backfill behind a flush barrier.
   - Incident bands, event markers only on the rows they concern, hover tooltips, and
     rate-limit-aware hop status.
-  - Report and Settings dialogs.
+  - Report and Settings dialogs. Settings can also flush all history (ADR-0038).
+  - An Auto / Light / Dark theme switch, remembered per browser, which the report
+    page follows too.
 - **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, and
   `incidents.qnt`, all TLC-exhaustive and conformance-tested.
 
