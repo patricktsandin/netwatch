@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod facts;
 mod kernel_log;
 pub mod radio;
 mod throughput;
@@ -98,6 +99,8 @@ pub const NIC_RULES: &[Rule] = &[
     // handle there, so it grows on a healthy link (ADR-0034). Missed and FIFO errors
     // are the signs of real receive overflow.
     ("Link.TxDropped", Severity::Degrades),
+    // Every link flap (ADR-0039): the NIC lost its link, however briefly.
+    ("Link.CarrierChanges", Severity::Fails),
     ("Link.RxMissedErrors", Severity::Fails),
     ("Link.RxFifoErrors", Severity::Fails),
 ];

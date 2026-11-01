@@ -87,6 +87,14 @@ fn tls() -> &'static TlsConnector {
     })
 }
 
+/// GETs `https://{host}{path}` through interface `pin` and returns the body as text,
+/// whatever the status: for pages that state facts, such as Cloudflare's trace
+/// (ADR-0039).
+pub async fn fetch_text(host: &str, path: &str, pin: InterfaceName) -> io::Result<String> {
+    let fetched = fetch(host, path, &pin).await?;
+    Ok(String::from_utf8_lossy(&fetched.body).into_owned())
+}
+
 /// Probes `target` once, through interface `pin`.
 pub async fn probe(target: HttpsTarget, pin: InterfaceName) -> HttpsResult {
     match exchange(target, pin).await {
@@ -95,9 +103,23 @@ pub async fn probe(target: HttpsTarget, pin: InterfaceName) -> HttpsResult {
     }
 }
 
-async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsResult> {
+/// One GET, timed phase by phase.
+struct Fetched {
+    start: Instant,
+    resolved: Instant,
+    connected: Instant,
+    secured: Instant,
+    first_byte: Instant,
+    done: Instant,
+    status: u16,
+    body: Bytes,
+}
+
+/// GETs `https://{host}{path}` over IPv4 through interface `pin`, verifying the
+/// certificate, and reads at most [`BODY_LIMIT`] of the body.
+async fn fetch(host: &str, path: &str, pin: &InterfaceName) -> io::Result<Fetched> {
     let start = Instant::now();
-    let address = tokio::net::lookup_host((target.host.as_str(), 443))
+    let address = tokio::net::lookup_host((host, 443))
         .await?
         .find(std::net::SocketAddr::is_ipv4)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no IPv4 address"))?;
@@ -108,7 +130,7 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
     let tcp = socket.connect(address).await?;
     let connected = Instant::now();
 
-    let name = ServerName::try_from(target.host.clone())
+    let name = ServerName::try_from(host.to_owned())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let stream = tls().connect(name, tcp).await?;
     let secured = Instant::now();
@@ -118,8 +140,8 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
             .await
             .map_err(io::Error::other)?;
     let driver = tokio::spawn(connection);
-    let request = hyper::Request::get(target.path.as_str())
-        .header(hyper::header::HOST, target.host.as_str())
+    let request = hyper::Request::get(path)
+        .header(hyper::header::HOST, host)
         .header(hyper::header::USER_AGENT, "netwatch")
         .body(Empty::new())
         .map_err(io::Error::other)?;
@@ -136,7 +158,29 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsRe
         .to_bytes();
     let done = Instant::now();
     driver.abort();
+    Ok(Fetched {
+        start,
+        resolved,
+        connected,
+        secured,
+        first_byte,
+        done,
+        status,
+        body,
+    })
+}
 
+async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsResult> {
+    let Fetched {
+        start,
+        resolved,
+        connected,
+        secured,
+        first_byte,
+        done,
+        status,
+        body,
+    } = fetch(&target.host, &target.path, &pin).await?;
     let matches = match target.expected {
         Expected::Status(expected) => status == expected,
         Expected::StatusWithBody(expected, ref text) => {

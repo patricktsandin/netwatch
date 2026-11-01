@@ -14,6 +14,7 @@
 //! - `GET /api/targets`: every configured target's name
 //! - `GET /api/layers`: each layer's latest health report, by role key
 //! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
+//! - `GET /api/host`: facts about the host and its connection (ADR-0039)
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
 //! - `GET /api/config`: the targets as the settings page edits them
 //! - `PUT /api/config`: replaces the targets, then the daemon restarts (ADR-0035)
@@ -50,7 +51,7 @@ pub use api::{
     BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, ReadingPoint,
     ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView, status_text,
 };
-pub use api::{ConfigView, TargetSpec};
+pub use api::{ConfigView, HostView, TargetSpec};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -81,6 +82,8 @@ pub struct Current {
     pub statuses: BTreeMap<String, String>,
     /// Every role's binding, by role key.
     pub bindings: BTreeMap<String, BindingView>,
+    /// Facts about the host and its connection (ADR-0039).
+    pub host: HostView,
 }
 
 impl Current {
@@ -140,6 +143,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/api/layers", get(layer_reports))
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
+        .route("/api/host", get(host))
         .route("/api/config", get(config).put(save_config))
         .route("/api/history", axum::routing::delete(delete_history))
         .route("/api/live", get(live_socket))
@@ -548,6 +552,10 @@ async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {
 
 async fn statuses(State(state): State<AppState>) -> Json<BTreeMap<String, String>> {
     Json(state.current.borrow().statuses.clone())
+}
+
+async fn host(State(state): State<AppState>) -> Json<HostView> {
+    Json(state.current.borrow().host.clone())
 }
 
 async fn bindings(State(state): State<AppState>) -> Json<BTreeMap<String, BindingView>> {

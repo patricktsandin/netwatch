@@ -271,3 +271,28 @@ pub fn sysctls() -> BTreeMap<String, String> {
         })
         .collect()
 }
+
+/// The link facts of interface `name`, from `/sys/class/net/<name>` (ADR-0039). A
+/// file that can't be read or parsed (a link that is down has no speed) is `None`.
+pub fn link_facts(name: &str) -> netwatch_host_health::facts::LinkFacts {
+    let dir = std::path::Path::new("/sys/class/net").join(name);
+    let text = |file: &str| {
+        std::fs::read_to_string(dir.join(file))
+            .ok()
+            .map(|t| t.trim().to_owned())
+    };
+    netwatch_host_health::facts::LinkFacts {
+        // The kernel writes -1 for an unknown speed, which doesn't parse as u32.
+        speed_mbps: text("speed").and_then(|s| s.parse().ok()),
+        full_duplex: text("duplex").and_then(|d| match d.as_str() {
+            "full" => Some(true),
+            "half" => Some(false),
+            _ => None,
+        }),
+        driver: std::fs::read_link(dir.join("device/driver"))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())),
+        mtu: text("mtu").and_then(|m| m.parse().ok()),
+        carrier_changes: text("carrier_changes").and_then(|c| c.parse().ok()),
+    }
+}

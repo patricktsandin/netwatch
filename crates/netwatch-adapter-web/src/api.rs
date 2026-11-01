@@ -504,3 +504,27 @@ pub struct ConfigView {
     /// Every configured target, in file order.
     pub targets: Vec<TargetSpec>,
 }
+
+/// Facts about the host and its connection, for the UI header and the report
+/// (ADR-0039). Each is `null` until known.
+#[derive(Debug, Clone, Default, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct HostView {
+    /// The host's name.
+    pub hostname: Option<String>,
+    /// The running kernel's release.
+    pub kernel: Option<String>,
+    /// This netwatch's version.
+    pub version: String,
+    /// The public address and where it enters Cloudflare, in words.
+    pub public: Option<String>,
+    /// The public address alone.
+    pub public_address: Option<String>,
+    /// The NIC's link facts, in words.
+    pub link: Option<String>,
+    /// Whether the clock is NTP-synchronized.
+    pub clock_synchronized: Option<bool>,
+    /// The clock's estimated error, in µs.
+    #[ts(type = "number | null")]
+    pub clock_error_us: Option<i64>,
+}

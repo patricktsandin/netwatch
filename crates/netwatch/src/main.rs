@@ -7,6 +7,7 @@ mod clock;
 mod config;
 mod persist;
 mod probe;
+mod public;
 mod radio;
 mod settings;
 
@@ -278,6 +279,20 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030).
     let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
+    // Facts about the host for the header and the report (ADR-0039), and the public
+    // identity, read every 5 minutes.
+    current_tx.send_modify(|c| {
+        let read = |path: &str| {
+            std::fs::read_to_string(path)
+                .ok()
+                .map(|t| t.trim().to_owned())
+        };
+        c.host.hostname = read("/proc/sys/kernel/hostname");
+        c.host.kernel = read("/proc/sys/kernel/osrelease");
+        c.host.version = env!("CARGO_PKG_VERSION").to_owned();
+    });
+    let mut public_identities = public::spawn(pin.clone());
+    let mut public_identity: Option<netwatch_host_health::facts::PublicIdentity> = None;
     // The radios, read every 5 s, and what each was last attached to (ADR-0036).
     let mut radios = radio::spawn(pin.clone());
     let mut attachments: HashMap<Role, Option<String>> = HashMap::new();
@@ -328,12 +343,18 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(drops) = &drop_reasons {
                     reading.counters.extend(drops.read());
                 }
+                let kernel_report = kernel_watch.observe(reading);
+                current_tx.send_modify(|c| {
+                    c.host.clock_synchronized = kernel_report.clock.map(|(synchronized, _)| synchronized);
+                    c.host.clock_error_us = kernel_report.clock.map(|(_, error)| error);
+                });
                 layer_health.insert(
                     Role::Kernel,
                     publish_layer(
                         Role::Kernel,
-                        &kernel_watch.observe(reading),
+                        &kernel_report,
                         &disabled.iter().cloned().collect::<Vec<_>>(),
+                        &[],
                         &live,
                         &layers_tx,
                     ),
@@ -377,10 +398,22 @@ async fn main() -> anyhow::Result<()> {
                                 recorder.reading(Reading { role: Role::Nic, epoch, at, gauge, value });
                             }
                         }
+                        // Link facts (ADR-0039): notes on the row, and carrier changes as a
+                        // counter, so a flap grades the NIC.
+                        let facts = topology.binding(&Role::Nic).and_then(|b| match &b.identity {
+                            Identity::Interface { name, .. } => Some(netwatch_adapter_procfs::link_facts(name.as_str())),
+                            Identity::Address(_) => None,
+                        });
+                        let mut counters = counters;
+                        if let Some(changes) = facts.as_ref().and_then(|f| f.carrier_changes) {
+                            counters.insert("Link.CarrierChanges".to_owned(), changes);
+                        }
+                        let notes: Vec<String> = facts.iter().map(|f| f.summary()).filter(|s| !s.is_empty()).collect();
+                        current_tx.send_modify(|c| c.host.link = notes.first().cloned());
                         let reading = netwatch_host_health::Reading { counters, ..Default::default() };
                         layer_health.insert(
                             Role::Nic,
-                            publish_layer(Role::Nic, &watch.observe(reading), &[], &live, &layers_tx),
+                            publish_layer(Role::Nic, &watch.observe(reading), &[], &notes, &live, &layers_tx),
                         );
                     }
                 }
@@ -428,6 +461,20 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(reason) = disabled_rx.recv() => {
                 disabled.insert(reason);
+            }
+            Some(identity) = public_identities.recv() => {
+                if public_identity.as_ref() != Some(&identity) {
+                    let detail = match &public_identity {
+                        Some(before) => format!("{} → {}", before.text(), identity.text()),
+                        None => identity.text(),
+                    };
+                    recorder.note("public-address", Role::LocalInterface, detail);
+                    current_tx.send_modify(|c| {
+                        c.host.public = Some(identity.text());
+                        c.host.public_address = Some(identity.address.to_string());
+                    });
+                    public_identity = Some(identity);
+                }
             }
             Some(update) = radios.recv() => {
                 let (role, identity, report) = match update {
@@ -680,7 +727,10 @@ fn publish_current(
     let _ = live.send(LiveMessage::Bindings {
         bindings: bindings.clone(),
     });
-    current.send_replace(netwatch_adapter_web::Current { statuses, bindings });
+    current.send_modify(|c| {
+        c.statuses = statuses;
+        c.bindings = bindings;
+    });
     grades
 }
 
@@ -689,12 +739,14 @@ fn publish_layer(
     role: Role,
     report: &netwatch_host_health::LayerReport,
     disabled: &[String],
+    notes: &[String],
     live: &broadcast::Sender<LiveMessage>,
     layers: &watch::Sender<std::collections::BTreeMap<String, LayerReportView>>,
 ) -> Health {
     use netwatch_host_health::LayerStatus;
     let view = LayerReportView {
         disabled: disabled.to_vec(),
+        notes: notes.to_vec(),
         ..LayerReportView::from(report)
     };
     if !view.increases.is_empty() {
