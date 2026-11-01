@@ -4,7 +4,10 @@
 //! - `GET /api/roles`: every role that has samples
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
 //! - `GET /api/rollups?role=<key>&tier=minute|hour&since_us=<µs>`: one role's rollups
-//! - `GET /api/events?since_us=<µs>`: topology events, oldest first
+//! - `GET /api/events?since_us=<µs>`: events, oldest first, each with the roles it
+//!   concerns
+//! - `GET /api/incidents?since_us=<µs>[&until_us=<µs>]`: every incident overlapping
+//!   that span (until now, by default), oldest first
 //! - `GET /api/targets`: every configured target's name
 //! - `GET /api/layers`: each layer's latest health report, by role key
 //! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
@@ -35,8 +38,8 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
 pub use api::{
-    BindingView, EventPoint, LayerReportView, LiveMessage, RoleSummary, RollupPoint, SamplePoint,
-    TargetView, status_text,
+    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, RoleSummary, RollupPoint,
+    SamplePoint, TargetView, status_text,
 };
 
 #[derive(rust_embed::RustEmbed)]
@@ -54,6 +57,16 @@ pub struct Current {
     pub statuses: BTreeMap<String, String>,
     /// Every role's binding, by role key.
     pub bindings: BTreeMap<String, BindingView>,
+}
+
+impl Current {
+    /// Every role the daemon grades, which is every role that has a row.
+    pub fn known_roles(&self) -> Vec<Role> {
+        self.statuses
+            .keys()
+            .filter_map(|key| Role::from_key(key))
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -81,6 +94,7 @@ pub async fn serve(
         .route("/api/samples", get(samples))
         .route("/api/rollups", get(rollups))
         .route("/api/events", get(events))
+        .route("/api/incidents", get(incidents))
         .route("/api/targets", get(target_list))
         .route("/api/layers", get(layer_reports))
         .route("/api/status", get(statuses))
@@ -116,6 +130,12 @@ struct RollupsQuery {
 #[derive(Deserialize)]
 struct EventsQuery {
     since_us: i64,
+}
+
+#[derive(Deserialize)]
+struct IncidentsQuery {
+    since_us: i64,
+    until_us: Option<i64>,
 }
 
 /// Runs a read against a fresh connection on the blocking pool.
@@ -192,7 +212,23 @@ async fn events(
 ) -> Result<Json<Vec<EventPoint>>, (StatusCode, String)> {
     let since = WallTime::from_unix_micros(query.since_us);
     let events = read(&state, move |store| store.events(since)).await?;
-    Ok(Json(events.into_iter().map(EventPoint::from).collect()))
+    let known = state.current.borrow().known_roles();
+    Ok(Json(
+        events
+            .into_iter()
+            .map(|event| EventPoint::new(event, &known))
+            .collect(),
+    ))
+}
+
+async fn incidents(
+    State(state): State<AppState>,
+    Query(query): Query<IncidentsQuery>,
+) -> Result<Json<Vec<IncidentView>>, (StatusCode, String)> {
+    let from = WallTime::from_unix_micros(query.since_us);
+    let until = WallTime::from_unix_micros(query.until_us.unwrap_or(i64::MAX));
+    let incidents = read(&state, move |store| store.incidents(from, until)).await?;
+    Ok(Json(incidents.iter().map(IncidentView::from).collect()))
 }
 
 async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {

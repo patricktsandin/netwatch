@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use netwatch_history::{Histogram, Loss, Measurement, Rollup, Sample, Tier};
+use netwatch_probing::incident::{Incident, Severity};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::microsecond;
 use netwatch_shared::{Identity, IdentityEpoch, Role, WallTime};
@@ -25,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002-refused-loss.sql"),
     include_str!("../migrations/0003-unexpected-response.sql"),
     include_str!("../migrations/0004-rollups.sql"),
+    include_str!("../migrations/0005-incidents.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -499,6 +501,81 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Writes an incident as it opens, changes, or closes. An incident is identified
+    /// by its role and start, so each write replaces the previous one (ADR-0031).
+    pub fn write_incident(&mut self, incident: &Incident) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO incidents (role, started_us, ended_us, severity, cause)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (role, started_us) DO UPDATE
+             SET ended_us = excluded.ended_us, severity = excluded.severity, cause = excluded.cause",
+            params![
+                incident.role.key(),
+                incident.started.as_unix_micros(),
+                incident.ended.map(WallTime::as_unix_micros),
+                match incident.severity {
+                    Severity::Degradation => "degradation",
+                    Severity::Outage => "outage",
+                },
+                incident.cause.as_ref().map(Role::key),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every incident overlapping `from..until`, open ones included, oldest first.
+    /// Rows whose role no longer parses are skipped.
+    pub fn incidents(&self, from: WallTime, until: WallTime) -> Result<Vec<Incident>, StoreError> {
+        let mut query = self.connection.prepare_cached(
+            "SELECT role, started_us, ended_us, severity, cause FROM incidents
+             WHERE started_us < ?2 AND (ended_us IS NULL OR ended_us >= ?1)
+             ORDER BY started_us, role",
+        )?;
+        let rows = query.query_map([from.as_unix_micros(), until.as_unix_micros()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        let mut incidents = Vec::new();
+        for row in rows {
+            let (role, started, ended, severity, cause) = row?;
+            let Some(role) = Role::from_key(&role) else {
+                continue;
+            };
+            incidents.push(Incident {
+                role,
+                started: WallTime::from_unix_micros(started),
+                ended: ended.map(WallTime::from_unix_micros),
+                // The schema allows only these two.
+                severity: if severity == "outage" {
+                    Severity::Outage
+                } else {
+                    Severity::Degradation
+                },
+                cause: cause.as_deref().and_then(Role::from_key),
+            });
+        }
+        Ok(incidents)
+    }
+
+    /// Closes every incident an earlier run left open, at its role's last sample
+    /// since it opened (or at its start, if there is none). That's the last moment
+    /// anything was known about it.
+    pub fn close_incidents_left_open(&mut self) -> Result<usize, StoreError> {
+        Ok(self.connection.execute(
+            "UPDATE incidents SET ended_us = COALESCE(
+                 (SELECT MAX(at_us) FROM samples
+                  WHERE samples.role = incidents.role AND samples.at_us >= incidents.started_us),
+                 started_us)
+             WHERE ended_us IS NULL",
+            [],
+        )?)
     }
 
     /// The highest epoch ever stored, so that a restarted daemon's epochs don't

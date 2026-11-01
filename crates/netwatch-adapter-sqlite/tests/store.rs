@@ -195,3 +195,84 @@ fn rollups_round_trip_with_their_histograms() {
     assert_eq!(read, rollups);
     assert_eq!(read.len(), 2);
 }
+
+mod incidents {
+    use super::*;
+    use netwatch_probing::incident::{Incident, Severity};
+
+    fn incident(role: Role, started: i64, ended: Option<i64>) -> Incident {
+        Incident {
+            role,
+            started: WallTime::from_unix_micros(started),
+            ended: ended.map(WallTime::from_unix_micros),
+            severity: Severity::Degradation,
+            cause: None,
+        }
+    }
+
+    #[test]
+    fn an_incident_is_rewritten_in_place_as_it_changes_and_closes() {
+        let mut store = Store::open(&fresh("incident-upsert")).unwrap();
+        let target = Role::Target(TargetId::new(1));
+        let mut open = incident(target.clone(), 100, None);
+        store.write_incident(&open).unwrap();
+        open.severity = Severity::Outage;
+        open.cause = Some(Role::Nic);
+        store.write_incident(&open).unwrap();
+        open.ended = Some(WallTime::from_unix_micros(300));
+        store.write_incident(&open).unwrap();
+        let all = store
+            .incidents(
+                WallTime::from_unix_micros(0),
+                WallTime::from_unix_micros(1000),
+            )
+            .unwrap();
+        assert_eq!(all, vec![open]);
+    }
+
+    #[test]
+    fn a_query_returns_every_incident_overlapping_its_span_including_open_ones() {
+        let mut store = Store::open(&fresh("incident-overlap")).unwrap();
+        let nic = Role::Nic;
+        let before = incident(nic.clone(), 10, Some(20));
+        let straddles = incident(nic.clone(), 90, Some(110));
+        let inside = incident(Role::Kernel, 120, Some(130));
+        let still_open = incident(Role::Tunnel, 150, None);
+        let after = incident(nic, 250, Some(260));
+        for i in [&before, &straddles, &inside, &still_open, &after] {
+            store.write_incident(i).unwrap();
+        }
+        let found = store
+            .incidents(
+                WallTime::from_unix_micros(100),
+                WallTime::from_unix_micros(200),
+            )
+            .unwrap();
+        assert_eq!(found, vec![straddles, inside, still_open]);
+    }
+
+    #[test]
+    fn an_incident_left_open_by_a_stopped_daemon_closes_at_its_roles_last_sample() {
+        let mut store = Store::open(&fresh("incident-left-open")).unwrap();
+        store
+            .write_samples(&[sample(400, Measurement::Lost(Loss::TimedOut))])
+            .unwrap();
+        let target = Role::Target(TargetId::new(1));
+        store
+            .write_incident(&incident(target.clone(), 300, None))
+            .unwrap();
+        store
+            .write_incident(&incident(Role::Nic, 350, None))
+            .unwrap();
+        assert_eq!(store.close_incidents_left_open().unwrap(), 2);
+        let found = store
+            .incidents(
+                WallTime::from_unix_micros(0),
+                WallTime::from_unix_micros(1000),
+            )
+            .unwrap();
+        assert_eq!(found[0].ended, Some(WallTime::from_unix_micros(400)));
+        // A role without samples since it opened closes where it started.
+        assert_eq!(found[1].ended, Some(WallTime::from_unix_micros(350)));
+    }
+}

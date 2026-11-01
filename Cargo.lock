@@ -1065,6 +1065,7 @@ name = "netwatch-adapter-sqlite"
 version = "0.1.0"
 dependencies = [
  "netwatch-history",
+ "netwatch-probing",
  "netwatch-shared",
  "netwatch-topology",
  "netwatch-verified",

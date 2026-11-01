@@ -23,4 +23,8 @@ epoch: number | null,
 /**
  * A description for people.
  */
-detail: string | null, };
+detail: string | null, 
+/**
+ * The keys of the roles it concerns, whose rows it is drawn on (ADR-0031).
+ */
+roles: Array<string>, };

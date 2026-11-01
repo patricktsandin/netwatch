@@ -5,7 +5,9 @@
 
 use netwatch_adapter_sqlite::{StoredEvent, StoredSample};
 use netwatch_history::{Loss, Measurement, Sample};
+use netwatch_probing::incident::{Incident, Severity};
 use netwatch_shared::uom::si::time::microsecond;
+use netwatch_shared::{Role, WallTime};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -134,6 +136,42 @@ pub struct EventPoint {
     pub epoch: Option<i64>,
     /// A description for people.
     pub detail: Option<String>,
+    /// The keys of the roles it concerns, whose rows it is drawn on (ADR-0031).
+    pub roles: Vec<String>,
+}
+
+/// One incident: a role's degraded or failing period (ADR-0031).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct IncidentView {
+    /// The role's key.
+    pub role: String,
+    /// Where its band starts, in µs since the Unix epoch.
+    #[ts(type = "number")]
+    pub started_us: i64,
+    /// Where its band ends; `null` while it's still open.
+    #[ts(type = "number | null")]
+    pub ended_us: Option<i64>,
+    /// `degradation` or `outage`.
+    pub severity: String,
+    /// The probable cause's role key, if any.
+    pub cause: Option<String>,
+}
+
+impl From<&Incident> for IncidentView {
+    fn from(incident: &Incident) -> Self {
+        IncidentView {
+            role: incident.role.key(),
+            started_us: incident.started.as_unix_micros(),
+            ended_us: incident.ended.map(WallTime::as_unix_micros),
+            severity: match incident.severity {
+                Severity::Degradation => "degradation",
+                Severity::Outage => "outage",
+            }
+            .to_owned(),
+            cause: incident.cause.as_ref().map(Role::key),
+        }
+    }
 }
 
 /// A message on the live WebSocket.
@@ -152,6 +190,11 @@ pub enum LiveMessage {
     Event {
         /// The event.
         event: EventPoint,
+    },
+    /// An incident opened, changed, or closed.
+    Incident {
+        /// The incident as it now stands.
+        incident: IncidentView,
     },
     /// Every role's current status, graded by the daemon (ADR-0030).
     Statuses {
@@ -289,14 +332,42 @@ impl From<&Sample> for LiveMessage {
     }
 }
 
-impl From<StoredEvent> for EventPoint {
-    fn from(e: StoredEvent) -> Self {
+impl EventPoint {
+    /// An event, with the roles it concerns among `known` (every role the daemon
+    /// grades), as [`concerns`] decides.
+    pub fn new(e: StoredEvent, known: &[Role]) -> Self {
+        let roles = concerns(&e.kind, e.role.as_deref().and_then(Role::from_key), known);
         EventPoint {
             at_us: e.at.as_unix_micros(),
             kind: e.kind,
             role: e.role,
             epoch: e.epoch,
             detail: e.detail,
+            roles,
         }
+    }
+}
+
+/// The rows an event belongs on (ADR-0031):
+/// - a role's epoch starting or ending concerns that role and every known role
+///   downstream of it, whose paths changed with it
+/// - losing or regaining sync with the kernel's topology concerns the roles that
+///   topology binds: the NIC, tunnel, and local interface
+/// - anything else concerns the role it names, or the kernel if it names none
+pub fn concerns(kind: &str, role: Option<Role>, known: &[Role]) -> Vec<String> {
+    match (kind, role) {
+        ("epoch-started" | "epoch-ended", Some(role)) => std::iter::once(role.key())
+            .chain(
+                known
+                    .iter()
+                    .filter(|other| role.is_upstream_of(other))
+                    .map(Role::key),
+            )
+            .collect(),
+        ("desynchronized" | "resynchronized", _) => [Role::Nic, Role::Tunnel, Role::LocalInterface]
+            .iter()
+            .map(Role::key)
+            .collect(),
+        (_, role) => vec![role.unwrap_or(Role::Kernel).key()],
     }
 }

@@ -15,6 +15,8 @@ pub enum Write {
     Event(TopologyEvent, WallTime),
     /// An event that isn't a topology event: a kernel log line, a disabled source.
     Note(netwatch_adapter_sqlite::StoredEvent),
+    /// An incident that opened, changed, or closed (ADR-0031).
+    Incident(netwatch_probing::incident::Incident),
     /// Write everything received so far, then acknowledge. The API sends this before
     /// answering a backfill, so a backfill never misses a sample the live stream
     /// already sent (ADR-0029). The channel is FIFO, so "everything so far" includes
@@ -74,6 +76,10 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
     if closed > 0 {
         tracing::info!(closed, "closed epochs left open by the previous run");
     }
+    let closed = store.close_incidents_left_open()?;
+    if closed > 0 {
+        tracing::info!(closed, "closed incidents left open by the previous run");
+    }
     let (tx, rx) = mpsc::channel::<Write>();
     thread::Builder::new()
         .name("sqlite-writer".to_owned())
@@ -94,6 +100,11 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                     Ok(Write::Note(note)) => {
                         if let Err(error) = store.record_note(&note) {
                             tracing::error!(%error, "cannot record an event");
+                        }
+                    }
+                    Ok(Write::Incident(incident)) => {
+                        if let Err(error) = store.write_incident(&incident) {
+                            tracing::error!(%error, "cannot record an incident");
                         }
                     }
                     Ok(Write::Flush(done)) => {

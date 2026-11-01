@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-history.workspace = true
+netwatch-probing.workspace = true
 netwatch-topology.workspace = true
 netwatch-verified.workspace = true
 rusqlite.workspace = true

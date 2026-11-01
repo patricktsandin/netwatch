@@ -13,11 +13,12 @@ use std::num::NonZeroU64;
 
 use anyhow::Context;
 use netwatch_adapter_web::{
-    BindingView, EventPoint, LayerReportView, LiveMessage, TargetView, status_text,
+    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, TargetView, status_text,
 };
 use netwatch_history::{Measurement, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES};
 use netwatch_probing::health::{self, Health};
+use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -101,6 +102,12 @@ async fn main() -> anyhow::Result<()> {
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     let (current_tx, current) = watch::channel(netwatch_adapter_web::Current::default());
+    let recorder = Recorder {
+        writes: writes.clone(),
+        live: live.clone(),
+        current: current_tx.subscribe(),
+        clock,
+    };
     tokio::spawn({
         let live = live.clone();
         async move {
@@ -156,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
         role: Role::Kernel,
         identity: loopback,
     }) {
-        handle(output, &observations_tx, &writes, &live, clock);
+        handle(output, &observations_tx, &recorder);
     }
     let (_kernel_pin_tx, kernel_pin) = watch::channel(topology.binding(&Role::Kernel).cloned());
     let baseline = StreamConfig::new(
@@ -247,6 +254,8 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030).
     let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
+    // Each grading also opens, updates, and closes incidents (ADR-0031).
+    let mut incidents = IncidentTracker::new();
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
     let mut last_clocks = (clock.wall_now(), clock.now());
     let mut last_sysctls = netwatch_adapter_procfs::sysctls();
@@ -261,7 +270,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let reason = format!("kernel log: {error}{hint}");
         tracing::warn!(%error, "kernel log disabled");
-        note("source-disabled", reason.clone(), &writes, &live, clock);
+        recorder.note("source-disabled", Role::Kernel, reason.clone());
         disabled.insert(reason);
     }
 
@@ -287,14 +296,14 @@ async fn main() -> anyhow::Result<()> {
                 if (wall_us - monotonic_us).abs() > 1_000_000 {
                     let jump_s = (wall_us - monotonic_us) as f64 / 1e6;
                     tracing::warn!(jump_s, "wall clock jumped");
-                    note("clock-jump", format!("wall clock jumped by {jump_s:+.1} s"), &writes, &live, clock);
+                    recorder.note("clock-jump", Role::Kernel, format!("wall clock jumped by {jump_s:+.1} s"));
                 }
                 last_clocks = clocks;
                 let sysctls = netwatch_adapter_procfs::sysctls();
                 for (name, value) in &sysctls {
                     if let Some(before) = last_sysctls.get(name).filter(|before| *before != value) {
                         tracing::warn!(%name, %before, %value, "network sysctl changed");
-                        note("config-drift", format!("{name}: {before} → {value}"), &writes, &live, clock);
+                        recorder.note("config-drift", Role::Kernel, format!("{name}: {before} → {value}"));
                     }
                 }
                 last_sysctls = sysctls;
@@ -318,11 +327,16 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
-                publish_current(&recent, &layer_health, &topology, clock.wall_now(), &live, &current_tx);
+                let now = clock.wall_now();
+                let grades = publish_current(&recent, &layer_health, &topology, now, &live, &current_tx);
+                for incident in incidents.grade(now, &grades) {
+                    tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
+                    recorder.incident(incident);
+                }
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
-                    handle(output, &observations_tx, &writes, &live, clock);
+                    handle(output, &observations_tx, &recorder);
                 }
                 // Targets are pinned to the egress interface: the tunnel if there
                 // is one, otherwise the NIC (ADR-0020, ADR-0022).
@@ -339,13 +353,15 @@ async fn main() -> anyhow::Result<()> {
             Some(resolution) = resolutions.recv() => {
                 for resolution in fan_out(resolution, &echo_targets) {
                     let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
-                        handle(output, &observations_tx, &writes, &live, clock);
+                        handle(output, &observations_tx, &recorder);
                     }) else {
                         continue;
                     };
                     log_sample(&sample);
+                    let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
+                    incidents.outcome(&sample.role, sample.at, answered);
                     let outcomes = recent.entry(sample.role.clone()).or_default();
-                    outcomes.push_back((sample.at, matches!(sample.measurement, Measurement::RoundTrip(_))));
+                    outcomes.push_back((sample.at, answered));
                     if outcomes.len() > health::WINDOW {
                         outcomes.pop_front();
                     }
@@ -359,7 +375,20 @@ async fn main() -> anyhow::Result<()> {
             Some(message) = kmsg.recv() => {
                 if let Some(line) = netwatch_host_health::classify(&message) {
                     tracing::info!(kind = ?line.kind, interface = ?line.interface, "kernel log: {}", line.message);
-                    note("kernel-log", line.message, &writes, &live, clock);
+                    // A line about the interface carrying the NIC or tunnel role
+                    // belongs on that row; anything else on the kernel's (ADR-0031).
+                    let role = [Role::Nic, Role::Tunnel]
+                        .into_iter()
+                        .find(|role| {
+                            topology.binding(role).is_some_and(|b| match &b.identity {
+                                Identity::Interface { name, .. } => {
+                                    line.interface.as_deref() == Some(name.as_str())
+                                }
+                                Identity::Address(_) => false,
+                            })
+                        })
+                        .unwrap_or(Role::Kernel);
+                    recorder.note("kernel-log", role, line.message);
                 }
             }
             _ = tokio::signal::ctrl_c() => break,
@@ -368,21 +397,11 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle(
-    output: Output,
-    observations: &mpsc::Sender<Observation>,
-    writes: &std::sync::mpsc::Sender<persist::Write>,
-    live: &broadcast::Sender<LiveMessage>,
-    clock: Clock,
-) {
+fn handle(output: Output, observations: &mpsc::Sender<Observation>, recorder: &Recorder) {
     match output {
         Output::Event(event) => {
             log_event(&event);
-            let at = clock.wall_now();
-            let _ = live.send(LiveMessage::Event {
-                event: EventPoint::from(netwatch_adapter_sqlite::describe(&event, at)),
-            });
-            let _ = writes.send(persist::Write::Event(event, at));
+            recorder.topology(event);
         }
         Output::Command(Command::Resync { generation }) => {
             let observations = observations.clone();
@@ -461,25 +480,49 @@ fn attribute(
     })
 }
 
-/// Records an event that isn't a topology event, and shows it live.
-fn note(
-    kind: &str,
-    detail: String,
-    writes: &std::sync::mpsc::Sender<persist::Write>,
-    live: &broadcast::Sender<LiveMessage>,
+/// Records events and incidents, and shows them live. Every event is shown with the
+/// roles it concerns, among the roles graded so far (ADR-0031).
+struct Recorder {
+    writes: std::sync::mpsc::Sender<persist::Write>,
+    live: broadcast::Sender<LiveMessage>,
+    current: watch::Receiver<netwatch_adapter_web::Current>,
     clock: Clock,
-) {
-    let stored = netwatch_adapter_sqlite::StoredEvent {
-        at: clock.wall_now(),
-        kind: kind.to_owned(),
-        role: Some(Role::Kernel.key()),
-        epoch: None,
-        detail: Some(detail),
-    };
-    let _ = live.send(LiveMessage::Event {
-        event: EventPoint::from(stored.clone()),
-    });
-    let _ = writes.send(persist::Write::Note(stored));
+}
+
+impl Recorder {
+    fn show(&self, stored: netwatch_adapter_sqlite::StoredEvent) {
+        let known = self.current.borrow().known_roles();
+        let _ = self.live.send(LiveMessage::Event {
+            event: EventPoint::new(stored, &known),
+        });
+    }
+
+    fn topology(&self, event: TopologyEvent) {
+        let at = self.clock.wall_now();
+        self.show(netwatch_adapter_sqlite::describe(&event, at));
+        let _ = self.writes.send(persist::Write::Event(event, at));
+    }
+
+    /// Records an event that isn't a topology event: a kernel log line, a clock jump,
+    /// config drift, or a disabled source.
+    fn note(&self, kind: &str, role: Role, detail: String) {
+        let stored = netwatch_adapter_sqlite::StoredEvent {
+            at: self.clock.wall_now(),
+            kind: kind.to_owned(),
+            role: Some(role.key()),
+            epoch: None,
+            detail: Some(detail),
+        };
+        self.show(stored.clone());
+        let _ = self.writes.send(persist::Write::Note(stored));
+    }
+
+    fn incident(&self, incident: Incident) {
+        let _ = self.live.send(LiveMessage::Incident {
+            incident: IncidentView::from(&incident),
+        });
+        let _ = self.writes.send(persist::Write::Incident(incident));
+    }
 }
 
 /// Publishes a layer's health report to the UI, and logs it when something got worse.
@@ -488,7 +531,8 @@ const STALE_AFTER_US: i64 = 30_000_000;
 
 /// Grades every role from its recent outcomes, reads loss along each path, folds in
 /// the layer reports, and publishes the result together with every role's current
-/// binding. This is the only place statuses are decided (ADR-0030).
+/// binding. This is the only place statuses are decided (ADR-0030). Returns the
+/// grades, from which incidents are tracked.
 fn publish_current(
     recent: &HashMap<Role, VecDeque<(WallTime, bool)>>,
     layers: &BTreeMap<Role, Health>,
@@ -496,7 +540,7 @@ fn publish_current(
     now: WallTime,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
-) {
+) -> BTreeMap<Role, Health> {
     let mut grades: BTreeMap<Role, Health> = recent
         .iter()
         .map(|(role, outcomes)| {
@@ -511,9 +555,10 @@ fn publish_current(
         let probes = grades.get(role).copied().unwrap_or(Health::Unknown);
         grades.insert(role.clone(), probes.worse(layer));
     }
-    let statuses: BTreeMap<String, String> = health::along_paths(&grades)
-        .into_iter()
-        .map(|(role, health)| (role.key(), status_text(health)))
+    let grades = health::along_paths(&grades);
+    let statuses: BTreeMap<String, String> = grades
+        .iter()
+        .map(|(role, &health)| (role.key(), status_text(health)))
         .collect();
     let bindings: BTreeMap<String, BindingView> = topology
         .bindings()
@@ -538,6 +583,7 @@ fn publish_current(
         bindings: bindings.clone(),
     });
     current.send_replace(netwatch_adapter_web::Current { statuses, bindings });
+    grades
 }
 
 /// Publishes a layer's report, and returns its grade for [`publish_current`].
