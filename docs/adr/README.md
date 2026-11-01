@@ -43,3 +43,4 @@ to "Superseded".
 | [0035](0035-configuration-from-the-ui.md) | Configuring targets from the UI | Accepted |
 | [0036](0036-radio-roles.md) | Radio roles: Wi-Fi and cellular, carrying traffic or standing by | Accepted |
 | [0037](0037-drop-reasons-by-reason-only.md) | Drop reasons are counted by reason only | Accepted |
+| [0038](0038-flushing-history.md) | Flushing all history from the UI | Accepted |
