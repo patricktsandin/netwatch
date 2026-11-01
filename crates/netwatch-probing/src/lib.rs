@@ -32,6 +32,7 @@
 mod config;
 pub mod health;
 pub mod incident;
+pub mod trace;
 mod stream;
 
 pub use config::{InvalidStreamConfig, SequenceSpace, StreamConfig};
