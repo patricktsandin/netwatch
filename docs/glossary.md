@@ -191,6 +191,11 @@ words are defined elsewhere in this file.
   *degradation*.
 - **Probable cause**: the most *upstream* *role* with an *incident* open at the same
   time as another incident.
+- **Episode**: a connected group of *incidents* whose bands overlap: one problem as
+  it showed up across the *roles* it affected (ADR-0033). It is *on this host or LAN*
+  when its *probable cause* is at or before hop 1, and *beyond the gateway* otherwise.
+- **Incident report**: a printable account of the *episodes* in a time span, with path
+  evidence for each, for sending to an ISP (ADR-0033).
 - **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
 - **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
   at that time.

@@ -38,3 +38,4 @@ to "Superseded".
 | [0030](0030-the-daemon-decides-the-ui-displays.md) | The daemon decides; the UI displays | Accepted |
 | [0031](0031-incidents-and-event-relevance.md) | Incidents, and the roles an event concerns | Accepted |
 | [0032](0032-gauge-readings.md) | Gauge readings: graphs for what isn't a probe | Accepted |
+| [0033](0033-incident-reports.md) | Incident reports for an ISP | Accepted |
