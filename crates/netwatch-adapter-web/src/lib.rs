@@ -16,6 +16,8 @@
 //! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
+//! - `GET /report?from_us=<µs>&until_us=<µs>`: an incident report as a printable page,
+//!   and `GET /report.txt?…` as plain text (ADR-0033)
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
 //! Reads open their own SQLite connection, which WAL mode lets run alongside the
@@ -24,6 +26,7 @@
 //! `specs/live_backfill.qnt`).
 
 pub mod api;
+pub mod report;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -106,6 +109,8 @@ pub async fn serve(
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
         .route("/api/live", get(live_socket))
+        .route("/report", get(report_page))
+        .route("/report.txt", get(report_text))
         .fallback(spa)
         .with_state(AppState {
             flush,
@@ -273,6 +278,150 @@ async fn incidents(
     let until = WallTime::from_unix_micros(query.until_us.unwrap_or(i64::MAX));
     let incidents = read(&state, move |store| store.incidents(from, until)).await?;
     Ok(Json(incidents.iter().map(IncidentView::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct ReportQuery {
+    from_us: i64,
+    until_us: i64,
+}
+
+/// Longest stretch read from raw samples for one episode's evidence. Longer ones use
+/// minute rollups, so one long outage can't make the report slow.
+const RAW_EVIDENCE_LIMIT_US: i64 = 6 * 3600 * 1_000_000;
+
+/// Rollups covering `from..until`, from the finest history that still exists there:
+/// raw samples if the stretch is short and recent enough, otherwise stored minute
+/// (or hour) rollups, completed with raw samples for the minutes not yet rolled up.
+fn history_between(
+    store: &Store,
+    from: WallTime,
+    until: WallTime,
+    now: WallTime,
+) -> Result<Vec<netwatch_history::Rollup>, netwatch_adapter_sqlite::StoreError> {
+    use netwatch_adapter_sqlite::{MINUTE_RETENTION_DAYS, RAW_RETENTION_DAYS};
+    use netwatch_history::{Tier, roll_up};
+    let day = 24 * 3600 * 1_000_000_i64;
+    let raw_since = now.as_unix_micros() - RAW_RETENTION_DAYS * day;
+    if from.as_unix_micros() >= raw_since
+        && until.as_unix_micros() - from.as_unix_micros() <= RAW_EVIDENCE_LIMIT_US
+    {
+        return Ok(roll_up(&store.samples_between(from, until)?, Tier::Minute));
+    }
+    let tier = if from.as_unix_micros() >= now.as_unix_micros() - MINUTE_RETENTION_DAYS * day {
+        Tier::Minute
+    } else {
+        Tier::Hour
+    };
+    let rolled = store.rollup_progress(tier)?.unwrap_or(from).min(until);
+    let mut rollups = store.rollups_between(tier, from, rolled)?;
+    rollups.extend(roll_up(
+        &store.samples_between(rolled.max(from), until)?,
+        tier,
+    ));
+    Ok(rollups)
+}
+
+async fn build_report(
+    state: &AppState,
+    query: ReportQuery,
+) -> Result<(report::render::Report, BTreeMap<String, String>), (StatusCode, String)> {
+    if query.until_us <= query.from_us {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "until_us must be after from_us".to_owned(),
+        ));
+    }
+    let (from, until) = (
+        WallTime::from_unix_micros(query.from_us),
+        WallTime::from_unix_micros(query.until_us),
+    );
+    let now = WallTime::from_unix_micros(
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
+        )
+        .unwrap_or(i64::MAX),
+    );
+    let (episodes, summary) = read(state, move |store| {
+        let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
+        let identities = store.epoch_identities(from, until)?;
+        let episodes = report::episodes(&store.incidents(from, until)?)
+            .into_iter()
+            .map(|episode| {
+                let end = episode.ended.unwrap_or(until).min(until);
+                let on_path = report::roles_on_paths(&episode.affected, &known);
+                let evidence: Vec<_> = history_between(store, episode.started.max(from), end, now)?
+                    .into_iter()
+                    .filter(|r| on_path.contains(&r.role))
+                    .collect();
+                Ok((episode, report::path_stats(&evidence, &identities)))
+            })
+            .collect::<Result<Vec<_>, netwatch_adapter_sqlite::StoreError>>()?;
+        let summary = report::path_stats(&history_between(store, from, until, now)?, &identities);
+        Ok((episodes, summary))
+    })
+    .await?;
+    let current = state.current.borrow().clone();
+    let identity = |key: &str| current.bindings.get(key).map(|b| b.identity.clone());
+    let gateway = current
+        .bindings
+        .iter()
+        .find(|(key, _)| key.starts_with("hop:") && key.ends_with(":1"))
+        .map(|(_, b)| b.identity.clone());
+    let host = [
+        ("NIC", identity("nic")),
+        ("Tunnel", identity("tunnel")),
+        ("Address", identity("local-interface")),
+        ("Gateway", gateway),
+    ]
+    .into_iter()
+    .filter_map(|(what, id)| id.map(|id| (what.to_owned(), id)))
+    .collect();
+    let names = state
+        .targets
+        .iter()
+        .map(|t| (t.key.clone(), t.name.clone()))
+        .collect();
+    Ok((
+        report::render::Report {
+            from,
+            until,
+            generated: now,
+            host,
+            episodes,
+            summary,
+        },
+        names,
+    ))
+}
+
+async fn report_page(
+    State(state): State<AppState>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let (report, names) = build_report(&state, query).await?;
+    let label = |role: &Role| report::label(role, &names);
+    Ok((
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        report::render::html(&report, &label),
+    )
+        .into_response())
+}
+
+async fn report_text(
+    State(state): State<AppState>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let (report, names) = build_report(&state, query).await?;
+    let label = |role: &Role| report::label(role, &names);
+    Ok((
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        report::render::text(&report, &label),
+    )
+        .into_response())
 }
 
 async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {

@@ -15,7 +15,21 @@
         <button data-range="month" aria-pressed="false">30 d</button>
       </div>
       <button id="reset-zoom" hidden>Reset zoom</button>
+      <button id="open-report">Report</button>
     </header>
+    <dialog id="report-dialog">
+      <form method="dialog" id="report-form">
+        <h2>Incident report</h2>
+        <p class="hint">Every outage and degradation in a time span, with the path evidence an ISP needs.</p>
+        <label>From <input type="datetime-local" id="report-from" step="1" required /></label>
+        <label>Until <input type="datetime-local" id="report-until" step="1" required /></label>
+        <div class="actions">
+          <button value="cancel" formnovalidate>Cancel</button>
+          <button value="text" id="report-text">Plain text</button>
+          <button value="page" id="report-page" class="primary">Open report</button>
+        </div>
+      </form>
+    </dialog>
     <div id="connection" hidden>Disconnected from the daemon. Reconnecting…</div>
     <main id="stack"></main>
     <script type="module" src="/src/main.ts"></script>

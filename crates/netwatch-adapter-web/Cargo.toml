@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 netwatch-shared.workspace = true
 netwatch-history.workspace = true
+netwatch-verified.workspace = true
 netwatch-adapter-sqlite.workspace = true
 netwatch-host-health.workspace = true
 netwatch-probing.workspace = true

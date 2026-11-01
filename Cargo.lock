@@ -1083,6 +1083,7 @@ dependencies = [
  "netwatch-host-health",
  "netwatch-probing",
  "netwatch-shared",
+ "netwatch-verified",
  "rust-embed",
  "serde",
  "serde_json",

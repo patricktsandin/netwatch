@@ -591,6 +591,32 @@ impl Store {
         )?)
     }
 
+    /// The identity of every epoch that overlaps `from..until`, as text.
+    pub fn epoch_identities(
+        &self,
+        from: WallTime,
+        until: WallTime,
+    ) -> Result<std::collections::BTreeMap<IdentityEpoch, String>, StoreError> {
+        let mut query = self.connection.prepare_cached(
+            "SELECT epoch, identity FROM epochs
+             WHERE started_us < ?2 AND (ended_us IS NULL OR ended_us >= ?1)",
+        )?;
+        let rows = query.query_map([from.as_unix_micros(), until.as_unix_micros()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut identities = std::collections::BTreeMap::new();
+        for row in rows {
+            let (epoch, identity) = row?;
+            if let Some(epoch) = u64::try_from(epoch)
+                .ok()
+                .and_then(std::num::NonZeroU64::new)
+            {
+                identities.insert(IdentityEpoch::new(epoch), identity);
+            }
+        }
+        Ok(identities)
+    }
+
     /// The highest epoch ever stored, so that a restarted daemon's epochs don't
     /// collide with earlier ones.
     pub fn last_epoch(&self) -> Result<Option<i64>, StoreError> {
