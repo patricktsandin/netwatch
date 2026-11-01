@@ -2,6 +2,7 @@
 // the only file allowed to use `as` (ADR-0019). Anything malformed is rejected, never
 // coerced.
 
+import type { ConfigView } from "./generated/ConfigView";
 import type { EventPoint } from "./generated/EventPoint";
 import type { GaugeView } from "./generated/GaugeView";
 import type { IncidentView } from "./generated/IncidentView";
@@ -12,6 +13,9 @@ import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
 import type {
   Binding,
+  Config,
+  TargetKind,
+  TargetSpec,
   Epoch,
   EventKind,
   GaugeInfo,
@@ -354,4 +358,38 @@ export function parseLive(value: unknown): Live {
     default:
       throw new ParseError(`live: unknown type ${JSON.stringify(m.type)}`);
   }
+}
+
+const TARGET_KINDS: readonly TargetKind[] = ["icmp", "dns", "https"];
+
+function parseTargetSpec(value: unknown): TargetSpec {
+  const t = record<{
+    id: unknown;
+    name: unknown;
+    kind: unknown;
+    address: unknown;
+    expect_status: unknown;
+    expect_body: unknown;
+  }>(value, "target");
+  if (typeof t.address !== "string") throw new ParseError("target.address: expected a string");
+  return {
+    id: t.id === null ? null : integer(t.id, "target.id"),
+    name: nullableString(t.name, "target.name"),
+    kind: oneOf(t.kind, TARGET_KINDS, "target.kind"),
+    address: t.address,
+    expectStatus: t.expect_status === null ? null : integer(t.expect_status, "target.expect_status"),
+    expectBody: nullableString(t.expect_body, "target.expect_body"),
+  };
+}
+
+/** The configuration, from `/api/config`. */
+export function parseConfig(value: unknown): Config {
+  const c = record<ConfigView>(value, "config");
+  if (typeof c.editable !== "boolean") throw new ParseError("config.editable: expected a boolean");
+  return {
+    path: nullableString(c.path, "config.path"),
+    editable: c.editable,
+    reason: nullableString(c.reason, "config.reason"),
+    targets: array(c.targets, "config.targets").map(parseTargetSpec),
+  };
 }

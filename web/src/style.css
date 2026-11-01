@@ -51,7 +51,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 #identities { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; }
 .identity { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; }
 #ranges { margin-left: auto; display: flex; gap: 4px; }
-#ranges button, #reset-zoom, #open-report, dialog button { font: inherit; padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+#ranges button, #reset-zoom, #open-report, #open-settings, dialog button { font: inherit; padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
 #ranges button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
 #connection { margin: 12px 16px 0; padding: 8px 12px; border-radius: 6px; background: var(--failing); color: #fff; }
 #stack { display: grid; gap: 12px; padding: 16px; }
@@ -81,3 +81,14 @@ dialog label { display: grid; gap: 2px; margin-bottom: 10px; color: var(--muted)
 dialog input { font: inherit; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 dialog button.primary { background: var(--text); color: var(--bg); }
+dialog.wide { max-width: min(980px, calc(100vw - 32px)); width: 100%; }
+dialog .targets { display: grid; gap: 6px; margin-bottom: 12px; max-height: 60vh; overflow-y: auto; }
+dialog .target-row { display: flex; gap: 6px; align-items: center; }
+dialog .target-row input { width: 150px; }
+@media (max-width: 760px) { dialog .target-row { flex-wrap: wrap; } }
+dialog .target-row input, dialog .target-row select { font: inherit; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 0; }
+dialog .target-row input.wide { flex: 1 1 200px; }
+dialog .target-row input.narrow { width: 64px; }
+dialog .target-id { width: 44px; color: var(--muted); font-variant-numeric: tabular-nums; }
+dialog .spacer { flex: 1; }
+dialog .hint.error { color: var(--failing); white-space: pre-wrap; }

@@ -5,6 +5,7 @@
 import uPlot from "uplot";
 
 import { parseMicros } from "./api/parse";
+import { ticks } from "./gauges";
 import type { Incident, Marker, Micros, Point } from "./model";
 import type { TooltipLine } from "./tooltip";
 
@@ -13,12 +14,11 @@ const color = (name: string): string => getComputedStyle(document.documentElemen
 const seconds = (micros: number): number => micros / 1e6;
 
 /** Every row's y axis is this wide, so the time axes line up (ADR-0005). It fits
- *  labels up to `1000 ms` and `0.25 ms`. */
-const Y_AXIS_WIDTH = 76;
+ *  labels up to `1000 ms` and `12.5 Mbit/s`. */
+const Y_AXIS_WIDTH = 84;
 const HEIGHT = 120;
 /** How close (in pixels) something must be to the cursor to show in the tooltip. */
 const NEAR_PX = 6;
-
 
 /** What a row draws, besides its points. The caller has already picked the row's
  *  own incidents and the markers that concern it. */
@@ -205,6 +205,9 @@ export function createChart(container: HTMLElement, sources: ChartSources): Char
           stroke: color("--muted"),
           grid: { stroke: color("--grid") },
           size: Y_AXIS_WIDTH,
+          // Our own 1–2–5 ticks: uPlot's choice can leave a short chart with a lone
+          // zero, and the axis would say nothing about the scale.
+          splits: (_u, _axis, min, max) => ticks(min, max, 3),
           values: (_u, v) => v.map(sources.format),
         },
       ],

@@ -15,8 +15,7 @@ export type Epoch = Brand<number, "Epoch">;
 export type LossReason = "timed-out" | "unreachable" | "refused" | "unexpected-response" | "send-failed";
 
 export type Measurement =
-  | { readonly kind: "round-trip"; readonly rttMs: number }
-  | { readonly kind: "lost"; readonly reason: LossReason };
+  { readonly kind: "round-trip"; readonly rttMs: number } | { readonly kind: "lost"; readonly reason: LossReason };
 
 /** One sample, as the UI sees it. */
 export interface Point {
@@ -106,3 +105,23 @@ export type Live =
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
   | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
   | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> };
+
+export type TargetKind = "icmp" | "dns" | "https";
+
+/** One target as configured (ADR-0035). */
+export interface TargetSpec {
+  readonly id: number | null;
+  readonly name: string | null;
+  readonly kind: TargetKind;
+  readonly address: string;
+  readonly expectStatus: number | null;
+  readonly expectBody: string | null;
+}
+
+/** The configuration as the settings page sees it. */
+export interface Config {
+  readonly path: string | null;
+  readonly editable: boolean;
+  readonly reason: string | null;
+  readonly targets: readonly TargetSpec[];
+}

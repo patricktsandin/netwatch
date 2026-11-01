@@ -214,8 +214,12 @@ fn restart_soon(writes: mpsc::Sender<persist::Write>) {
             let _ = flushed.blocking_recv();
         }
         use std::os::unix::process::CommandExt;
-        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        let mut args = std::env::args_os();
+        let name = args.next().unwrap_or_else(|| "netwatch".into());
+        // `/proc/self/exe` is this binary even if a package upgrade replaced the
+        // file; `arg0` keeps the process's name.
         let error = std::process::Command::new("/proc/self/exe")
+            .arg0(name)
             .args(args)
             .exec();
         tracing::error!(%error, "cannot restart; exiting so that systemd restarts netwatch");

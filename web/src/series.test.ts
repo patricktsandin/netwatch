@@ -34,15 +34,19 @@ const keys = (ps: readonly Point[]): string[] => ps.map(key);
 
 describe("merge", () => {
   it("is idempotent", () => {
-    fc.assert(fc.property(series, (a) => {
+    fc.assert(
+      fc.property(series, (a) => {
         expect(keys(merge(a, a))).toEqual(keys(a));
-      }));
+      }),
+    );
   });
 
   it("is commutative", () => {
-    fc.assert(fc.property(series, series, (a, b) => {
+    fc.assert(
+      fc.property(series, series, (a, b) => {
         expect(keys(merge(a, b))).toEqual(keys(merge(b, a)));
-      }));
+      }),
+    );
   });
 
   it("is associative", () => {

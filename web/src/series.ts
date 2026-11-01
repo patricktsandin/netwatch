@@ -54,10 +54,7 @@ export function latest(points: readonly Point[]): Micros | undefined {
  * and between epochs (different identities are never joined, ADR-0003). Losses are
  * gaps too, and are drawn separately.
  */
-export function plotColumns(
-  points: readonly Point[],
-  maxGapUs: number,
-): { xs: number[]; ys: (number | null)[] } {
+export function plotColumns(points: readonly Point[], maxGapUs: number): { xs: number[]; ys: (number | null)[] } {
   const xs: number[] = [];
   const ys: (number | null)[] = [];
   points.forEach((p, i) => {

@@ -40,7 +40,9 @@ interface State {
 
 function state(raw: unknown): State {
   return {
-    points: set(field(raw, "points")).map(int).sort((a, b) => a - b),
+    points: set(field(raw, "points"))
+      .map(int)
+      .sort((a, b) => a - b),
     request: set(field(raw, "request")).map(int),
     response: set(field(raw, "response")).map((r) => set(r).map(int)),
     inbox: list(field(raw, "inbox")).map(int),
@@ -55,10 +57,20 @@ const times = (ps: readonly Point[]): number[] => ps.map((p) => p.at);
 describe("live stream and backfill conform to specs/live_backfill.qnt", () => {
   it("replays generated traces against merge and latest", () => {
     const dir = mkdtempSync(join(tmpdir(), "netwatch-traces-"));
-    execFileSync(process.env["QUINT"] ?? "quint", [
-      "run", SPEC, "--mbt", "--max-steps=30", "--n-traces=100", "--max-samples=100",
-      "--seed=0x6c697665", `--out-itf=${dir}/trace_{seq}.itf.json`,
-    ], { stdio: "ignore" });
+    execFileSync(
+      process.env["QUINT"] ?? "quint",
+      [
+        "run",
+        SPEC,
+        "--mbt",
+        "--max-steps=30",
+        "--n-traces=100",
+        "--max-samples=100",
+        "--seed=0x6c697665",
+        `--out-itf=${dir}/trace_{seq}.itf.json`,
+      ],
+      { stdio: "ignore" },
+    );
     const files = readdirSync(dir);
     expect(files.length).toBeGreaterThan(50);
 

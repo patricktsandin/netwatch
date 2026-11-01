@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { parseReading } from "./api/parse";
-import { formatValue, gaugeColumns, mergeReadings } from "./gauges";
+import { formatValue, gaugeColumns, mergeReadings, ticks } from "./gauges";
 import type { GaugeKey, Reading } from "./model";
 
 const reading = (at: number, gauge: string, value: number, epoch = 1): Reading =>
@@ -15,7 +15,8 @@ describe("formatValue", () => {
     [950, "950 bit/s"],
     [12_345, "12.3 kbit/s"],
     [1_250_000, "1.25 Mbit/s"],
-    [999_999_999, "1.00 Gbit/s"],
+    [999_999_999, "1 Gbit/s"],
+    [5_000_000, "5 Mbit/s"],
   ])("%d bit/s reads %s", (value, text) => {
     expect(formatValue("bit/s", value)).toBe(text);
   });
@@ -63,5 +64,20 @@ describe("gaugeColumns", () => {
       5e6,
     );
     expect(columns.ys[0]).toEqual([10, null, 20, null, 30]);
+  });
+});
+
+describe("ticks", () => {
+  it.each([
+    [0, 9.3e6, [0, 5e6]],
+    [0, 1.15, [0, 0.5, 1]],
+    [0, 46, [0, 20, 40]],
+    [0, 1, [0, 0.5, 1]],
+  ])("from %d to %d: %j", (min, max, expected) => {
+    expect(ticks(min, max, 3)).toEqual(expected);
+  });
+
+  it("spans negative ranges too, through zero", () => {
+    expect(ticks(-95, 0, 3)).toEqual([-50, 0]);
   });
 });

@@ -40,6 +40,7 @@ import type {
 } from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, plotColumns, since } from "./series";
+import { openSettings } from "./settingsDialog";
 import { tooltip, upsertIncident, visibleIncidents, type Words } from "./tooltip";
 import type { Status } from "./model";
 
@@ -441,34 +442,6 @@ function selectRange(selected: Range): void {
   range = selected;
   history.replaceState(null, "", selected === "hour" ? location.pathname : `#${selected}`);
   zoom = null;
-  // The incident report (ADR-0033) is the daemon's page; the dialog only picks the span,
-  // starting from what's on screen.
-  function localInput(seconds: number): string {
-    const d = new Date(seconds * 1000);
-    const pad = (n: number): string => String(n).padStart(2, "0");
-    return `${String(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  }
-  const reportDialog = document.getElementById("report-dialog");
-  document.getElementById("open-report")?.addEventListener("click", () => {
-    if (!(reportDialog instanceof HTMLDialogElement)) return;
-    const window = zoom ?? sharedWindow();
-    const from = document.getElementById("report-from");
-    const until = document.getElementById("report-until");
-    if (from instanceof HTMLInputElement) from.value = localInput(window.min);
-    if (until instanceof HTMLInputElement) until.value = localInput(window.max);
-    reportDialog.showModal();
-  });
-  reportDialog?.addEventListener("close", () => {
-    if (!(reportDialog instanceof HTMLDialogElement)) return;
-    const from = document.getElementById("report-from");
-    const until = document.getElementById("report-until");
-    if (!(from instanceof HTMLInputElement) || !(until instanceof HTMLInputElement)) return;
-    const path = { page: "/report", text: "/report.txt" }[reportDialog.returnValue];
-    if (path === undefined) return;
-    const micros = (input: HTMLInputElement): number => new Date(input.value).getTime() * 1000;
-    open(`${path}?from_us=${String(micros(from))}&until_us=${String(micros(until))}`, "_blank");
-  });
-
   for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
     button.setAttribute("aria-pressed", String(button.dataset["range"] === selected));
   }
@@ -479,6 +452,43 @@ function selectRange(selected: Range): void {
   incidents = [];
   void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
 }
+
+document.getElementById("open-settings")?.addEventListener("click", () => {
+  // After a save, the daemon restarts: the live stream drops and reconnects, and the
+  // backfill brings the new targets' rows.
+  void openSettings(() => {
+    for (const row of rows.values()) row.rowEl.remove();
+    rows.clear();
+  }).catch(report);
+});
+
+// The incident report (ADR-0033) is the daemon's page; the dialog only picks the span,
+// starting from what's on screen.
+function localInput(seconds: number): string {
+  const d = new Date(seconds * 1000);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${String(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+const reportDialog = document.getElementById("report-dialog");
+document.getElementById("open-report")?.addEventListener("click", () => {
+  if (!(reportDialog instanceof HTMLDialogElement)) return;
+  const window = zoom ?? sharedWindow();
+  const from = document.getElementById("report-from");
+  const until = document.getElementById("report-until");
+  if (from instanceof HTMLInputElement) from.value = localInput(window.min);
+  if (until instanceof HTMLInputElement) until.value = localInput(window.max);
+  reportDialog.showModal();
+});
+reportDialog?.addEventListener("close", () => {
+  if (!(reportDialog instanceof HTMLDialogElement)) return;
+  const from = document.getElementById("report-from");
+  const until = document.getElementById("report-until");
+  if (!(from instanceof HTMLInputElement) || !(until instanceof HTMLInputElement)) return;
+  const path = { page: "/report", text: "/report.txt" }[reportDialog.returnValue];
+  if (path === undefined) return;
+  const micros = (input: HTMLInputElement): number => new Date(input.value).getTime() * 1000;
+  open(`${path}?from_us=${String(micros(from))}&until_us=${String(micros(until))}`, "_blank");
+});
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
   button.addEventListener("click", () => {

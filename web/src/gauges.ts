@@ -56,11 +56,28 @@ const PREFIXES: readonly (readonly [number, string])[] = [
   [1e3, "k"],
 ];
 
-/** A value in its unit, with an SI prefix and three significant digits. */
+/** A value in its unit, with an SI prefix and at most three significant digits. */
 export function formatValue(unit: GaugeUnit, value: number): string {
   const rounded = Number(value.toPrecision(3));
   for (const [size, prefix] of PREFIXES) {
-    if (Math.abs(rounded) >= size) return `${(rounded / size).toPrecision(3)} ${prefix}${unit}`;
+    if (Math.abs(rounded) >= size) return `${String(Number((rounded / size).toPrecision(3)))} ${prefix}${unit}`;
   }
   return `${String(Math.round(value))} ${unit}`;
+}
+
+/** At most `count` evenly spaced tick values covering `min..max`, on a 1–2–5 step,
+ *  always including zero when the range spans it. */
+export function ticks(min: number, max: number, count: number): number[] {
+  const span = max - min;
+  if (!(span > 0) || count < 2) return [min];
+  const rough = span / (count - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const inRange = (step: number): number => Math.floor(max / step + 1e-9) - Math.ceil(min / step - 1e-9) + 1;
+  const step = [1, 2, 5, 10].map((m) => m * magnitude).find((s) => inRange(s) <= count) ?? 10 * magnitude;
+  const out: number[] = [];
+  for (let t = Math.ceil(min / step) * step; t <= max + step * 1e-9; t += step) {
+    // Rounded to the step's precision, so 0.1 + 0.2 doesn't print as 0.30000000000000004.
+    out.push(Number(t.toPrecision(12)));
+  }
+  return out;
 }
