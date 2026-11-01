@@ -189,10 +189,11 @@ words are defined elsewhere in this file.
 - **Incident**: a period during which one *role*'s *status* was `Degraded` or `Failing`
   (ADR-0031). Its *severity* is *outage* if it was ever `Failing`, otherwise
   *degradation*.
-- **Probable cause**: the most *upstream* *role* with an *incident* open at the same
-  time as another incident.
-- **Episode**: a connected group of *incidents* whose bands overlap: one problem as
-  it showed up across the *roles* it affected (ADR-0033). It is *on this host or LAN*
+- **Probable cause**: the most *upstream* *role* whose *incident* opened before
+  another's, or at most 10 s after it, and was still open (ADR-0034).
+- **Episode**: a connected group of overlapping *incidents*, linked by *probable
+  cause*: one problem as it showed up across the *roles* it affected (ADR-0033,
+  ADR-0034). It is *on this host or LAN*
   when its *probable cause* is at or before hop 1, and *beyond the gateway* otherwise.
 - **Incident report**: a printable account of the *episodes* in a time span, with path
   evidence for each, for sending to an ISP (ADR-0033).
