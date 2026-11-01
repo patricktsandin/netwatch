@@ -28,8 +28,10 @@
 use std::collections::BTreeMap;
 
 mod kernel_log;
+mod throughput;
 
 pub use kernel_log::{KernelLogKind, KernelLogLine, classify};
+pub use throughput::Throughput;
 
 use netwatch_verified::counter_increase;
 

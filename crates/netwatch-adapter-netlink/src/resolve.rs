@@ -64,7 +64,7 @@ pub fn resolve_egress() -> io::Result<Option<EgressPath>> {
 }
 
 /// The device counters (`IFLA_STATS64`) of interface `index`, by `Link.Name`, for the
-/// NIC layer's health (ADR-0008).
+/// NIC layer's health (ADR-0008) and throughput (ADR-0032).
 pub fn link_counters(index: NonZeroU32) -> io::Result<BTreeMap<String, u64>> {
     let link = get_link(&connect()?, index)?;
     let stats = link
@@ -77,6 +77,8 @@ pub fn link_counters(index: NonZeroU32) -> io::Result<BTreeMap<String, u64>> {
         .ok_or_else(|| invalid_data("RTM_NEWLINK reply has no IFLA_STATS64"))?;
     Ok(BTreeMap::from(
         [
+            ("RxBytes", stats.rx_bytes),
+            ("TxBytes", stats.tx_bytes),
             ("RxErrors", stats.rx_errors),
             ("TxErrors", stats.tx_errors),
             ("RxDropped", stats.rx_dropped),

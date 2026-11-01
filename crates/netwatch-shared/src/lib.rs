@@ -19,10 +19,12 @@
 //! them. Keep it small, and move things into it only after two contexts have
 //! genuinely needed the same concept.
 
+mod gauge;
 mod identity;
 mod role;
 mod time;
 
+pub use gauge::{Gauge, GaugeUnit};
 pub use identity::{Identity, IdentityEpoch, InterfaceIndex, InterfaceName, InvalidInterfaceName};
 pub use role::{HopTtl, Role, TargetId};
 pub use time::{Instant, WallTime};

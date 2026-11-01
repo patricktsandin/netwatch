@@ -23,8 +23,10 @@
 //! Status: samples and their rollups ([`roll_up`], [`coarsen`]) exist. Persisting
 //! the rollup tiers and their retention comes next.
 
+mod reading;
 mod rollup;
 
+pub use reading::{Reading, ReadingRollup, ReadingSummary, coarsen_readings, roll_up_readings};
 pub use rollup::{Histogram, Rollup, Tier, coarsen, roll_up};
 
 use netwatch_shared::uom::si::f64::Time;

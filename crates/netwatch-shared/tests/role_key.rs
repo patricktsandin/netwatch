@@ -57,3 +57,14 @@ fn non_canonical_and_malformed_keys_are_rejected() {
         assert_eq!(Role::from_key(key), None, "{key:?}");
     }
 }
+
+#[test]
+fn every_gauge_key_round_trips_and_is_distinct() {
+    use netwatch_shared::Gauge;
+    let keys: std::collections::BTreeSet<&str> = Gauge::ALL.iter().map(|g| g.key()).collect();
+    assert_eq!(keys.len(), Gauge::ALL.len());
+    for &gauge in Gauge::ALL {
+        assert_eq!(Gauge::from_key(gauge.key()), Some(gauge));
+    }
+    assert_eq!(Gauge::from_key("rx"), None);
+}
