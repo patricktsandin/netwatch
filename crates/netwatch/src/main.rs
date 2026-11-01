@@ -124,6 +124,14 @@ async fn main() -> anyhow::Result<()> {
 
     let (pin_tx, pin) = watch::channel::<Option<Binding>>(None);
     let (resolutions_tx, mut resolutions) = mpsc::channel::<probe::Resolution>(1024);
+    // Sources that can't run: reported by the probe tasks and the kernel log watcher,
+    // and shown with every kernel report (ADR-0007).
+    let (disabled_tx, mut disabled_rx) = mpsc::unbounded_channel::<String>();
+    let mut disabled = std::collections::BTreeSet::new();
+    let reports = probe::Reports {
+        resolutions: resolutions_tx.clone(),
+        disabled: disabled_tx,
+    };
     // Targets every 5 s with a 2 s timeout; hops every 1 s with a 0.9 s timeout
     // (ADR-0009). Both are valid for ICMP's sequence space.
     let echo = StreamConfig::new(
@@ -163,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         probe::ProbeKind::Echo(None),
         baseline,
         kernel_pin,
-        resolutions_tx.clone(),
+        reports.clone(),
         clock,
     ));
 
@@ -187,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
                 probe::ProbeKind::Echo(ttl),
                 config,
                 pin.clone(),
-                resolutions_tx.clone(),
+                reports.clone(),
                 clock,
             ));
         }
@@ -203,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
             probe::ProbeKind::Dns,
             echo,
             pin.clone(),
-            resolutions_tx.clone(),
+            reports.clone(),
             clock,
         ));
     }
@@ -245,10 +253,8 @@ async fn main() -> anyhow::Result<()> {
     // Network-relevant kernel log lines become event markers (ADR-0008). Reading the
     // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
     let (kmsg_tx, mut kmsg) = mpsc::channel::<String>(64);
-    // The kernel layer's sources that couldn't start, reported with every kernel report.
-    let mut disabled = Vec::new();
     if let Err(error) = netwatch_adapter_procfs::watch_kernel_log(kmsg_tx) {
-        disabled.push(format!("kernel log: {error} (needs CAP_SYSLOG)"));
+        disabled.insert(format!("kernel log: {error} (needs CAP_SYSLOG)"));
         tracing::warn!(%error, "kernel log disabled (needs CAP_SYSLOG)");
         note(
             "source-disabled",
@@ -267,7 +273,13 @@ async fn main() -> anyhow::Result<()> {
                 };
                 layer_health.insert(
                     Role::Kernel,
-                    publish_layer(Role::Kernel, &kernel_watch.observe(reading), &disabled, &live, &layers_tx),
+                    publish_layer(
+                        Role::Kernel,
+                        &kernel_watch.observe(reading),
+                        &disabled.iter().cloned().collect::<Vec<_>>(),
+                        &live,
+                        &layers_tx,
+                    ),
                 );
                 let clocks = (clock.wall_now(), clock.now());
                 let wall_us = clocks.0.as_unix_micros() - last_clocks.0.as_unix_micros();
@@ -340,6 +352,9 @@ async fn main() -> anyhow::Result<()> {
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
                 }
+            }
+            Some(reason) = disabled_rx.recv() => {
+                disabled.insert(reason);
             }
             Some(message) = kmsg.recv() => {
                 if let Some(line) = netwatch_host_health::classify(&message) {

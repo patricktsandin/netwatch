@@ -69,6 +69,14 @@ impl Socket {
     }
 }
 
+/// Where a probe task reports: every probe's resolution, and any source it finds it
+/// can't run.
+#[derive(Debug, Clone)]
+pub struct Reports {
+    pub resolutions: mpsc::Sender<Resolution>,
+    pub disabled: mpsc::UnboundedSender<String>,
+}
+
 /// Keeps one role probed (a target, or one hop toward it when `ttl` is set) through
 /// whatever the current egress pin is. When the pin changes, a new stream starts on
 /// a socket pinned to the new interface. The old stream is retired, and lives on
@@ -79,7 +87,7 @@ pub async fn run_role(
     kind: ProbeKind,
     config: StreamConfig,
     mut pins: watch::Receiver<Option<Binding>>,
-    resolutions: mpsc::Sender<Resolution>,
+    reports: Reports,
     clock: Clock,
 ) {
     let mut retire_current: Option<oneshot::Sender<()>> = None;
@@ -102,12 +110,16 @@ pub async fn run_role(
                         socket,
                         stream,
                         retired,
-                        resolutions.clone(),
+                        reports.resolutions.clone(),
                         clock,
                     ));
                 }
                 Err(error) => {
                     tracing::warn!(%error, ?role, interface = %name, "cannot open probe socket");
+                    // A probe kind that can't run is a disabled source, shown in the UI,
+                    // never just a missing row (ADR-0007). One message per kind and
+                    // cause, however many roles hit it.
+                    let _ = reports.disabled.send(disabled_reason(kind, &error));
                 }
             }
         }
@@ -175,6 +187,19 @@ async fn run_stream(
                 }
             }
         }
+    }
+}
+
+/// Why a probe kind can't run, for the kernel layer's list of disabled sources.
+fn disabled_reason(kind: ProbeKind, error: &std::io::Error) -> String {
+    match kind {
+        ProbeKind::Echo(_) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            "ICMP probes: permission denied (the service's group must be within \
+             net.ipv4.ping_group_range)"
+                .to_owned()
+        }
+        ProbeKind::Echo(_) => format!("ICMP probes: {error}"),
+        ProbeKind::Dns => format!("DNS probes: {error}"),
     }
 }
 
