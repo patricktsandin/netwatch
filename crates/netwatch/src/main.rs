@@ -254,8 +254,13 @@ async fn main() -> anyhow::Result<()> {
     // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
     let (kmsg_tx, mut kmsg) = mpsc::channel::<String>(64);
     if let Err(error) = netwatch_adapter_procfs::watch_kernel_log(kmsg_tx) {
-        disabled.insert(format!("kernel log: {error} (needs CAP_SYSLOG)"));
-        tracing::warn!(%error, "kernel log disabled (needs CAP_SYSLOG)");
+        let hint = if error.kind() == std::io::ErrorKind::PermissionDenied {
+            " (needs CAP_SYSLOG)"
+        } else {
+            ""
+        };
+        disabled.insert(format!("kernel log: {error}{hint}"));
+        tracing::warn!(%error, "kernel log disabled");
         note(
             "source-disabled",
             format!("kernel log: {error} (needs CAP_SYSLOG)"),

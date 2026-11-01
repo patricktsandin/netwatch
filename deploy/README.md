@@ -18,6 +18,18 @@ The UI is then at <http://127.0.0.1:8732>. ICMP echo probes use unprivileged pin
 sockets, so the `netwatch` group must be within `net.ipv4.ping_group_range`. On Fedora
 the default (`0 2147483647`) already includes every group.
 
+## Requirements on the host
+
+ICMP probes use unprivileged ping sockets, so the `netwatch` group must be within
+`net.ipv4.ping_group_range`. Fedora's default (`0 2147483647`) includes every group;
+containers often default to `0 0`, which excludes it. If it's excluded, the kernel row
+lists "ICMP probes: permission denied" under disabled sources. To allow it:
+
+```sh
+echo 'net.ipv4.ping_group_range = 0 2147483647' | sudo tee /etc/sysctl.d/50-netwatch.conf
+sudo sysctl --system
+```
+
 ## Configuration
 
 Targets, the listen address, and the database path come from
