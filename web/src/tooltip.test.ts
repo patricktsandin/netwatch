@@ -1,21 +1,9 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import {
-  parseIncident,
-  parseMarker,
-  parseMicros,
-  parsePoint,
-  parseRoles,
-} from "./api/parse";
-import type { Incident, Marker, Micros, Point, RoleKey } from "./model";
-import {
-  formatDuration,
-  tooltip,
-  upsertIncident,
-  visibleIncidents,
-  type Words,
-} from "./tooltip";
+import { parseIncident, parseMarker, parseMicros, parsePoint, parseReading, parseRoles } from "./api/parse";
+import type { Incident, Marker, Micros, Point, Reading, RoleKey } from "./model";
+import { formatDuration, tooltip, upsertIncident, visibleIncidents, type Words } from "./tooltip";
 
 // Everything is built through the boundary parser, so the tests use real domain
 // values without any casts.
@@ -28,18 +16,13 @@ function role(key: string): RoleKey {
 const words: Words = {
   time: (at) => `t${String(at / 1e6)}`,
   role: (key) => key.toUpperCase(),
+  reading: (r) => `${r.gauge}=${String(r.value)}`,
 };
 const target = role("target:1");
 
-const rtt = (at: number, ms: number): Point =>
-  parsePoint({ at_us: at * 1e6, epoch: 1, rtt_us: ms * 1000, loss: null });
-const lost = (at: number): Point =>
-  parsePoint({ at_us: at * 1e6, epoch: 1, rtt_us: null, loss: "timed-out" });
-const incident = (
-  started: number,
-  ended: number | null,
-  more: Partial<Incident> = {},
-): Incident => ({
+const rtt = (at: number, ms: number): Point => parsePoint({ at_us: at * 1e6, epoch: 1, rtt_us: ms * 1000, loss: null });
+const lost = (at: number): Point => parsePoint({ at_us: at * 1e6, epoch: 1, rtt_us: null, loss: "timed-out" });
+const incident = (started: number, ended: number | null, more: Partial<Incident> = {}): Incident => ({
   ...parseIncident({
     role: "target:1",
     started_us: started * 1e6,
@@ -74,11 +57,10 @@ describe("formatDuration", () => {
 });
 
 describe("tooltip", () => {
-  const row = (
-    more: { points?: Point[]; incidents?: Incident[]; markers?: Marker[] } = {},
-  ) => ({
+  const row = (more: { points?: Point[]; readings?: Reading[]; incidents?: Incident[]; markers?: Marker[] } = {}) => ({
     role: target,
     points: more.points ?? [],
+    readings: more.readings ?? [],
     incidents: more.incidents ?? [],
     markers: more.markers ?? [],
   });
@@ -94,11 +76,19 @@ describe("tooltip", () => {
       tone: "value",
       text: "lost (timed out)",
     });
-    expect(
-      tooltip(hover(17.5), row({ points }), words).filter(
-        (l) => l.tone === "value",
-      ),
-    ).toEqual([]);
+    expect(tooltip(hover(17.5), row({ points }), words).filter((l) => l.tone === "value")).toEqual([]);
+  });
+
+  it("shows every gauge read at the nearest reading's time", () => {
+    const readings = [
+      parseReading({ at_us: 10e6, epoch: 1, gauge: "rx-throughput", value: 5 }),
+      parseReading({ at_us: 10e6, epoch: 1, gauge: "tx-throughput", value: 1 }),
+      parseReading({ at_us: 11e6, epoch: 1, gauge: "rx-throughput", value: 7 }),
+    ];
+    expect(tooltip(hover(10.2), row({ readings }), words)).toContainEqual({
+      tone: "value",
+      text: "rx-throughput=5 · tx-throughput=1",
+    });
   });
 
   it("names every incident covering the time, with its duration and probable cause", () => {
@@ -114,19 +104,11 @@ describe("tooltip", () => {
       tone: "degradation",
       text: "Degradation since t300 (ongoing, 11 min 40 s)",
     });
-    expect(
-      tooltip(hover(200), row({ incidents }), words).filter(
-        (l) => l.tone !== "value",
-      ),
-    ).toEqual([]);
+    expect(tooltip(hover(200), row({ incidents }), words).filter((l) => l.tone !== "value")).toEqual([]);
   });
 
   it("finds an incident too short to see when hovering near it", () => {
-    const lines = tooltip(
-      hover(51),
-      row({ incidents: [incident(50, 50)] }),
-      words,
-    );
+    const lines = tooltip(hover(51), row({ incidents: [incident(50, 50)] }), words);
     expect(lines.map((l) => l.tone)).toContain("outage");
   });
 
@@ -141,11 +123,7 @@ describe("tooltip", () => {
         detail: "eth1 (ifindex 7)",
       }),
     ];
-    expect(
-      tooltip(hover(11), row({ markers }), words).filter(
-        (l) => l.tone === "event",
-      ),
-    ).toEqual([
+    expect(tooltip(hover(11), row({ markers }), words).filter((l) => l.tone === "event")).toEqual([
       { tone: "event", text: "t10 · kernel: eth0: link down" },
       { tone: "event", text: "t12 · NIC is now eth1 (ifindex 7)" },
     ]);
@@ -157,10 +135,7 @@ describe("upsertIncident", () => {
     const open = incident(100, null);
     const closed = incident(100, 150);
     const later = incident(200, null);
-    expect(upsertIncident(upsertIncident([open], later), closed)).toEqual([
-      closed,
-      later,
-    ]);
+    expect(upsertIncident(upsertIncident([open], later), closed)).toEqual([closed, later]);
   });
 
   it("is idempotent and order-insensitive across distinct incidents", () => {
@@ -169,23 +144,16 @@ describe("upsertIncident", () => {
         started: fc.integer({ min: 0, max: 50 }),
         role: fc.constantFrom("nic", "target:1"),
       })
-      .map(({ started, role: r }) =>
-        incident(started, null, { role: role(r) }),
-      );
+      .map(({ started, role: r }) => incident(started, null, { role: role(r) }));
     fc.assert(
       fc.property(fc.array(anIncident), (incidents) => {
         const forward = incidents.reduce<Incident[]>(upsertIncident, []);
         const twice = incidents.reduce(upsertIncident, forward);
         expect(twice).toEqual(forward);
-        const keys = (list: readonly Incident[]) =>
-          list.map((i) => `${i.role}@${String(i.started)}`);
-        const backward = [...incidents]
-          .reverse()
-          .reduce<Incident[]>(upsertIncident, []);
+        const keys = (list: readonly Incident[]) => list.map((i) => `${i.role}@${String(i.started)}`);
+        const backward = [...incidents].reverse().reduce<Incident[]>(upsertIncident, []);
         expect(new Set(keys(backward))).toEqual(new Set(keys(forward)));
-        expect(forward.map((i) => i.started)).toEqual(
-          [...forward.map((i) => i.started)].sort((a, b) => a - b),
-        );
+        expect(forward.map((i) => i.started)).toEqual([...forward.map((i) => i.started)].sort((a, b) => a - b));
       }),
     );
   });
@@ -199,9 +167,6 @@ describe("visibleIncidents", () => {
       incident(150, null),
       incident(120, 130, { role: role("nic") }),
     ];
-    expect(visibleIncidents(incidents, target, us(100), us(200))).toEqual([
-      incidents[1],
-      incidents[2],
-    ]);
+    expect(visibleIncidents(incidents, target, us(100), us(200))).toEqual([incidents[1], incidents[2]]);
   });
 });

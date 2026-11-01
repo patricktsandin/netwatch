@@ -3,7 +3,10 @@
 // coerced.
 
 import type { EventPoint } from "./generated/EventPoint";
+import type { GaugeView } from "./generated/GaugeView";
 import type { IncidentView } from "./generated/IncidentView";
+import type { ReadingPoint } from "./generated/ReadingPoint";
+import type { ReadingRollupPoint } from "./generated/ReadingRollupPoint";
 import type { LayerReportView } from "./generated/LayerReportView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
@@ -11,6 +14,9 @@ import type {
   Binding,
   Epoch,
   EventKind,
+  GaugeInfo,
+  GaugeKey,
+  GaugeUnit,
   Incident,
   LayerReport,
   Live,
@@ -18,6 +24,7 @@ import type {
   Marker,
   Micros,
   Point,
+  Reading,
   RoleKey,
   Severity,
   Status,
@@ -136,6 +143,59 @@ export function parseMarker(value: unknown): Marker {
     detail: nullableString(e.detail, "event.detail"),
     concerns: array(e.roles, "event.roles").map((r) => roleKey(r, "event.roles")),
   };
+}
+
+const GAUGE_KEY = /^[a-z][a-z0-9-]*$/;
+
+function gaugeKey(value: unknown, what: string): GaugeKey {
+  if (typeof value !== "string" || !GAUGE_KEY.test(value)) throw new ParseError(`${what}: expected a gauge key`);
+  return value as GaugeKey;
+}
+
+function finite(value: unknown, what: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ParseError(`${what}: expected a number`);
+  return value;
+}
+
+const GAUGE_UNITS: readonly GaugeUnit[] = ["bit/s"];
+
+/** Every gauge's label and unit, from `/api/gauges`. */
+export function parseGauges(value: unknown): ReadonlyMap<GaugeKey, GaugeInfo> {
+  return new Map(
+    array(value, "gauges").map((g) => {
+      const v = record<GaugeView>(g, "gauge");
+      if (typeof v.label !== "string") throw new ParseError("gauge.label: expected a string");
+      const key = gaugeKey(v.key, "gauge.key");
+      return [key, { key, label: v.label, unit: oneOf(v.unit, GAUGE_UNITS, "gauge.unit") }];
+    }),
+  );
+}
+
+export function parseReading(value: unknown): Reading {
+  const r = record<ReadingPoint>(value, "reading");
+  return {
+    at: micros(r.at_us, "reading.at_us"),
+    epoch: epoch(r.epoch, "reading.epoch"),
+    gauge: gaugeKey(r.gauge, "reading.gauge"),
+    value: finite(r.value, "reading.value"),
+  };
+}
+
+export function parseReadings(value: unknown): readonly Reading[] {
+  return array(value, "readings").map(parseReading);
+}
+
+/** Reading rollups from `/api/reading-rollups`, as readings at each interval's mean. */
+export function parseReadingRollups(value: unknown): readonly Reading[] {
+  return array(value, "reading rollups").map((v) => {
+    const r = record<ReadingRollupPoint>(v, "reading rollup");
+    return {
+      at: micros(r.start_us, "reading rollup.start_us"),
+      epoch: epoch(r.epoch, "reading rollup.epoch"),
+      gauge: gaugeKey(r.gauge, "reading rollup.gauge"),
+      value: finite(r.mean, "reading rollup.mean"),
+    };
+  });
 }
 
 const SEVERITIES: readonly Severity[] = ["degradation", "outage"];
@@ -268,6 +328,7 @@ export function parseLive(value: unknown): Live {
     point: unknown;
     event: unknown;
     incident: unknown;
+    reading: unknown;
     report: unknown;
     statuses: unknown;
     bindings: unknown;
@@ -282,6 +343,8 @@ export function parseLive(value: unknown): Live {
       return { type: "event", marker: parseMarker(m.event) };
     case "incident":
       return { type: "incident", incident: parseIncident(m.incident) };
+    case "reading":
+      return { type: "reading", role: roleKey(m.role, "live.role"), reading: parseReading(m.reading) };
     case "statuses":
       return { type: "statuses", statuses: parseStatuses(m.statuses) };
     case "bindings":

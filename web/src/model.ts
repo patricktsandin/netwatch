@@ -46,6 +46,26 @@ export interface Marker {
   readonly concerns: readonly RoleKey[];
 }
 
+/** A gauge's key, such as `rx-throughput` (see `Gauge::key` in Rust). */
+export type GaugeKey = Brand<string, "GaugeKey">;
+
+/** The units gauges come in (ADR-0032). The unit says how to format a value. */
+export type GaugeUnit = "bit/s";
+
+export interface GaugeInfo {
+  readonly key: GaugeKey;
+  readonly label: string;
+  readonly unit: GaugeUnit;
+}
+
+/** One gauge value of a role. In the rollup ranges, an interval's mean. */
+export interface Reading {
+  readonly at: Micros;
+  readonly epoch: Epoch;
+  readonly gauge: GaugeKey;
+  readonly value: number;
+}
+
 export type Severity = "degradation" | "outage";
 
 /** One of a role's degraded or failing periods, as the daemon recorded it
@@ -82,6 +102,7 @@ export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }
   | { readonly type: "incident"; readonly incident: Incident }
+  | { readonly type: "reading"; readonly role: RoleKey; readonly reading: Reading }
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
   | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
   | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> };

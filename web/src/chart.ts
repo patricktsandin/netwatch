@@ -6,11 +6,9 @@ import uPlot from "uplot";
 
 import { parseMicros } from "./api/parse";
 import type { Incident, Marker, Micros, Point } from "./model";
-import { plotColumns } from "./series";
 import type { TooltipLine } from "./tooltip";
 
-const color = (name: string): string =>
-  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const color = (name: string): string => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const seconds = (micros: number): number => micros / 1e6;
 
@@ -21,10 +19,6 @@ const HEIGHT = 120;
 /** How close (in pixels) something must be to the cursor to show in the tooltip. */
 const NEAR_PX = 6;
 
-function data(points: readonly Point[], maxGapUs: number): uPlot.AlignedData {
-  const { xs, ys } = plotColumns(points, maxGapUs);
-  return [xs.map(seconds), ys];
-}
 
 /** What a row draws, besides its points. The caller has already picked the row's
  *  own incidents and the markers that concern it. */
@@ -49,10 +43,7 @@ function markerColor(m: Marker): string {
 }
 
 /** Shades incidents behind the series. */
-function bands(
-  annotations: () => Annotations,
-  now: () => number,
-): uPlot.Plugin {
+function bands(annotations: () => Annotations, now: () => number): uPlot.Plugin {
   return {
     hooks: {
       drawClear: (u: uPlot) => {
@@ -65,16 +56,9 @@ function bands(
         for (const i of annotations().incidents) {
           const x0 = u.valToPos(seconds(i.started), "x", true);
           const x1 = u.valToPos(seconds(i.ended ?? now()), "x", true);
-          ctx.fillStyle = color(
-            i.severity === "outage" ? "--outage-band" : "--degradation-band",
-          );
+          ctx.fillStyle = color(i.severity === "outage" ? "--outage-band" : "--degradation-band");
           // At least 2 px, so a brief incident is still visible.
-          ctx.fillRect(
-            x0,
-            top,
-            Math.max(x1 - x0, 2 * devicePixelRatio),
-            height,
-          );
+          ctx.fillRect(x0, top, Math.max(x1 - x0, 2 * devicePixelRatio), height);
         }
         ctx.restore();
       },
@@ -83,10 +67,7 @@ function bands(
 }
 
 /** Draws loss ticks and event markers on top of the plot. */
-function overlay(
-  points: () => readonly Point[],
-  annotations: () => Annotations,
-): uPlot.Plugin {
+function overlay(points: () => readonly Point[], annotations: () => Annotations): uPlot.Plugin {
   return {
     hooks: {
       draw: (u: uPlot) => {
@@ -123,9 +104,7 @@ function overlay(
 
 /** A tooltip that follows the cursor, on the hovered chart only (the cursor itself
  *  is synced across rows). */
-function hoverTip(
-  describe: (at: Micros, nearUs: number) => readonly TooltipLine[],
-): uPlot.Plugin {
+function hoverTip(describe: (at: Micros, nearUs: number) => readonly TooltipLine[]): uPlot.Plugin {
   const tip = document.createElement("div");
   tip.className = "tooltip";
   tip.hidden = true;
@@ -167,9 +146,7 @@ function hoverTip(
         // Keep it inside the plot: flip to the cursor's left past the middle.
         const flip = left > u.over.clientWidth / 2;
         tip.style.left = flip ? "" : `${String(left + 12)}px`;
-        tip.style.right = flip
-          ? `${String(u.over.clientWidth - left + 12)}px`
-          : "";
+        tip.style.right = flip ? `${String(u.over.clientWidth - left + 12)}px` : "";
         tip.style.top = `${String(Math.min(top, Math.max(0, u.over.clientHeight - 40)))}px`;
       },
     },
@@ -177,26 +154,40 @@ function hoverTip(
 }
 
 export interface Chart {
-  update(points: readonly Point[]): void;
+  /** Re-reads the data. A zoom, if any, is reapplied by the caller afterwards. */
+  update(): void;
   redraw(): void;
   setWindow(min: number, max: number): void;
   readonly plot: uPlot;
 }
 
+/** One line on a chart. */
+export interface Line {
+  readonly label: string;
+  /** A CSS custom property holding its color, such as `--line`. */
+  readonly color: string;
+}
+
 export interface ChartSources {
-  readonly points: () => readonly Point[];
+  /** The plot columns: times in µs, then one value column per line. */
+  readonly columns: () => { readonly xs: readonly number[]; readonly ys: readonly (readonly (number | null)[])[] };
+  readonly lines: readonly Line[];
+  /** How the y axis writes a value. */
+  readonly format: (value: number) => string;
+  /** Points whose losses are ticked along the bottom (none for gauges). */
+  readonly losses: () => readonly Point[];
   readonly annotations: () => Annotations;
   readonly tooltip: (at: Micros, nearUs: number) => readonly TooltipLine[];
   readonly onZoom: (min: number, max: number) => void;
-  /** Points further apart than this are a measurement gap, not a line. */
-  readonly maxGapUs: () => number;
   readonly now: () => number;
 }
 
-export function createChart(
-  container: HTMLElement,
-  sources: ChartSources,
-): Chart {
+function aligned(sources: ChartSources): uPlot.AlignedData {
+  const { xs, ys } = sources.columns();
+  return [xs.map(seconds), ...ys.map((y) => [...y])];
+}
+
+export function createChart(container: HTMLElement, sources: ChartSources): Chart {
   const plot = new uPlot(
     {
       width: container.clientWidth,
@@ -205,7 +196,8 @@ export function createChart(
       legend: { show: false },
       scales: {
         x: { time: true },
-        y: { range: (_u, _min, max) => [0, Math.max(max * 1.15, 1)] },
+        // From zero, unless values go below it (signal levels in dBm do).
+        y: { range: (_u, min, max) => [Math.min(0, min), Math.max(max * 1.15, 1)] },
       },
       axes: [
         { stroke: color("--muted"), grid: { stroke: color("--grid") } },
@@ -213,37 +205,35 @@ export function createChart(
           stroke: color("--muted"),
           grid: { stroke: color("--grid") },
           size: Y_AXIS_WIDTH,
-          values: (_u, v) => v.map((n) => `${String(n)} ms`),
+          values: (_u, v) => v.map(sources.format),
         },
       ],
       series: [
         {},
-        {
-          stroke: color("--line"),
+        ...sources.lines.map((line) => ({
+          label: line.label,
+          stroke: color(line.color),
           width: 1.5,
           spanGaps: false,
           points: { show: false },
-        },
+        })),
       ],
       plugins: [
         bands(sources.annotations, sources.now),
-        overlay(sources.points, sources.annotations),
+        overlay(sources.losses, sources.annotations),
         hoverTip(sources.tooltip),
       ],
       hooks: {
         setSelect: [
           (u: uPlot) => {
             if (u.select.width <= 0) return;
-            sources.onZoom(
-              u.posToVal(u.select.left, "x"),
-              u.posToVal(u.select.left + u.select.width, "x"),
-            );
+            sources.onZoom(u.posToVal(u.select.left, "x"), u.posToVal(u.select.left + u.select.width, "x"));
             u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
           },
         ],
       },
     },
-    data(sources.points(), sources.maxGapUs()),
+    aligned(sources),
     container,
   );
   new ResizeObserver(() => {
@@ -251,9 +241,8 @@ export function createChart(
   }).observe(container);
   return {
     plot,
-    // Rescales to the data. A zoom, if any, is reapplied by the caller afterwards.
-    update: (ps) => {
-      plot.setData(data(ps, sources.maxGapUs()));
+    update: () => {
+      plot.setData(aligned(sources));
     },
     redraw: () => {
       plot.redraw();

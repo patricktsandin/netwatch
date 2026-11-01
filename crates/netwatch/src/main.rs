@@ -324,8 +324,10 @@ async fn main() -> anyhow::Result<()> {
                         // The NIC's throughput is graphed on its row (ADR-0032).
                         let epoch = topology.binding(&Role::Nic).map(|b| b.epoch);
                         if let (Some((rx, tx)), Some(epoch)) = (throughput.observe(&counters, clock.now()), epoch) {
+                            // One timestamp for both, so they are drawn as one reading.
+                            let at = clock.wall_now();
                             for (gauge, value) in [(Gauge::RxThroughput, rx), (Gauge::TxThroughput, tx)] {
-                                recorder.reading(Reading { role: Role::Nic, epoch, at: clock.wall_now(), gauge, value });
+                                recorder.reading(Reading { role: Role::Nic, epoch, at, gauge, value });
                             }
                         }
                         let reading = netwatch_host_health::Reading { counters, ..Default::default() };

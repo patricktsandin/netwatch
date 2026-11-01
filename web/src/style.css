@@ -5,6 +5,8 @@
   --muted: #6b7079;
   --grid: #ececea;
   --line: #2f6fdf;
+  --line-2: #1f9d8f;
+  --line-3: #c2410c;
   --loss: #d9342b;
   --marker: #8a63d2;
   --kernel-log: #c27c0e;
@@ -26,6 +28,8 @@
     --muted: #9198a3;
     --grid: #2a2d33;
     --line: #6aa0ff;
+    --line-2: #4fd1c1;
+    --line-3: #fb923c;
     --loss: #ff6b61;
     --marker: #b597ff;
     --kernel-log: #e5a83a;
