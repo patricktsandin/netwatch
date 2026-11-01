@@ -17,12 +17,27 @@ import {
   parseRollups,
   parseStatuses,
   parseBindings,
+  parseIncidents,
   parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
-import type { Binding, LayerReport, Marker, Micros, Point, RoleKey } from "./model";
+import type {
+  Binding,
+  Incident,
+  LayerReport,
+  Marker,
+  Micros,
+  Point,
+  RoleKey,
+} from "./model";
 import { compareRoles, label } from "./roles";
 import { latest, merge, since } from "./series";
+import {
+  tooltip,
+  upsertIncident,
+  visibleIncidents,
+  type Words,
+} from "./tooltip";
 import type { Status } from "./model";
 
 /** The time ranges the UI offers: raw samples for the last hour, then the rollup
@@ -51,6 +66,7 @@ interface Row {
 
 const rows = new Map<RoleKey, Row>();
 let markers: Marker[] = [];
+let incidents: Incident[] = [];
 const layers = new Map<RoleKey, LayerReport>();
 let names: ReadonlyMap<string, string> = new Map();
 let statuses: ReadonlyMap<RoleKey, Status> = new Map();
@@ -58,6 +74,11 @@ let bindings: ReadonlyMap<RoleKey, Binding> = new Map();
 let zoom: { min: number; max: number } | null = null;
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
+
+const words: Words = {
+  time: (at) => new Date(at / 1000).toLocaleTimeString(),
+  role: (key) => label(key, names),
+};
 
 async function fetchJson(path: string): Promise<unknown> {
   const response = await fetch(path);
@@ -90,13 +111,37 @@ function addRow(key: RoleKey): Row {
 
   const ordered = [...rows.keys(), key].sort(compareRoles);
   const next = ordered[ordered.indexOf(key) + 1];
-  const nextEl = next === undefined ? null : stack.querySelector(`[data-role="${next}"]`);
+  const nextEl =
+    next === undefined ? null : stack.querySelector(`[data-role="${next}"]`);
   stack.insertBefore(rowEl, nextEl);
 
   // The chart reads the row's points while it is being constructed, so the points
   // need a home that exists before the chart does.
   const series: { points: Point[] } = { points: [] };
-  const chart = createChart(plotEl, () => series.points, () => markers, setZoom, () => RANGES[range].maxGapUs);
+  const chart = createChart(plotEl, {
+    points: () => series.points,
+    annotations: () => {
+      const window = zoom ?? sharedWindow();
+      return {
+        incidents: visibleIncidents(
+          incidents,
+          key,
+          parseMicros(window.min * 1e6),
+          parseMicros(window.max * 1e6),
+        ),
+        markers: markers.filter((m) => m.concerns.includes(key)),
+      };
+    },
+    tooltip: (at, nearUs) =>
+      tooltip(
+        { at, nearUs, now: nowMicros() },
+        { role: key, points: series.points, incidents, markers },
+        words,
+      ),
+    onZoom: setZoom,
+    maxGapUs: () => RANGES[range].maxGapUs,
+    now: () => nowMicros(),
+  });
   const row: Row = {
     get points() {
       return series.points;
@@ -130,12 +175,21 @@ function setZoom(min: number, max: number): void {
 function layerSummary(key: RoleKey): string {
   const report = layers.get(key);
   if (report === undefined) return "";
-  const cpu = report.cpuPressure === null ? "" : `CPU pressure ${report.cpuPressure.toFixed(1)}%`;
-  const conntrack = report.conntrackFill === null ? "" : `conntrack ${report.conntrackFill.toFixed(1)}% full`;
-  const clock = report.clockSynchronized === false ? "clock not synchronized" : "";
+  const cpu =
+    report.cpuPressure === null
+      ? ""
+      : `CPU pressure ${report.cpuPressure.toFixed(1)}%`;
+  const conntrack =
+    report.conntrackFill === null
+      ? ""
+      : `conntrack ${report.conntrackFill.toFixed(1)}% full`;
+  const clock =
+    report.clockSynchronized === false ? "clock not synchronized" : "";
   const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
   const disabled = report.disabled.map((d) => `disabled: ${d}`);
-  return [cpu, conntrack, clock, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
+  return [cpu, conntrack, clock, ...grew, ...disabled]
+    .filter((s) => s !== "")
+    .join(" · ");
 }
 
 function render(row: Row, key: RoleKey): void {
@@ -149,7 +203,9 @@ function render(row: Row, key: RoleKey): void {
   row.statusEl.className = `status ${s}`;
   row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
   row.statusEl.title =
-    s === "rate-limited" ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP." : "";
+    s === "rate-limited"
+      ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP."
+      : "";
   const last = row.points.at(-1);
   const latestValue =
     last === undefined
@@ -158,7 +214,9 @@ function render(row: Row, key: RoleKey): void {
         ? `${last.measurement.rttMs.toFixed(2)} ms`
         : last.measurement.reason;
   const extra = layerSummary(key);
-  row.valueEl.textContent = [extra, latestValue].filter((s) => s !== "").join(" · ");
+  row.valueEl.textContent = [extra, latestValue]
+    .filter((s) => s !== "")
+    .join(" · ");
 }
 
 /** Shows Topology's current bindings: global roles in the header, and each hop's
@@ -169,21 +227,38 @@ function renderIdentities(): void {
   el.replaceChildren(
     ...[...bindings.entries()]
       .filter(([role]) => !role.startsWith("target") && !role.startsWith("hop"))
-      .map(([role, b]) => element("span", "identity", `${role}: ${b.identity} (epoch ${String(b.epoch)})`)),
+      .map(([role, b]) =>
+        element(
+          "span",
+          "identity",
+          `${role}: ${b.identity} (epoch ${String(b.epoch)})`,
+        ),
+      ),
   );
   for (const [key, row] of rows) {
     const binding = bindings.get(key);
     row.titleEl.textContent =
-      key.startsWith("hop") && binding !== undefined ? `${label(key, names)} · ${binding.identity}` : label(key, names);
+      key.startsWith("hop") && binding !== undefined
+        ? `${label(key, names)} · ${binding.identity}`
+        : label(key, names);
   }
 }
 
 async function backfill(from: Micros): Promise<void> {
-  const [roles, events] = await Promise.all([
+  const [roles, events, recorded] = await Promise.all([
     fetchJson("/api/roles").then(parseRoles),
     fetchJson(`/api/events?since_us=${String(from)}`).then(parseMarkers),
+    fetchJson(`/api/incidents?since_us=${String(from)}`).then(parseIncidents),
   ]);
-  markers = markers.concat(events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)));
+  markers = markers.concat(
+    events.filter(
+      (e) =>
+        !markers.some(
+          (m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch,
+        ),
+    ),
+  );
+  incidents = recorded.reduce(upsertIncident, incidents);
   for (const [key, report] of parseLayers(await fetchJson("/api/layers"))) {
     layers.set(key, report);
     render(addRow(key), key);
@@ -197,14 +272,18 @@ async function backfill(from: Micros): Promise<void> {
       const tier = RANGES[range].tier;
       if (tier === null) {
         const fetched = parsePoints(
-          await fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`),
+          await fetchJson(
+            `/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`,
+          ),
         );
         row.points = merge(row.points, fetched);
       } else {
         // Rollups are re-read whole: the latest interval keeps growing until it closes.
         row.points = [
           ...parseRollups(
-            await fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`),
+            await fetchJson(
+              `/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`,
+            ),
           ),
         ];
       }
@@ -222,9 +301,13 @@ function connect(): void {
     if (banner !== null) banner.hidden = true;
     // Anything that happened while disconnected is fetched, and merged without
     // duplicates.
-    const earliestLatest = [...rows.values()].map((r) => latest(r.points)).filter((t) => t !== undefined);
+    const earliestLatest = [...rows.values()]
+      .map((r) => latest(r.points))
+      .filter((t) => t !== undefined);
     const from =
-      range === "hour" && earliestLatest.length > 0 ? Math.min(...earliestLatest) : nowMicros() - RANGES[range].spanUs;
+      range === "hour" && earliestLatest.length > 0
+        ? Math.min(...earliestLatest)
+        : nowMicros() - RANGES[range].spanUs;
     void backfill(parseMicros(from)).catch(report);
   };
   socket.onmessage = (event: MessageEvent) => {
@@ -254,7 +337,11 @@ function connect(): void {
         case "event":
           markers.push(live.marker);
           renderIdentities();
-          for (const row of rows.values()) row.chart.redraw();
+          for (const key of live.marker.concerns) rows.get(key)?.chart.redraw();
+          break;
+        case "incident":
+          incidents = upsertIncident(incidents, live.incident);
+          rows.get(live.incident.role)?.chart.redraw();
           break;
       }
     } catch (error) {
@@ -268,7 +355,8 @@ function connect(): void {
 }
 
 function report(error: unknown): void {
-  const kind = error instanceof ParseError ? "unexpected data from the daemon" : "error";
+  const kind =
+    error instanceof ParseError ? "unexpected data from the daemon" : "error";
   console.error(kind, error);
 }
 
@@ -279,28 +367,45 @@ function trim(): void {
     render(row, key);
   }
   markers = markers.filter((m) => m.at >= cutoff);
+  incidents = incidents.filter((i) => i.ended === null || i.ended >= cutoff);
 }
 
 document.getElementById("reset-zoom")?.addEventListener("click", (event) => {
   zoom = null;
-  if (event.currentTarget instanceof HTMLElement) event.currentTarget.hidden = true;
+  if (event.currentTarget instanceof HTMLElement)
+    event.currentTarget.hidden = true;
   for (const [key, row] of rows) render(row, key);
 });
 function selectRange(selected: Range): void {
   range = selected;
-  history.replaceState(null, "", selected === "hour" ? location.pathname : `#${selected}`);
+  history.replaceState(
+    null,
+    "",
+    selected === "hour" ? location.pathname : `#${selected}`,
+  );
   zoom = null;
-  for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
-    button.setAttribute("aria-pressed", String(button.dataset["range"] === selected));
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    "#ranges button",
+  )) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset["range"] === selected),
+    );
   }
   for (const row of rows.values()) row.points = [];
+  incidents = [];
   void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
 }
 
-for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
+for (const button of document.querySelectorAll<HTMLButtonElement>(
+  "#ranges button",
+)) {
   button.addEventListener("click", () => {
-    const selected = Object.keys(RANGES).find((r) => r === button.dataset["range"]);
-    if (selected === "hour" || selected === "day" || selected === "month") selectRange(selected);
+    const selected = Object.keys(RANGES).find(
+      (r) => r === button.dataset["range"],
+    );
+    if (selected === "hour" || selected === "day" || selected === "month")
+      selectRange(selected);
   });
 }
 
@@ -308,14 +413,22 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges butto
 const bookmarked = Object.keys(RANGES).find((r) => `#${r}` === location.hash);
 if (bookmarked === "day" || bookmarked === "month") {
   range = bookmarked;
-  for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
-    button.setAttribute("aria-pressed", String(button.dataset["range"] === bookmarked));
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    "#ranges button",
+  )) {
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset["range"] === bookmarked),
+    );
   }
 }
 
 setInterval(() => {
   trim();
   // Rollups close once a minute; re-read them so the long ranges stay current.
-  if (range !== "hour") void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
+  if (range !== "hour")
+    void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(
+      report,
+    );
 }, 60_000);
 connect();

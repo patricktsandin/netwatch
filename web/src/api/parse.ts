@@ -3,6 +3,7 @@
 // coerced.
 
 import type { EventPoint } from "./generated/EventPoint";
+import type { IncidentView } from "./generated/IncidentView";
 import type { LayerReportView } from "./generated/LayerReportView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
@@ -10,6 +11,7 @@ import type {
   Binding,
   Epoch,
   EventKind,
+  Incident,
   LayerReport,
   Live,
   LossReason,
@@ -17,6 +19,7 @@ import type {
   Micros,
   Point,
   RoleKey,
+  Severity,
   Status,
 } from "../model";
 
@@ -131,7 +134,28 @@ export function parseMarker(value: unknown): Marker {
     role: e.role === null ? null : roleKey(e.role, "event.role"),
     epoch: e.epoch === null ? null : epoch(e.epoch, "event.epoch"),
     detail: nullableString(e.detail, "event.detail"),
+    concerns: array(e.roles, "event.roles").map((r) => roleKey(r, "event.roles")),
   };
+}
+
+const SEVERITIES: readonly Severity[] = ["degradation", "outage"];
+
+export function parseIncident(value: unknown): Incident {
+  const i = record<IncidentView>(value, "incident");
+  const started = micros(i.started_us, "incident.started_us");
+  const ended = i.ended_us === null ? null : micros(i.ended_us, "incident.ended_us");
+  if (ended !== null && ended < started) throw new ParseError("incident: ends before it starts");
+  return {
+    role: roleKey(i.role, "incident.role"),
+    started,
+    ended,
+    severity: oneOf(i.severity, SEVERITIES, "incident.severity"),
+    cause: i.cause === null ? null : roleKey(i.cause, "incident.cause"),
+  };
+}
+
+export function parseIncidents(value: unknown): readonly Incident[] {
+  return array(value, "incidents").map(parseIncident);
 }
 
 export function parseRoles(value: unknown): readonly RoleKey[] {
@@ -243,6 +267,7 @@ export function parseLive(value: unknown): Live {
     role: unknown;
     point: unknown;
     event: unknown;
+    incident: unknown;
     report: unknown;
     statuses: unknown;
     bindings: unknown;
@@ -255,6 +280,8 @@ export function parseLive(value: unknown): Live {
       return { type: "sample", role: roleKey(m.role, "live.role"), point: parsePoint(m.point) };
     case "event":
       return { type: "event", marker: parseMarker(m.event) };
+    case "incident":
+      return { type: "incident", incident: parseIncident(m.incident) };
     case "statuses":
       return { type: "statuses", statuses: parseStatuses(m.statuses) };
     case "bindings":

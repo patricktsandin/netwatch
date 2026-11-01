@@ -36,6 +36,14 @@ fn an_epoch_change_concerns_its_role_and_everything_downstream_of_it() {
 }
 
 #[test]
+fn the_kernels_epochs_concern_only_the_kernel_because_no_path_runs_through_loopback() {
+    assert_eq!(
+        concerns("epoch-started", Some(Role::Kernel), &known()),
+        ["kernel"]
+    );
+}
+
+#[test]
 fn losing_sync_concerns_the_roles_topology_binds() {
     assert_eq!(
         concerns("desynchronized", None, &known()),

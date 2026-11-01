@@ -35,13 +35,28 @@ export type EventKind =
   | "clock-jump"
   | "config-drift";
 
-/** One topology event, drawn as an event marker on every row. */
+/** One event, drawn as an event marker on the rows it concerns. */
 export interface Marker {
   readonly at: Micros;
   readonly kind: EventKind;
   readonly role: RoleKey | null;
   readonly epoch: Epoch | null;
   readonly detail: string | null;
+  /** The rows it belongs on, as the daemon decided (ADR-0031). */
+  readonly concerns: readonly RoleKey[];
+}
+
+export type Severity = "degradation" | "outage";
+
+/** One of a role's degraded or failing periods, as the daemon recorded it
+ *  (ADR-0031). An incident is identified by its role and start. */
+export interface Incident {
+  readonly role: RoleKey;
+  readonly started: Micros;
+  /** `null` while it's still open. */
+  readonly ended: Micros | null;
+  readonly severity: Severity;
+  readonly cause: RoleKey | null;
 }
 
 /** A layer's latest health report (ADR-0008): the kernel's or the NIC's. */
@@ -66,6 +81,7 @@ export interface Binding {
 export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }
+  | { readonly type: "incident"; readonly incident: Incident }
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
   | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
   | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> };

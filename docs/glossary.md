@@ -176,7 +176,7 @@ words are defined elsewhere in this file.
   *domain event*, drawn only on the *rows* of the *roles* the event *concerns*.
 - **Concerns**: the *roles* a *domain event* is relevant to, decided by the daemon
   (ADR-0031). An *identity epoch* change concerns its *role* and every role
-  *downstream* of it.
+  *downstream* of it, except the *kernel role*'s: no path runs through loopback.
 - **Upstream / downstream**: order along one *target*'s path: kernel, NIC, tunnel,
   local interface, hop 1, hop 2, hop 3, then the *target*.
 - **Incident**: a period during which one *role*'s *status* was `Degraded` or `Failing`

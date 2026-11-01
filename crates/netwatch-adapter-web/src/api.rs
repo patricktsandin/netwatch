@@ -350,20 +350,23 @@ impl EventPoint {
 
 /// The rows an event belongs on (ADR-0031):
 /// - a role's epoch starting or ending concerns that role and every known role
-///   downstream of it, whose paths changed with it
+///   downstream of it, whose paths changed with it. The kernel's identity is
+///   loopback, which no path goes through, so its epochs concern only itself.
 /// - losing or regaining sync with the kernel's topology concerns the roles that
 ///   topology binds: the NIC, tunnel, and local interface
 /// - anything else concerns the role it names, or the kernel if it names none
 pub fn concerns(kind: &str, role: Option<Role>, known: &[Role]) -> Vec<String> {
     match (kind, role) {
-        ("epoch-started" | "epoch-ended", Some(role)) => std::iter::once(role.key())
-            .chain(
-                known
-                    .iter()
-                    .filter(|other| role.is_upstream_of(other))
-                    .map(Role::key),
-            )
-            .collect(),
+        ("epoch-started" | "epoch-ended", Some(role)) if role != Role::Kernel => {
+            std::iter::once(role.key())
+                .chain(
+                    known
+                        .iter()
+                        .filter(|other| role.is_upstream_of(other))
+                        .map(Role::key),
+                )
+                .collect()
+        }
         ("desynchronized" | "resynchronized", _) => [Role::Nic, Role::Tunnel, Role::LocalInterface]
             .iter()
             .map(Role::key)

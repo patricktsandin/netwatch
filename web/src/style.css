@@ -11,6 +11,10 @@
   --healthy: #1f8a4c;
   --degraded: #b7791f;
   --failing: #d9342b;
+  --outage-band: rgba(217, 52, 43, 0.16);
+  --degradation-band: rgba(183, 121, 31, 0.14);
+  --tooltip-bg: #1d1f23;
+  --tooltip-text: #f3f4f6;
   --border: #e4e4e1;
   color-scheme: light;
 }
@@ -28,6 +32,10 @@
     --healthy: #4cc283;
     --degraded: #e0a948;
     --failing: #ff6b61;
+    --outage-band: rgba(255, 107, 97, 0.2);
+    --degradation-band: rgba(224, 169, 72, 0.16);
+    --tooltip-bg: #f3f4f6;
+    --tooltip-text: #1d1f23;
     --border: #2c2f35;
     color-scheme: dark;
   }
@@ -54,3 +62,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 syst
 .status.unknown { color: var(--muted); }
 .plot { width: 100%; overflow: hidden; }
 .status.rate-limited { color: var(--muted); border-style: dashed; }
+.plot .u-over { overflow: visible; }
+.tooltip { position: absolute; z-index: 10; max-width: 420px; padding: 6px 9px; border-radius: 6px; background: var(--tooltip-bg); color: var(--tooltip-text); font-size: 12px; line-height: 1.45; pointer-events: none; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); white-space: nowrap; }
+.tooltip-time { opacity: 0.7; }
+.tooltip-line.tone-outage::before, .tooltip-line.tone-degradation::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 2px; }
+.tooltip-line.tone-outage::before { background: var(--failing); }
+.tooltip-line.tone-degradation::before { background: var(--degraded); }
+.tooltip-line.tone-value { font-variant-numeric: tabular-nums; font-weight: 600; }
