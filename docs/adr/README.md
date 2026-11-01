@@ -36,3 +36,4 @@ to "Superseded".
 | [0028](0028-https-probes-with-phase-timings.md) | HTTPS probes with phase timings | Accepted |
 | [0029](0029-flush-barrier-before-backfill.md) | Flush the writer before every backfill | Accepted |
 | [0030](0030-the-daemon-decides-the-ui-displays.md) | The daemon decides; the UI displays | Accepted |
+| [0031](0031-incidents-and-event-relevance.md) | Incidents, and the roles an event concerns | Accepted |

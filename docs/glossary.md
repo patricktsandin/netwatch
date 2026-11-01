@@ -172,7 +172,21 @@ words are defined elsewhere in this file.
   `Disabled`.
 - **Time axis**: the single shared horizontal axis that every *row* uses. Zoom and pan
   are synchronized across rows.
-- **Event marker**: a vertical line on the *time axis* for a *topology event*.
+- **Event marker**: a vertical line on the *time axis* for a *topology event* or another
+  *domain event*, drawn only on the *rows* of the *roles* the event *concerns*.
+- **Concerns**: the *roles* a *domain event* is relevant to, decided by the daemon
+  (ADR-0031). An *identity epoch* change concerns its *role* and every role
+  *downstream* of it.
+- **Upstream / downstream**: order along one *target*'s path: kernel, NIC, tunnel,
+  local interface, hop 1, hop 2, hop 3, then the *target*.
+- **Incident**: a period during which one *role*'s *status* was `Degraded` or `Failing`
+  (ADR-0031). Its *severity* is *outage* if it was ever `Failing`, otherwise
+  *degradation*.
+- **Probable cause**: the most *upstream* *role* with an *incident* open at the same
+  time as another incident.
+- **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
+- **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
+  at that time.
 - **Live stream**: *samples* pushed to the UI over WebSocket.
 - **Backfill**: fetching history to fill gaps, at startup, on zoom, or after a reconnect.
   It merges with the *live stream* without gaps or duplicates.
