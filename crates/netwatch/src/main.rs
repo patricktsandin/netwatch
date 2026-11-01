@@ -259,15 +259,10 @@ async fn main() -> anyhow::Result<()> {
         } else {
             ""
         };
-        disabled.insert(format!("kernel log: {error}{hint}"));
+        let reason = format!("kernel log: {error}{hint}");
         tracing::warn!(%error, "kernel log disabled");
-        note(
-            "source-disabled",
-            format!("kernel log: {error} (needs CAP_SYSLOG)"),
-            &writes,
-            &live,
-            clock,
-        );
+        note("source-disabled", reason.clone(), &writes, &live, clock);
+        disabled.insert(reason);
     }
 
     loop {
