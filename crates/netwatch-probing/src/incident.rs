@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use netwatch_shared::uom::si::f64::Time;
+use netwatch_shared::uom::si::time::microsecond;
 use netwatch_shared::{Role, WallTime};
 
 use crate::Health;
@@ -48,9 +50,12 @@ pub struct Incident {
 
 /// Turns gradings and probe outcomes into incidents. Feed it every outcome with
 /// [`outcome`](Self::outcome), and every grading with [`grade`](Self::grade).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct IncidentTracker {
     roles: BTreeMap<Role, Track>,
+    /// How long after an incident opened an upstream incident may open and still be
+    /// its probable cause (ADR-0034).
+    cause_grace_us: i64,
 }
 
 #[derive(Debug, Default)]
@@ -66,6 +71,9 @@ struct Track {
 #[derive(Debug)]
 struct Open {
     incident: Incident,
+    /// The grading that opened it. Probable causes are judged by when incidents
+    /// opened, not by where their bands start.
+    opened: WallTime,
     /// Whether the incident has seen loss, which decides where its band ends.
     probed: bool,
 }
@@ -83,9 +91,15 @@ fn severity_of(health: Health) -> Severity {
 }
 
 impl IncidentTracker {
-    /// A tracker with no history: every role starts calm.
-    pub fn new() -> Self {
-        Self::default()
+    /// A tracker with no history: every role starts calm. An upstream incident is a
+    /// probable cause only if it opened no later than `cause_grace` after the
+    /// incident it explains (ADR-0034); the daemon uses 10 s.
+    pub fn new(cause_grace: Time) -> Self {
+        Self {
+            roles: BTreeMap::new(),
+            // `as` saturates, and no grace approaches i64::MAX µs.
+            cause_grace_us: cause_grace.get::<microsecond>().round() as i64,
+        }
     }
 
     /// Records one of `role`'s probe outcomes, resolved at `at`.
@@ -129,6 +143,7 @@ impl IncidentTracker {
                     updated.insert(role.clone(), incident.clone());
                     track.open = Some(Open {
                         incident,
+                        opened: at,
                         probed: since_loss.is_some(),
                     });
                 }
@@ -143,6 +158,7 @@ impl IncidentTracker {
                     if let Some(Open {
                         mut incident,
                         probed,
+                        ..
                     }) = open.take()
                     {
                         let recovered = track.recovered.filter(|_| probed);
@@ -155,22 +171,27 @@ impl IncidentTracker {
             }
         }
 
-        let open: Vec<Role> = self
+        let open: Vec<(Role, WallTime)> = self
             .roles
             .iter()
-            .filter(|(_, track)| track.open.is_some())
-            .map(|(role, _)| role.clone())
+            .filter_map(|(role, track)| Some((role.clone(), track.open.as_ref()?.opened)))
             .collect();
+        let grace = self.cause_grace_us;
         for (role, track) in &mut self.roles {
             let Some(open_here) = &mut track.open else {
                 continue;
             };
+            let latest = open_here.opened.as_unix_micros().saturating_add(grace);
+            let eligible: Vec<&Role> = open
+                .iter()
+                .filter(|(u, opened)| u.is_upstream_of(role) && opened.as_unix_micros() <= latest)
+                .map(|(u, _)| u)
+                .collect();
             // Every candidate is on `role`'s path, so they are totally ordered.
-            let candidate = open.iter().filter(|u| u.is_upstream_of(role)).find(|u| {
-                !open
-                    .iter()
-                    .any(|v| v.is_upstream_of(u) && v.is_upstream_of(role))
-            });
+            let candidate = eligible
+                .iter()
+                .find(|u| !eligible.iter().any(|v| v.is_upstream_of(u)))
+                .copied();
             let better = candidate.filter(|c| {
                 open_here
                     .incident

@@ -22,6 +22,8 @@
  * - An incident opens on a bad grading (degraded or failing). If the role lost
  *   a probe since its last calm grading, the incident starts at that loss;
  *   otherwise (a layer graded from counters) at the grading.
+ * - Its probable cause is the most upstream role with an open incident that
+ *   opened no later than `CAUSE_GRACE` after it did (ADR-0034).
  * - It closes on the first calm grading. If it saw loss, it ends at the first
  *   answered probe after the last loss (or at the grading, if nothing has been
  *   answered since); otherwise at the grading.
@@ -43,6 +45,9 @@ module incidents {
   pure val HEALTHS = Set("healthy", "degraded", "failing")
 
   pure def upstreamOf(u: int, r: int): bool = u < r
+  /// How long after an incident opened an upstream incident may open and still be
+  /// its probable cause (ADR-0034): 10 s in the daemon, one tick here.
+  pure val CAUSE_GRACE = 1
   pure def bad(h: str): bool = h == "degraded" or h == "failing"
   pure def severityOf(h: str): str = if (h == "failing") "outage" else "degradation"
 
@@ -62,6 +67,8 @@ module incidents {
   var current: int -> Incident
   /// Whether the open incident has seen loss, which decides how it ends.
   var probed: int -> bool
+  /// The grading that opened each role's open incident.
+  var openedAt: int -> int
   /// What the latest step returned.
   var updates: List[Incident]
 
@@ -75,7 +82,6 @@ module incidents {
   // rather than the grading window that trails it.
   type Lifetime = { inc: Incident, openedAt: int, closedAt: int, gradedFailing: bool }
   var closed: List[Lifetime]
-  var openedAt: int -> int
   /// Whether the open incident was ever graded failing.
   var gradedFailing: int -> bool
   /// Each role's latest grade.
@@ -152,9 +158,10 @@ module incidents {
 
   /// The most upstream role with an incident open after this grading, upstream
   /// of `r`, if any.
-  pure def mostUpstream(r: int, openAfter: int -> bool): int =
+  pure def mostUpstream(r: int, openAfter: int -> bool, opened: int -> int): int =
     ROLES.foldl(NONE, (best, u) =>
-      if (best == NONE and upstreamOf(u, r) and openAfter.get(u)) u else best)
+      if (best == NONE and upstreamOf(u, r) and openAfter.get(u)
+          and opened.get(u) <= opened.get(r) + CAUSE_GRACE) u else best)
 
   action grade = {
     nondet h0 = HEALTHS.oneOf()
@@ -164,10 +171,12 @@ module incidents {
       roleStep(r, health.get(r), now, isOpen.get(r), current.get(r), probed.get(r),
                lastLoss.get(r), recovered.get(r), lastCalm.get(r))))
     val openAfter = ROLES.foldl(Map(), (m, r) => m.put(r, steps.get(r).open))
+    val opened = ROLES.foldl(Map(), (m, r) =>
+      m.put(r, if (openAfter.get(r) and not(isOpen.get(r))) now else openedAt.get(r)))
     // Probable causes, for incidents still open.
     val final = ROLES.foldl(Map(), (m, r) =>
       val s = steps.get(r)
-      val candidate = mostUpstream(r, openAfter)
+      val candidate = mostUpstream(r, openAfter, opened)
       val better = s.open and candidate != NONE
         and (s.inc.cause == NONE or upstreamOf(candidate, s.inc.cause))
       m.put(r, if (better) s.with("inc", s.inc.with("cause", candidate)).with("update", true) else s))
@@ -186,8 +195,7 @@ module incidents {
       gradedFailing' = ROLES.foldl(Map(), (m, r) =>
         m.put(r, openAfter.get(r) and (health.get(r) == "failing" or (isOpen.get(r) and gradedFailing.get(r))))),
       lastHealth' = health,
-      openedAt' = ROLES.foldl(Map(), (m, r) =>
-        m.put(r, if (openAfter.get(r) and not(isOpen.get(r))) now else openedAt.get(r))),
+      openedAt' = opened,
       now' = now, lastLoss' = lastLoss, recovered' = recovered,
     }
   }
@@ -236,7 +244,13 @@ module incidents {
       upstreamOf(l.inc.cause, l.inc.role) and lifetimes.exists(o =>
         o.inc.role == l.inc.cause and (during(o, l.openedAt) or during(l, o.openedAt)))))
 
+  /// A probable cause's incident opened no later than the grace after this one did.
+  val causeBeganFirst: bool =
+    lifetimes.forall(l => l.inc.cause != NONE implies lifetimes.exists(o =>
+      o.inc.role == l.inc.cause and o.openedAt <= l.openedAt + CAUSE_GRACE
+        and (during(o, l.openedAt) or during(l, o.openedAt))))
+
   val invariants: bool =
     bandWithinReason and noOverlap and badGradingsAreCovered and outageMeansFailing
-      and causeIsUpstreamAndOverlaps
+      and causeIsUpstreamAndOverlaps and causeBeganFirst
 }

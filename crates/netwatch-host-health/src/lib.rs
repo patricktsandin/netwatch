@@ -80,8 +80,10 @@ pub const NIC_RULES: &[Rule] = &[
     ("Link.RxFrameErrors", Severity::Degrades),
     ("Link.TxCarrierErrors", Severity::Degrades),
     ("Link.Collisions", Severity::Degrades),
-    ("Link.RxDropped", Severity::Fails),
-    ("Link.TxDropped", Severity::Fails),
+    // Not `Link.RxDropped`: the kernel counts frames for protocols it doesn't
+    // handle there, so it grows on a healthy link (ADR-0034). Missed and FIFO errors
+    // are the signs of real receive overflow.
+    ("Link.TxDropped", Severity::Degrades),
     ("Link.RxMissedErrors", Severity::Fails),
     ("Link.RxFifoErrors", Severity::Fails),
 ];

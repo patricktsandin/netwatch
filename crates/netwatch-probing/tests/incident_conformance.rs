@@ -19,6 +19,8 @@ use std::process::Command;
 
 use netwatch_probing::Health;
 use netwatch_probing::incident::{Incident, IncidentTracker, Severity};
+use netwatch_shared::uom::si::f64::Time;
+use netwatch_shared::uom::si::time::second;
 use netwatch_shared::{HopTtl, Role, TargetId, WallTime};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -137,7 +139,8 @@ fn generate(dir: &Path) -> Vec<PathBuf> {
 fn replay(path: &Path) -> usize {
     let trace: itf::Trace<SpecState> =
         itf::trace_from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let mut tracker = IncidentTracker::new();
+    // The spec's grace is one tick, which is one second here.
+    let mut tracker = IncidentTracker::new(Time::new::<second>(1.0));
     let mut updates_seen = 0;
     for (step, state) in trace.states.iter().map(|s| &s.value).enumerate().skip(1) {
         match state.action.as_str() {

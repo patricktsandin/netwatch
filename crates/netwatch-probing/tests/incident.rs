@@ -8,6 +8,8 @@ use std::num::NonZeroU8;
 
 use netwatch_probing::Health;
 use netwatch_probing::incident::{Incident, IncidentTracker, Severity};
+use netwatch_shared::uom::si::f64::Time;
+use netwatch_shared::uom::si::time::second;
 use netwatch_shared::{HopTtl, Role, TargetId, WallTime};
 
 fn at(seconds: i64) -> WallTime {
@@ -25,13 +27,17 @@ fn target() -> Role {
     Role::Target(TargetId::new(1))
 }
 
+fn grace() -> Time {
+    Time::new::<second>(10.0)
+}
+
 fn graded(pairs: &[(Role, Health)]) -> BTreeMap<Role, Health> {
     pairs.iter().cloned().collect()
 }
 
 #[test]
 fn a_lost_probe_opens_an_incident_that_starts_at_the_loss() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.grade(at(9), &graded(&[(target(), Health::Healthy)]));
     tracker.outcome(&target(), at(10), false);
     let updates = tracker.grade(at(11), &graded(&[(target(), Health::Degraded)]));
@@ -49,7 +55,7 @@ fn a_lost_probe_opens_an_incident_that_starts_at_the_loss() {
 
 #[test]
 fn the_band_ends_at_the_first_answer_after_the_last_loss_not_when_the_grade_recovers() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.outcome(&target(), at(10), false);
     tracker.grade(at(11), &graded(&[(target(), Health::Degraded)]));
     tracker.outcome(&target(), at(15), false);
@@ -68,7 +74,7 @@ fn the_band_ends_at_the_first_answer_after_the_last_loss_not_when_the_grade_reco
 
 #[test]
 fn a_layer_graded_without_probes_ends_at_the_grading_that_finds_it_calm() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.grade(at(5), &graded(&[(Role::Nic, Health::Degraded)]));
     let updates = tracker.grade(at(9), &graded(&[(Role::Nic, Health::Healthy)]));
     assert_eq!(updates[0].started, at(5));
@@ -77,7 +83,7 @@ fn a_layer_graded_without_probes_ends_at_the_grading_that_finds_it_calm() {
 
 #[test]
 fn severity_escalates_to_outage_and_never_back() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.grade(at(1), &graded(&[(target(), Health::Degraded)]));
     let escalated = tracker.grade(at(2), &graded(&[(target(), Health::Failing)]));
     assert_eq!(escalated[0].severity, Severity::Outage);
@@ -92,7 +98,7 @@ fn severity_escalates_to_outage_and_never_back() {
 
 #[test]
 fn the_probable_cause_is_the_most_upstream_role_with_an_open_incident() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.grade(at(1), &graded(&[(hop1(), Health::Failing)]));
     let updates = tracker.grade(
         at(2),
@@ -111,7 +117,7 @@ fn the_probable_cause_is_the_most_upstream_role_with_an_open_incident() {
 #[test]
 fn rate_limiting_and_unknown_close_an_incident_like_health_does() {
     for calm in [Health::RateLimited, Health::Unknown, Health::Healthy] {
-        let mut tracker = IncidentTracker::new();
+        let mut tracker = IncidentTracker::new(grace());
         tracker.grade(at(1), &graded(&[(hop1(), Health::Degraded)]));
         let updates = tracker.grade(at(2), &graded(&[(hop1(), calm)]));
         assert_eq!(updates[0].ended, Some(at(2)), "{calm:?}");
@@ -120,8 +126,31 @@ fn rate_limiting_and_unknown_close_an_incident_like_health_does() {
 
 #[test]
 fn a_role_that_stops_being_graded_is_calm() {
-    let mut tracker = IncidentTracker::new();
+    let mut tracker = IncidentTracker::new(grace());
     tracker.grade(at(1), &graded(&[(Role::Tunnel, Health::Failing)]));
     let updates = tracker.grade(at(2), &BTreeMap::new());
     assert_eq!(updates[0].ended, Some(at(2)));
+}
+
+#[test]
+fn an_upstream_incident_that_began_after_the_grace_is_not_the_cause() {
+    let mut tracker = IncidentTracker::new(grace());
+    tracker.grade(at(0), &graded(&[(target(), Health::Failing)]));
+    let late = tracker.grade(
+        at(11),
+        &graded(&[(Role::Nic, Health::Failing), (target(), Health::Failing)]),
+    );
+    assert!(late.iter().all(|i| i.cause.is_none()), "{late:?}");
+}
+
+#[test]
+fn an_upstream_incident_that_began_within_the_grace_is_the_cause() {
+    let mut tracker = IncidentTracker::new(grace());
+    tracker.grade(at(0), &graded(&[(target(), Health::Failing)]));
+    let updates = tracker.grade(
+        at(10),
+        &graded(&[(hop1(), Health::Failing), (target(), Health::Failing)]),
+    );
+    let of_target = updates.iter().find(|i| i.role == target()).unwrap();
+    assert_eq!(of_target.cause, Some(hop1()));
 }

@@ -256,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
     let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Each grading also opens, updates, and closes incidents (ADR-0031).
-    let mut incidents = IncidentTracker::new();
+    let mut incidents = IncidentTracker::new(Time::new::<second>(10.0));
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
     let mut last_clocks = (clock.wall_now(), clock.now());
     let mut last_sysctls = netwatch_adapter_procfs::sysctls();
