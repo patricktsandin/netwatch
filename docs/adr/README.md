@@ -40,3 +40,4 @@ to "Superseded".
 | [0032](0032-gauge-readings.md) | Gauge readings: graphs for what isn't a probe | Accepted |
 | [0033](0033-incident-reports.md) | Incident reports for an ISP | Accepted |
 | [0034](0034-causes-come-first.md) | A probable cause comes first, and episodes follow causes | Accepted |
+| [0035](0035-configuration-from-the-ui.md) | Configuring targets from the UI | Accepted |

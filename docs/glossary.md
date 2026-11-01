@@ -200,6 +200,8 @@ words are defined elsewhere in this file.
 - **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
 - **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
   at that time.
+- **Settings**: the UI's page for adding, changing, and removing *targets*. It edits
+  the daemon's configuration file in place (ADR-0035).
 - **Live stream**: *samples* pushed to the UI over WebSocket.
 - **Backfill**: fetching history to fill gaps, at startup, on zoom, or after a reconnect.
   It merges with the *live stream* without gaps or duplicates.
