@@ -137,12 +137,15 @@ words are defined elsewhere in this file.
   capability is missing. It is recorded as a *domain event* and shown in the UI.
 - **Counter**: a value that only increases, read from the kernel or a driver. It can
   wrap around or reset.
-- **Counter reading**: one *counter* value at one *instant*, stored raw.
+- **Counter reading**: one *counter* value at one *instant*. Not stored: it becomes a
+  *rate* (ADR-0032).
 - **Counter reset**: a *counter reading* lower than the previous one, caused by a reboot,
   a module reload, or wraparound. It is detected, never shown as negative traffic.
-- **Rate**: the change in a *counter* over a time interval, computed at query time.
-- **Gauge**: a value that can go up or down, such as conntrack entries, PSI, or signal
-  strength.
+- **Rate**: the change in a *counter* over a time interval, computed when the counter
+  is read and stored as a *reading* (ADR-0032).
+- **Gauge**: a named quantity with a fixed unit that can go up or down, such as
+  throughput, PSI, or signal strength.
+- **Throughput**: the *rate* of bytes a *NIC* receives or transmits, in bit/s.
 - **Drop reason**: the kernel's `skb_drop_reason` for a discarded packet, counted by
   the eBPF *telemetry source*.
 - **Kernel log line**: a network-relevant line from `/dev/kmsg`, matched by a known
@@ -155,8 +158,12 @@ words are defined elsewhere in this file.
 
 ## History
 
-- **Sample**: one *probe outcome* or *gauge* value, together with its *role*, *identity*,
-  *identity epoch*, *wall time*, and *timestamp source*.
+- **Sample**: one *probe outcome*, together with its *role*, *identity*, *identity
+  epoch*, *wall time*, and *timestamp source*.
+- **Reading**: one *gauge* value, together with its *role*, *identity epoch*, and
+  *wall time* (ADR-0032). Stored, retained, and rolled up like a *sample*.
+- **Reading rollup**: count, sum, min, and max of a *gauge*'s *readings* over one
+  *tier* interval within one *identity epoch*.
 - **Tier**: a resolution level of stored history: *raw*, *1m*, or *1h*.
 - **Rollup**: an aggregate over one *tier* interval within one *identity epoch*: count,
   loss, min, average, max, p50, p95, p99, and jitter. Rollups merge (see *merge*).
