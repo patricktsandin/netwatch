@@ -15,6 +15,7 @@ netwatch-adapter-netlink.workspace = true
 netwatch-adapter-sockets.workspace = true
 netwatch-adapter-procfs.workspace = true
 netwatch-adapter-modem.workspace = true
+netwatch-adapter-ebpf.workspace = true
 netwatch-adapter-sqlite.workspace = true
 netwatch-adapter-web.workspace = true
 netwatch-shared.workspace = true

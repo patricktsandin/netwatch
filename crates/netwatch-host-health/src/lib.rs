@@ -70,6 +70,19 @@ pub const KERNEL_RULES: &[Rule] = &[
     ("Arp.UnresolvedDiscards", Severity::Degrades),
     ("Ndisc.TableFulls", Severity::Degrades),
     ("Ndisc.UnresolvedDiscards", Severity::Degrades),
+    // Drop reasons from the eBPF source (ADR-0008), named by the kernel's
+    // `skb_drop_reason`. Only reasons that mean the host itself ran short: closed
+    // ports (`NO_SOCKET`), firewall verdicts, and malformed packets are routine.
+    ("Drop.NOMEM", Severity::Fails),
+    ("Drop.CPU_BACKLOG", Severity::Fails),
+    ("Drop.FULL_RING", Severity::Fails),
+    ("Drop.SOCKET_RCVBUFF", Severity::Degrades),
+    ("Drop.SOCKET_BACKLOG", Severity::Degrades),
+    ("Drop.PROTO_MEM", Severity::Degrades),
+    ("Drop.QDISC_DROP", Severity::Degrades),
+    ("Drop.NEIGH_FAILED", Severity::Degrades),
+    ("Drop.NEIGH_QUEUEFULL", Severity::Degrades),
+    ("Drop.DEV_READY", Severity::Degrades),
 ];
 
 /// The NIC's own counters (`IFLA_STATS64`). Errors on the wire degrade it; packets

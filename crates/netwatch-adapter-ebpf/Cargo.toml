@@ -1,0 +1,19 @@
+[package]
+name = "netwatch-adapter-ebpf"
+description = "Adapter: loads the drop-reason eBPF program and reads its counts (ADR-0008)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+netwatch-ebpf-common.workspace = true
+aya.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+aya-build.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

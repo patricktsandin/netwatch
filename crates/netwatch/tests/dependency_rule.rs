@@ -46,6 +46,9 @@ const FORBIDDEN_ANYWHERE: &[&str] = &[
 ];
 
 const ADAPTER_PREFIX: &str = "netwatch-adapter-";
+/// The rest of the eBPF adapter (ADR-0008): the program that runs in the kernel, and
+/// what it shares with its loader, `netwatch-adapter-ebpf`.
+const EBPF_CRATES: &[&str] = &["netwatch-ebpf", "netwatch-ebpf-common"];
 const COMPOSITION_ROOT: &str = "netwatch";
 
 struct Workspace {
@@ -126,6 +129,7 @@ fn every_workspace_crate_is_classified() {
         .filter(|name| {
             !DOMAIN_CRATES.contains(name)
                 && !name.starts_with(ADAPTER_PREFIX)
+                && !EBPF_CRATES.contains(name)
                 && *name != COMPOSITION_ROOT
         })
         .collect();

@@ -1,0 +1,19 @@
+# Built only for the BPF target, by aya-build from netwatch-adapter-ebpf's build
+# script, with the nightly toolchain and bpf-linker (ADR-0008). It is not a default
+# workspace member, because it can't build for the host.
+[package]
+name = "netwatch-ebpf"
+description = "The drop-reason eBPF program: counts kfree_skb by skb_drop_reason (ADR-0008)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+aya-ebpf = "0.3"
+netwatch-ebpf-common.workspace = true
+
+[[bin]]
+name = "netwatch-ebpf"
+path = "src/main.rs"
+test = false
+bench = false

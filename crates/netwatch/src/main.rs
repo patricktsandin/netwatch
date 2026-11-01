@@ -292,12 +292,33 @@ async fn main() -> anyhow::Result<()> {
         disabled.insert(reason);
     }
 
+    // Drop reasons, counted in the kernel by an eBPF program (ADR-0008). Loading it
+    // needs CAP_BPF and CAP_PERFMON; without them the source is disabled, and says so.
+    let drop_reasons = match netwatch_adapter_ebpf::DropReasons::start() {
+        Ok(drops) => Some(drops),
+        Err(error) => {
+            let hint = if error.is_permission() {
+                " (needs CAP_BPF and CAP_PERFMON)"
+            } else {
+                ""
+            };
+            let reason = format!("drop reasons: {error}{hint}");
+            tracing::warn!(%error, "drop reasons disabled");
+            recorder.note("source-disabled", Role::Kernel, reason.clone());
+            disabled.insert(reason);
+            None
+        }
+    };
+
     loop {
         tokio::select! {
             _ = kernel_tick.tick() => {
-                let Ok(reading) = tokio::task::spawn_blocking(netwatch_adapter_procfs::read).await else {
+                let Ok(mut reading) = tokio::task::spawn_blocking(netwatch_adapter_procfs::read).await else {
                     continue;
                 };
+                if let Some(drops) = &drop_reasons {
+                    reading.counters.extend(drops.read());
+                }
                 layer_health.insert(
                     Role::Kernel,
                     publish_layer(

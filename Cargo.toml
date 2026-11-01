@@ -1,6 +1,25 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Every crate but netwatch-ebpf, which builds only for the BPF target, through
+# netwatch-adapter-ebpf's build script (ADR-0008).
+default-members = [
+    "crates/netwatch",
+    "crates/netwatch-adapter-ebpf",
+    "crates/netwatch-adapter-modem",
+    "crates/netwatch-adapter-netlink",
+    "crates/netwatch-adapter-procfs",
+    "crates/netwatch-adapter-sockets",
+    "crates/netwatch-adapter-sqlite",
+    "crates/netwatch-adapter-web",
+    "crates/netwatch-ebpf-common",
+    "crates/netwatch-history",
+    "crates/netwatch-host-health",
+    "crates/netwatch-probing",
+    "crates/netwatch-shared",
+    "crates/netwatch-topology",
+    "crates/netwatch-verified",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +36,8 @@ netwatch-host-health = { path = "crates/netwatch-host-health" }
 netwatch-history = { path = "crates/netwatch-history" }
 netwatch-adapter-netlink = { path = "crates/netwatch-adapter-netlink" }
 netwatch-adapter-modem = { path = "crates/netwatch-adapter-modem" }
+netwatch-adapter-ebpf = { path = "crates/netwatch-adapter-ebpf" }
+netwatch-ebpf-common = { path = "crates/netwatch-ebpf-common" }
 netwatch-adapter-sockets = { path = "crates/netwatch-adapter-sockets" }
 netwatch-adapter-procfs = { path = "crates/netwatch-adapter-procfs" }
 netwatch-adapter-sqlite = { path = "crates/netwatch-adapter-sqlite" }
@@ -32,6 +53,8 @@ netlink-sys = { version = "0.9", features = ["tokio_socket"] }
 netlink-packet-route = "0.33"
 netlink-packet-core = "0.9"
 wl-nl80211 = "0.8"
+aya = "0.16"
+aya-build = "0.2"
 zbus = { version = "6", default-features = false, features = ["tokio"] }
 futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"] }
@@ -66,3 +89,7 @@ unwrap_used = "deny"             # ADR-0015; tests are exempt via clippy.toml
 dbg_macro = "deny"
 todo = "warn"
 print_stdout = "warn"            # use `tracing`
+
+[profile.release.package.netwatch-ebpf]
+debug = 2
+codegen-units = 1
