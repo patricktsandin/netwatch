@@ -276,3 +276,62 @@ mod incidents {
         assert_eq!(found[1].ended, Some(WallTime::from_unix_micros(350)));
     }
 }
+
+mod readings {
+    use super::*;
+    use netwatch_history::{Reading, Tier, roll_up_readings};
+    use netwatch_shared::Gauge;
+
+    fn reading(at: i64, gauge: Gauge, value: f64) -> Reading {
+        Reading {
+            role: Role::Nic,
+            epoch: epoch(3),
+            at: WallTime::from_unix_micros(at),
+            gauge,
+            value,
+        }
+    }
+
+    #[test]
+    fn readings_and_their_rollups_round_trip_and_make_the_role_known() {
+        let mut store = Store::open(&fresh("readings")).unwrap();
+        let written = vec![
+            reading(1_000_000, Gauge::RxThroughput, 1.5e6),
+            reading(1_000_000, Gauge::TxThroughput, 2.0e5),
+            reading(2_000_000, Gauge::RxThroughput, 3.5e6),
+        ];
+        store.write_readings(&written).unwrap();
+        assert_eq!(
+            store
+                .readings(&Role::Nic, WallTime::from_unix_micros(0))
+                .unwrap(),
+            written
+        );
+        let rollups = roll_up_readings(&written, Tier::Minute);
+        store.write_reading_rollups(&rollups).unwrap();
+        assert_eq!(
+            store
+                .reading_rollups(&Role::Nic, Tier::Minute, WallTime::from_unix_micros(0))
+                .unwrap(),
+            rollups
+        );
+        let roles: Vec<Role> = store.roles().unwrap().into_iter().map(|(r, _)| r).collect();
+        assert_eq!(roles, vec![Role::Nic]);
+    }
+
+    #[test]
+    fn raw_readings_expire_with_raw_samples() {
+        let mut store = Store::open(&fresh("readings-prune")).unwrap();
+        let day = 24 * 3600 * 1_000_000_i64;
+        store
+            .write_readings(&[reading(0, Gauge::RxThroughput, 1.0)])
+            .unwrap();
+        store.prune(WallTime::from_unix_micros(8 * day)).unwrap();
+        assert!(
+            store
+                .readings(&Role::Nic, WallTime::from_unix_micros(0))
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

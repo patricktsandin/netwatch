@@ -4,6 +4,9 @@
 //! - `GET /api/roles`: every role that has samples
 //! - `GET /api/samples?role=<key>&since_us=<µs>`: one role's samples, oldest first
 //! - `GET /api/rollups?role=<key>&tier=minute|hour&since_us=<µs>`: one role's rollups
+//! - `GET /api/readings?role=<key>&since_us=<µs>`: one role's gauge readings
+//! - `GET /api/reading-rollups?role=<key>&tier=minute|hour&since_us=<µs>`: their rollups
+//! - `GET /api/gauges`: every gauge's label and unit
 //! - `GET /api/events?since_us=<µs>`: events, oldest first, each with the roles it
 //!   concerns
 //! - `GET /api/incidents?since_us=<µs>[&until_us=<µs>]`: every incident overlapping
@@ -38,8 +41,8 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
 pub use api::{
-    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, RoleSummary, RollupPoint,
-    SamplePoint, TargetView, status_text,
+    BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, ReadingPoint,
+    ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView, status_text,
 };
 
 #[derive(rust_embed::RustEmbed)]
@@ -93,6 +96,9 @@ pub async fn serve(
         .route("/api/roles", get(roles))
         .route("/api/samples", get(samples))
         .route("/api/rollups", get(rollups))
+        .route("/api/readings", get(readings))
+        .route("/api/reading-rollups", get(reading_rollups))
+        .route("/api/gauges", get(|| async { Json(api::gauges()) }))
         .route("/api/events", get(events))
         .route("/api/incidents", get(incidents))
         .route("/api/targets", get(target_list))
@@ -204,6 +210,44 @@ async fn rollups(
     let since = WallTime::from_unix_micros(query.since_us);
     let rollups = read(&state, move |store| store.rollups(&role, tier, since)).await?;
     Ok(Json(rollups.iter().map(RollupPoint::from).collect()))
+}
+
+async fn readings(
+    State(state): State<AppState>,
+    Query(query): Query<SamplesQuery>,
+) -> Result<Json<Vec<ReadingPoint>>, (StatusCode, String)> {
+    let role = parse_role(&query.role)?;
+    let since = WallTime::from_unix_micros(query.since_us);
+    let readings = read(&state, move |store| store.readings(&role, since)).await?;
+    Ok(Json(readings.iter().map(ReadingPoint::from).collect()))
+}
+
+async fn reading_rollups(
+    State(state): State<AppState>,
+    Query(query): Query<RollupsQuery>,
+) -> Result<Json<Vec<ReadingRollupPoint>>, (StatusCode, String)> {
+    let role = parse_role(&query.role)?;
+    let tier = parse_tier(&query.tier)?;
+    let since = WallTime::from_unix_micros(query.since_us);
+    let rollups = read(&state, move |store| {
+        store.reading_rollups(&role, tier, since)
+    })
+    .await?;
+    Ok(Json(
+        rollups.iter().filter_map(ReadingRollupPoint::new).collect(),
+    ))
+}
+
+fn parse_role(key: &str) -> Result<Role, (StatusCode, String)> {
+    Role::from_key(key).ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown role {key:?}")))
+}
+
+fn parse_tier(tier: &str) -> Result<netwatch_history::Tier, (StatusCode, String)> {
+    match tier {
+        "minute" => Ok(netwatch_history::Tier::Minute),
+        "hour" => Ok(netwatch_history::Tier::Hour),
+        other => Err((StatusCode::BAD_REQUEST, format!("unknown tier {other:?}"))),
+    }
 }
 
 async fn events(

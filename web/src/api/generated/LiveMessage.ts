@@ -3,6 +3,7 @@ import type { BindingView } from "./BindingView";
 import type { EventPoint } from "./EventPoint";
 import type { IncidentView } from "./IncidentView";
 import type { LayerReportView } from "./LayerReportView";
+import type { ReadingPoint } from "./ReadingPoint";
 import type { SamplePoint } from "./SamplePoint";
 
 /**
@@ -20,7 +21,15 @@ point: SamplePoint, } | { "type": "event",
 /**
  * The event.
  */
-event: EventPoint, } | { "type": "incident", 
+event: EventPoint, } | { "type": "reading", 
+/**
+ * The role's key.
+ */
+role: string, 
+/**
+ * The reading.
+ */
+reading: ReadingPoint, } | { "type": "incident", 
 /**
  * The incident as it now stands.
  */

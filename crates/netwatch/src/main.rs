@@ -13,17 +13,18 @@ use std::num::NonZeroU64;
 
 use anyhow::Context;
 use netwatch_adapter_web::{
-    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, TargetView, status_text,
+    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, ReadingPoint, TargetView,
+    status_text,
 };
-use netwatch_history::{Measurement, Sample};
-use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES};
+use netwatch_history::{Measurement, Reading, Sample};
+use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
 use netwatch_shared::{
-    HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
+    Gauge, HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
 };
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -248,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
     let mut kernel_watch = CounterWatch::new(KERNEL_RULES);
     // The NIC's counters only compare within one device, so the watch restarts
     // whenever the NIC changes (a failover).
-    let mut nic_watch: Option<(InterfaceIndex, CounterWatch)> = None;
+    let mut nic_watch: Option<(InterfaceIndex, CounterWatch, Throughput)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     // Every role's recent outcomes, and the layers' latest reports, from which the
     // daemon grades every role each second (ADR-0030).
@@ -312,14 +313,21 @@ async fn main() -> anyhow::Result<()> {
                     Identity::Address(_) => None,
                 });
                 if let Some(index) = nic {
-                    if nic_watch.as_ref().is_none_or(|(watched, _)| *watched != index) {
-                        nic_watch = Some((index, CounterWatch::new(NIC_RULES)));
+                    if nic_watch.as_ref().is_none_or(|(watched, _, _)| *watched != index) {
+                        nic_watch = Some((index, CounterWatch::new(NIC_RULES), Throughput::default()));
                     }
                     let counters = tokio::task::spawn_blocking(move || {
                         netwatch_adapter_netlink::link_counters(index.get())
                     })
                     .await;
-                    if let (Ok(Ok(counters)), Some((_, watch))) = (counters, nic_watch.as_mut()) {
+                    if let (Ok(Ok(counters)), Some((_, watch, throughput))) = (counters, nic_watch.as_mut()) {
+                        // The NIC's throughput is graphed on its row (ADR-0032).
+                        let epoch = topology.binding(&Role::Nic).map(|b| b.epoch);
+                        if let (Some((rx, tx)), Some(epoch)) = (throughput.observe(&counters, clock.now()), epoch) {
+                            for (gauge, value) in [(Gauge::RxThroughput, rx), (Gauge::TxThroughput, tx)] {
+                                recorder.reading(Reading { role: Role::Nic, epoch, at: clock.wall_now(), gauge, value });
+                            }
+                        }
                         let reading = netwatch_host_health::Reading { counters, ..Default::default() };
                         layer_health.insert(
                             Role::Nic,
@@ -515,6 +523,14 @@ impl Recorder {
         };
         self.show(stored.clone());
         let _ = self.writes.send(persist::Write::Note(stored));
+    }
+
+    fn reading(&self, reading: Reading) {
+        let _ = self.live.send(LiveMessage::Reading {
+            role: reading.role.key(),
+            reading: ReadingPoint::from(&reading),
+        });
+        let _ = self.writes.send(persist::Write::Reading(reading));
     }
 
     fn incident(&self, incident: Incident) {

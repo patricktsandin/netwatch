@@ -8,6 +8,8 @@
 //! Rollups of both tiers are stored with their histograms. Retention keeps raw samples
 //! for 7 days, minute rollups for 90 days, and hour rollups indefinitely.
 
+mod readings;
+
 use std::path::Path;
 
 use netwatch_history::{Histogram, Loss, Measurement, Rollup, Sample, Tier};
@@ -27,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003-unexpected-response.sql"),
     include_str!("../migrations/0004-rollups.sql"),
     include_str!("../migrations/0005-incidents.sql"),
+    include_str!("../migrations/0006-readings.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -246,7 +249,15 @@ impl Store {
             "DELETE FROM rollups WHERE tier = 'minute' AND start_us < ?1",
             [now - MINUTE_RETENTION_DAYS * DAY_US],
         )?;
-        Ok(samples + minutes)
+        let readings = self.connection.execute(
+            "DELETE FROM readings WHERE at_us < ?1",
+            [now - RAW_RETENTION_DAYS * DAY_US],
+        )?;
+        let reading_minutes = self.connection.execute(
+            "DELETE FROM reading_rollups WHERE tier = 'minute' AND start_us < ?1",
+            [now - MINUTE_RETENTION_DAYS * DAY_US],
+        )?;
+        Ok(samples + minutes + readings + reading_minutes)
     }
 
     /// Every sample, of every role, with `from <= at < until`.
@@ -418,11 +429,13 @@ impl Store {
         Ok(())
     }
 
-    /// Every role that has samples, with the time of its latest one.
+    /// Every role that has samples or readings, with the time of its latest one.
     pub fn roles(&self) -> Result<Vec<(Role, WallTime)>, StoreError> {
-        let mut query = self
-            .connection
-            .prepare_cached("SELECT role, MAX(at_us) FROM samples GROUP BY role ORDER BY role")?;
+        let mut query = self.connection.prepare_cached(
+            "SELECT role, MAX(at_us) FROM
+                   (SELECT role, at_us FROM samples UNION ALL SELECT role, at_us FROM readings)
+                 GROUP BY role ORDER BY role",
+        )?;
         let rows = query.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;

@@ -6,12 +6,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use netwatch_adapter_sqlite::Store;
-use netwatch_history::{self as history, Sample, Tier};
+use netwatch_history::{self as history, Reading, Sample, Tier};
 use netwatch_shared::WallTime;
 use netwatch_topology::TopologyEvent;
 
 pub enum Write {
     Sample(Sample),
+    /// A gauge reading (ADR-0032), batched with samples.
+    Reading(Reading),
     Event(TopologyEvent, WallTime),
     /// An event that isn't a topology event: a kernel log line, a disabled source.
     Note(netwatch_adapter_sqlite::StoredEvent),
@@ -51,6 +53,8 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
         );
         let samples = store.samples_between(from, until)?;
         store.write_rollups(&history::roll_up(&samples, Tier::Minute))?;
+        let readings = store.readings_between(from, until)?;
+        store.write_reading_rollups(&history::roll_up_readings(&readings, Tier::Minute))?;
         store.set_rollup_progress(Tier::Minute, until)?;
         from = until;
     }
@@ -62,6 +66,8 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
         let until = WallTime::from_unix_micros(from.as_unix_micros() + hour);
         let minutes = store.rollups_between(Tier::Minute, from, until)?;
         store.write_rollups(&history::coarsen(&minutes, Tier::Hour))?;
+        let minutes = store.reading_rollups_between(Tier::Minute, from, until)?;
+        store.write_reading_rollups(&history::coarsen_readings(&minutes, Tier::Hour))?;
         store.set_rollup_progress(Tier::Hour, until)?;
         from = until;
     }
@@ -85,6 +91,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
         .name("sqlite-writer".to_owned())
         .spawn(move || {
             let mut batch = Vec::with_capacity(BATCH);
+            let mut readings: Vec<Reading> = Vec::with_capacity(BATCH);
             let mut flushed = Instant::now();
             let mut pruned = Instant::now() - PRUNE_EVERY;
             let mut rolled = Instant::now() - ROLL_UP_EVERY;
@@ -92,6 +99,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                 let next = rx.recv_timeout(FLUSH_EVERY);
                 match next {
                     Ok(Write::Sample(sample)) => batch.push(sample),
+                    Ok(Write::Reading(reading)) => readings.push(reading),
                     Ok(Write::Event(event, at)) => {
                         if let Err(error) = store.record_event(&event, at) {
                             tracing::error!(%error, "cannot record topology event");
@@ -114,6 +122,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                             tracing::error!(%error, lost = batch.len(), "cannot write samples");
                         }
                         batch.clear();
+                        write_readings(&mut store, &mut readings);
                         flushed = Instant::now();
                         let _ = done.send(());
                     }
@@ -127,6 +136,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                         tracing::error!(%error, lost = batch.len(), "cannot write samples");
                     }
                     batch.clear();
+                    write_readings(&mut store, &mut readings);
                     flushed = Instant::now();
                 }
                 if rolled.elapsed() >= ROLL_UP_EVERY {
@@ -147,8 +157,18 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
             if !batch.is_empty() {
                 let _ = store.write_samples(&batch);
             }
+            write_readings(&mut store, &mut readings);
         })?;
     Ok(tx)
+}
+
+fn write_readings(store: &mut Store, readings: &mut Vec<Reading>) {
+    if !readings.is_empty()
+        && let Err(error) = store.write_readings(readings)
+    {
+        tracing::error!(%error, lost = readings.len(), "cannot write readings");
+    }
+    readings.clear();
 }
 
 /// The highest epoch already stored at `path`, if any.

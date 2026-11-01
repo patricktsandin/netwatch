@@ -4,10 +4,10 @@
 //! frontend's boundary parser, in the same commit.
 
 use netwatch_adapter_sqlite::{StoredEvent, StoredSample};
-use netwatch_history::{Loss, Measurement, Sample};
+use netwatch_history::{Loss, Measurement, Reading, ReadingRollup, Sample};
 use netwatch_probing::incident::{Incident, Severity};
 use netwatch_shared::uom::si::time::microsecond;
-use netwatch_shared::{Role, WallTime};
+use netwatch_shared::{Gauge, Role, WallTime};
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -140,6 +140,91 @@ pub struct EventPoint {
     pub roles: Vec<String>,
 }
 
+/// One gauge reading (ADR-0032).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct ReadingPoint {
+    /// The gauge's key.
+    pub gauge: String,
+    /// When it was read, in µs since the Unix epoch.
+    #[ts(type = "number")]
+    pub at_us: i64,
+    /// The role's epoch when it was read.
+    #[ts(type = "number")]
+    pub epoch: u64,
+    /// The value, in the gauge's unit.
+    pub value: f64,
+}
+
+impl From<&Reading> for ReadingPoint {
+    fn from(r: &Reading) -> Self {
+        ReadingPoint {
+            gauge: r.gauge.key().to_owned(),
+            at_us: r.at.as_unix_micros(),
+            epoch: r.epoch.get().get(),
+            value: r.value,
+        }
+    }
+}
+
+/// One gauge's readings over one tier interval (ADR-0032).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct ReadingRollupPoint {
+    /// The gauge's key.
+    pub gauge: String,
+    /// The interval's start, in µs since the Unix epoch.
+    #[ts(type = "number")]
+    pub start_us: i64,
+    /// The role's epoch.
+    #[ts(type = "number")]
+    pub epoch: u64,
+    /// The mean value in the interval.
+    pub mean: f64,
+    /// The smallest value in the interval.
+    pub min: f64,
+    /// The largest value in the interval.
+    pub max: f64,
+}
+
+impl ReadingRollupPoint {
+    /// `None` for an empty interval, which has nothing to draw.
+    pub fn new(r: &ReadingRollup) -> Option<Self> {
+        Some(ReadingRollupPoint {
+            gauge: r.gauge.key().to_owned(),
+            start_us: r.start.as_unix_micros(),
+            epoch: r.epoch.get().get(),
+            mean: r.summary.mean()?,
+            min: r.summary.min,
+            max: r.summary.max,
+        })
+    }
+}
+
+/// A gauge, for labeling and formatting its readings.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct GaugeView {
+    /// The gauge's key, as readings name it.
+    pub key: String,
+    /// A short name, for people.
+    pub label: String,
+    /// `bit/s`.
+    pub unit: String,
+}
+
+/// Every gauge netwatch knows.
+pub fn gauges() -> Vec<GaugeView> {
+    Gauge::ALL
+        .iter()
+        .map(|g| GaugeView {
+            key: g.key().to_owned(),
+            label: g.label().to_owned(),
+            unit: g.unit().key().to_owned(),
+        })
+        .collect()
+}
+
 /// One incident: a role's degraded or failing period (ADR-0031).
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]
@@ -190,6 +275,13 @@ pub enum LiveMessage {
     Event {
         /// The event.
         event: EventPoint,
+    },
+    /// A gauge reading.
+    Reading {
+        /// The role's key.
+        role: String,
+        /// The reading.
+        reading: ReadingPoint,
     },
     /// An incident opened, changed, or closed.
     Incident {
