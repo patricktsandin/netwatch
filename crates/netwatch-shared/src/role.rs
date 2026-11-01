@@ -76,6 +76,37 @@ impl Role {
         matches!(self, Role::Nic | Role::Tunnel | Role::LocalInterface)
     }
 
+    /// Whether `self` comes before `other` on a path out of this host (glossary:
+    /// *upstream / downstream*): kernel, NIC, tunnel, local interface, then each
+    /// target's hops in order, then the target. Hops and targets are upstream only
+    /// along their own target's path. A problem upstream explains one downstream
+    /// (ADR-0031), never the other way around.
+    pub fn is_upstream_of(&self, other: &Role) -> bool {
+        let path = |role: &Role| match role {
+            Role::Hop { target, .. } | Role::Target(target) => Some(*target),
+            Role::Kernel | Role::Nic | Role::Tunnel | Role::LocalInterface => None,
+        };
+        let on_its_path = match (path(self), path(other)) {
+            (None, _) => true,
+            (Some(mine), Some(theirs)) => mine == theirs,
+            (Some(_), None) => false,
+        };
+        on_its_path && self.depth() < other.depth()
+    }
+
+    /// The position along a path that [`is_upstream_of`](Self::is_upstream_of)
+    /// compares.
+    fn depth(&self) -> u16 {
+        match self {
+            Role::Kernel => 0,
+            Role::Nic => 1,
+            Role::Tunnel => 2,
+            Role::LocalInterface => 3,
+            Role::Hop { ttl, .. } => 3 + u16::from(ttl.get().get()),
+            Role::Target(_) => u16::MAX,
+        }
+    }
+
     /// A stable text key, used wherever a role crosses a boundary as text: database
     /// rows, API paths, the UI. `nic`, `tunnel`, `local-interface`, `hop:<target>:<ttl>`,
     /// `target:<id>`.
