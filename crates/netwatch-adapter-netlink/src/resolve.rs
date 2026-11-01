@@ -177,3 +177,13 @@ fn ip(address: &RouteAddress) -> Option<IpAddr> {
 fn invalid_data(error: impl ToString) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
+
+/// The index of the interface named `name`, if it exists.
+pub fn index_of(name: &str) -> Option<NonZeroU32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `name` is a valid NUL-terminated string that outlives the call, and
+    // if_nametoindex only reads it.
+    #[allow(unsafe_code)]
+    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    NonZeroU32::new(index)
+}

@@ -1,6 +1,6 @@
 [package]
 name = "netwatch-adapter-modem"
-description = "Anti-corruption layer: ModemManager over D-Bus"
+description = "Adapter: ModemManager over D-Bus, for the cellular radio role (ADR-0036)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,9 @@ publish.workspace = true
 
 [dependencies]
 netwatch-shared.workspace = true
-netwatch-topology.workspace = true
 netwatch-host-health.workspace = true
+zbus.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

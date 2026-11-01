@@ -12,6 +12,8 @@ fn every_kind_of_role() -> Vec<Role> {
         Role::Nic,
         Role::Tunnel,
         Role::LocalInterface,
+        Role::Wifi,
+        Role::Cellular,
         Role::Target(TargetId::new(0)),
         Role::Target(TargetId::new(u32::MAX)),
         Role::Hop {

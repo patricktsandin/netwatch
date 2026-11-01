@@ -3,7 +3,7 @@
 
 import type { RoleKey } from "./model";
 
-const LAYER_ORDER = ["kernel", "nic", "tunnel", "local-interface", "hop", "target"] as const;
+const LAYER_ORDER = ["kernel", "nic", "wifi", "cellular", "tunnel", "local-interface", "hop", "target"] as const;
 type Layer = (typeof LAYER_ORDER)[number];
 
 function layer(key: RoleKey): Layer {
@@ -38,6 +38,10 @@ export function label(key: RoleKey, names: ReadonlyMap<string, string> = new Map
       return "Kernel (loopback)";
     case "nic":
       return "NIC";
+    case "wifi":
+      return "Wi-Fi";
+    case "cellular":
+      return "Cellular";
     case "tunnel":
       return "Tunnel";
     case "local-interface":

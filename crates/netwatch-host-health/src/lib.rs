@@ -28,6 +28,7 @@
 use std::collections::BTreeMap;
 
 mod kernel_log;
+pub mod radio;
 mod throughput;
 
 pub use kernel_log::{KernelLogKind, KernelLogLine, classify};

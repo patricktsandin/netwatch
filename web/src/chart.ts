@@ -33,6 +33,7 @@ function markerColor(m: Marker): string {
     case "epoch-ended":
     case "desynchronized":
     case "resynchronized":
+    case "radio":
       return color("--marker");
     case "kernel-log":
     case "clock-jump":

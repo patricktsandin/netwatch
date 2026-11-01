@@ -76,7 +76,7 @@ function nullableString(value: unknown, what: string): string | null {
   throw new ParseError(`${what}: expected a string or null`);
 }
 
-const ROLE_KEY = /^(kernel|nic|tunnel|local-interface|target:(0|[1-9]\d*)|hop:(0|[1-9]\d*):([1-9]\d*))$/;
+const ROLE_KEY = /^(kernel|nic|wifi|cellular|tunnel|local-interface|target:(0|[1-9]\d*)|hop:(0|[1-9]\d*):([1-9]\d*))$/;
 
 function roleKey(value: unknown, what: string): RoleKey {
   if (typeof value !== "string" || !ROLE_KEY.test(value)) {
@@ -112,6 +112,7 @@ const EVENT_KINDS: readonly EventKind[] = [
   "source-disabled",
   "clock-jump",
   "config-drift",
+  "radio",
 ];
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {
@@ -161,7 +162,7 @@ function finite(value: unknown, what: string): number {
   return value;
 }
 
-const GAUGE_UNITS: readonly GaugeUnit[] = ["bit/s"];
+const GAUGE_UNITS: readonly GaugeUnit[] = ["bit/s", "dBm", "dB", "%"];
 
 /** Every gauge's label and unit, from `/api/gauges`. */
 export function parseGauges(value: unknown): ReadonlyMap<GaugeKey, GaugeInfo> {
@@ -321,6 +322,10 @@ export function parseLayerReport(value: unknown): LayerReport {
     disabled: array(r.disabled, "layer.disabled").map((d) => {
       if (typeof d !== "string") throw new ParseError("layer.disabled: expected strings");
       return d;
+    }),
+    notes: array(r.notes, "layer.notes").map((n) => {
+      if (typeof n !== "string") throw new ParseError("layer.notes: expected strings");
+      return n;
     }),
   };
 }

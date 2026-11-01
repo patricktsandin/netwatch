@@ -7,6 +7,7 @@ mod clock;
 mod config;
 mod persist;
 mod probe;
+mod radio;
 mod settings;
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -268,6 +269,9 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030).
     let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
+    // The radios, read every 5 s, and what each was last attached to (ADR-0036).
+    let mut radios = radio::spawn(pin.clone());
+    let mut attachments: HashMap<Role, Option<String>> = HashMap::new();
     // Each grading also opens, updates, and closes incidents (ADR-0031).
     let mut incidents = IncidentTracker::new(Time::new::<second>(10.0));
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
@@ -394,6 +398,39 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(reason) = disabled_rx.recv() => {
                 disabled.insert(reason);
+            }
+            Some(update) = radios.recv() => {
+                let (role, identity, report) = match update {
+                    radio::Update::Wifi(device) => (
+                        Role::Wifi,
+                        Some(Identity::Interface { index: device.index, name: device.name }),
+                        netwatch_host_health::radio::wifi_report(&device.link),
+                    ),
+                    radio::Update::Cellular(identity, modem) => (
+                        Role::Cellular,
+                        identity,
+                        netwatch_host_health::radio::cellular_report(&modem.link),
+                    ),
+                };
+                if let Some(identity) = identity {
+                    for output in topology.observe(Observation::ProbeIdentified { role: role.clone(), identity }) {
+                        handle(output, &observations_tx, &recorder);
+                    }
+                }
+                // A new access point or network is an event on the radio's row.
+                let previous = attachments.insert(role.clone(), report.attachment.clone());
+                if let (Some(Some(before)), Some(now)) = (&previous, &report.attachment)
+                    && before != now
+                {
+                    recorder.note("radio", role.clone(), format!("{before} → {now}"));
+                }
+                if let Some(epoch) = topology.binding(&role).map(|b| b.epoch) {
+                    let at = clock.wall_now();
+                    for &(gauge, value) in &report.readings {
+                        recorder.reading(Reading { role: role.clone(), epoch, at, gauge, value });
+                    }
+                }
+                layer_health.insert(role.clone(), radio::publish(&role, &report, &live, &layers_tx));
             }
             Some(message) = kmsg.recv() => {
                 if let Some(line) = netwatch_host_health::classify(&message) {

@@ -33,6 +33,10 @@ pub enum Role {
     },
     /// A configured endpoint.
     Target(TargetId),
+    /// The Wi-Fi device, whether it carries the egress path or stands by (ADR-0036).
+    Wifi,
+    /// The cellular modem, whether it carries the egress path or stands by.
+    Cellular,
 }
 
 /// Identifies a configured target. Assigned by configuration, and stable for as
@@ -82,9 +86,19 @@ impl Role {
     /// along their own target's path. A problem upstream explains one downstream
     /// (ADR-0031), never the other way around.
     pub fn is_upstream_of(&self, other: &Role) -> bool {
+        // Radio roles are off the path (ADR-0036).
+        let radio = |role: &Role| matches!(role, Role::Wifi | Role::Cellular);
+        if radio(self) || radio(other) {
+            return false;
+        }
         let path = |role: &Role| match role {
             Role::Hop { target, .. } | Role::Target(target) => Some(*target),
-            Role::Kernel | Role::Nic | Role::Tunnel | Role::LocalInterface => None,
+            Role::Kernel
+            | Role::Nic
+            | Role::Tunnel
+            | Role::LocalInterface
+            | Role::Wifi
+            | Role::Cellular => None,
         };
         let on_its_path = match (path(self), path(other)) {
             (None, _) => true,
@@ -103,13 +117,13 @@ impl Role {
             Role::Tunnel => 2,
             Role::LocalInterface => 3,
             Role::Hop { ttl, .. } => 3 + u16::from(ttl.get().get()),
-            Role::Target(_) => u16::MAX,
+            Role::Target(_) | Role::Wifi | Role::Cellular => u16::MAX,
         }
     }
 
     /// A stable text key, used wherever a role crosses a boundary as text: database
     /// rows, API paths, the UI. `nic`, `tunnel`, `local-interface`, `hop:<target>:<ttl>`,
-    /// `target:<id>`.
+    /// `target:<id>`, `wifi`, `cellular`.
     pub fn key(&self) -> String {
         match self {
             Role::Kernel => "kernel".to_owned(),
@@ -118,6 +132,8 @@ impl Role {
             Role::LocalInterface => "local-interface".to_owned(),
             Role::Hop { target, ttl } => format!("hop:{}:{}", target.get(), ttl.get()),
             Role::Target(target) => format!("target:{}", target.get()),
+            Role::Wifi => "wifi".to_owned(),
+            Role::Cellular => "cellular".to_owned(),
         }
     }
 
@@ -128,6 +144,8 @@ impl Role {
             "nic" => Some(Role::Nic),
             "tunnel" => Some(Role::Tunnel),
             "local-interface" => Some(Role::LocalInterface),
+            "wifi" => Some(Role::Wifi),
+            "cellular" => Some(Role::Cellular),
             _ => {
                 let mut parts = key.split(':');
                 let role = match (parts.next()?, parts.next(), parts.next()) {

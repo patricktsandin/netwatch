@@ -49,3 +49,21 @@ fn no_role_is_upstream_of_itself_and_targets_of_nothing() {
     assert!(!target(1).is_upstream_of(&target(2)));
     assert!(!target(1).is_upstream_of(&hop(1, 3)));
 }
+
+#[test]
+fn radio_roles_are_off_the_path_neither_upstream_nor_downstream() {
+    for radio in [Role::Wifi, Role::Cellular] {
+        for other in [
+            Role::Kernel,
+            Role::Nic,
+            Role::LocalInterface,
+            hop(1, 1),
+            target(1),
+            Role::Wifi,
+            Role::Cellular,
+        ] {
+            assert!(!radio.is_upstream_of(&other), "{radio:?} before {other:?}");
+            assert!(!other.is_upstream_of(&radio), "{other:?} before {radio:?}");
+        }
+    }
+}

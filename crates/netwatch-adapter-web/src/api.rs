@@ -313,6 +313,8 @@ pub enum LiveMessage {
 pub struct LayerReportView {
     /// `healthy`, `degraded`, `failing`, or `unknown`.
     pub status: String,
+    /// What the layer is doing, in words, such as a radio's state (ADR-0036).
+    pub notes: Vec<String>,
     /// Watched counters that grew since the previous reading.
     pub increases: Vec<CounterIncrease>,
     /// Counters that went backwards (reset), whose difference means nothing.
@@ -382,6 +384,7 @@ impl From<&netwatch_host_health::LayerReport> for LayerReportView {
             clock_synchronized: report.clock.map(|(synchronized, _)| synchronized),
             clock_error_us: report.clock.map(|(_, error)| error),
             disabled: Vec::new(),
+            notes: Vec::new(),
         }
     }
 }

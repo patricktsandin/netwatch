@@ -19,6 +19,7 @@
 //!   is [`Observation::NotificationsLost`] sent, exactly as ADR-0021 requires.
 
 mod resolve;
+mod wifi;
 
 use std::io;
 use std::thread;
@@ -27,7 +28,8 @@ use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
 use netwatch_topology::{Observation, ResyncGeneration, Snapshot, egress};
 use tokio::sync::mpsc;
 
-pub use resolve::{link_counters, resolve_egress};
+pub use resolve::{index_of, link_counters, resolve_egress};
+pub use wifi::{WifiDevice, wifi};
 
 // Legacy multicast group bitmasks from <linux/rtnetlink.h>.
 const RTMGRP_LINK: u32 = 0x1;

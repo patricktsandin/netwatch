@@ -32,7 +32,8 @@ export type EventKind =
   | "kernel-log"
   | "source-disabled"
   | "clock-jump"
-  | "config-drift";
+  | "config-drift"
+  | "radio";
 
 /** One event, drawn as an event marker on the rows it concerns. */
 export interface Marker {
@@ -49,7 +50,7 @@ export interface Marker {
 export type GaugeKey = Brand<string, "GaugeKey">;
 
 /** The units gauges come in (ADR-0032). The unit says how to format a value. */
-export type GaugeUnit = "bit/s";
+export type GaugeUnit = "bit/s" | "dBm" | "dB" | "%";
 
 export interface GaugeInfo {
   readonly key: GaugeKey;
@@ -86,6 +87,8 @@ export interface LayerReport {
   readonly conntrackFill: number | null;
   readonly clockSynchronized: boolean | null;
   readonly disabled: readonly string[];
+  /** What the layer is doing, in the daemon's words, such as a radio's state. */
+  readonly notes: readonly string[];
 }
 
 /** A role's status, as graded by the daemon (ADR-0030). */

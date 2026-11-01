@@ -16,9 +16,9 @@ netwatch-probing = { path = "crates/netwatch-probing" }
 netwatch-host-health = { path = "crates/netwatch-host-health" }
 netwatch-history = { path = "crates/netwatch-history" }
 netwatch-adapter-netlink = { path = "crates/netwatch-adapter-netlink" }
+netwatch-adapter-modem = { path = "crates/netwatch-adapter-modem" }
 netwatch-adapter-sockets = { path = "crates/netwatch-adapter-sockets" }
 netwatch-adapter-procfs = { path = "crates/netwatch-adapter-procfs" }
-netwatch-adapter-modem = { path = "crates/netwatch-adapter-modem" }
 netwatch-adapter-sqlite = { path = "crates/netwatch-adapter-sqlite" }
 netwatch-adapter-web = { path = "crates/netwatch-adapter-web" }
 
@@ -31,6 +31,9 @@ itf = "0.4"
 netlink-sys = { version = "0.9", features = ["tokio_socket"] }
 netlink-packet-route = "0.33"
 netlink-packet-core = "0.9"
+wl-nl80211 = "0.8"
+zbus = { version = "6", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "signal", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

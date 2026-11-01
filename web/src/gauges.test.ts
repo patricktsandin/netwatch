@@ -20,6 +20,12 @@ describe("formatValue", () => {
   ])("%d bit/s reads %s", (value, text) => {
     expect(formatValue("bit/s", value)).toBe(text);
   });
+
+  it("writes signal levels and percentages without prefixes", () => {
+    expect(formatValue("dBm", -67.4)).toBe("-67 dBm");
+    expect(formatValue("dB", 12.5)).toBe("13 dB");
+    expect(formatValue("%", 64)).toBe("64 %");
+  });
 });
 
 describe("mergeReadings", () => {

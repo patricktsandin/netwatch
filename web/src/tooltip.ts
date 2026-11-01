@@ -126,6 +126,7 @@ function eventText(m: Marker, words: Words): string {
     "source-disabled": `disabled: ${detail}`,
     "clock-jump": detail,
     "config-drift": `sysctl changed: ${detail}`,
+    radio: `${role} changed: ${detail}`,
   };
   return `${words.time(m.at)} · ${texts[m.kind]}`;
 }

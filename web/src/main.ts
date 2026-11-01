@@ -236,7 +236,7 @@ function layerSummary(key: RoleKey): string {
   const clock = report.clockSynchronized === false ? "clock not synchronized" : "";
   const grew = report.increases.map((i) => `${i.name} +${String(i.by)}`);
   const disabled = report.disabled.map((d) => `disabled: ${d}`);
-  return [cpu, conntrack, clock, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
+  return [...report.notes, cpu, conntrack, clock, ...grew, ...disabled].filter((s) => s !== "").join(" · ");
 }
 
 function charts(row: Row): Chart[] {

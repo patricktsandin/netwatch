@@ -105,7 +105,12 @@ fn episode(group: &[&Incident]) -> Episode {
 
 fn place_of(cause: &Role) -> Place {
     match cause {
-        Role::Kernel | Role::Nic | Role::Tunnel | Role::LocalInterface => Place::HostOrLan,
+        Role::Kernel
+        | Role::Nic
+        | Role::Tunnel
+        | Role::LocalInterface
+        | Role::Wifi
+        | Role::Cellular => Place::HostOrLan,
         Role::Hop { ttl, .. } if ttl.get().get() == 1 => Place::HostOrLan,
         Role::Hop { .. } | Role::Target(_) => Place::BeyondGateway,
     }
@@ -117,8 +122,10 @@ pub fn path_order(role: &Role) -> (Option<u32>, u16) {
     match role {
         Role::Kernel => (None, 0),
         Role::Nic => (None, 1),
-        Role::Tunnel => (None, 2),
-        Role::LocalInterface => (None, 3),
+        Role::Wifi => (None, 2),
+        Role::Cellular => (None, 3),
+        Role::Tunnel => (None, 4),
+        Role::LocalInterface => (None, 5),
         Role::Hop { target, ttl } => (Some(target.get()), u16::from(ttl.get().get())),
         Role::Target(target) => (Some(target.get()), u16::MAX),
     }
@@ -138,6 +145,8 @@ pub fn label(role: &Role, names: &BTreeMap<String, String>) -> String {
         Role::Nic => "NIC".to_owned(),
         Role::Tunnel => "Tunnel".to_owned(),
         Role::LocalInterface => "Local interface".to_owned(),
+        Role::Wifi => "Wi-Fi".to_owned(),
+        Role::Cellular => "Cellular".to_owned(),
         Role::Hop { target: t, ttl } => format!("Hop {} → {}", ttl.get(), target(t.get())),
         Role::Target(t) => target(t.get()),
     }

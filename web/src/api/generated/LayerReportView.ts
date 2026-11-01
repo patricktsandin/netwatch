@@ -11,6 +11,10 @@ export type LayerReportView = {
  */
 status: string, 
 /**
+ * What the layer is doing, in words, such as a radio's state (ADR-0036).
+ */
+notes: Array<string>, 
+/**
  * Watched counters that grew since the previous reading.
  */
 increases: Array<CounterIncrease>, 
