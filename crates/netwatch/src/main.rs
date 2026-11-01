@@ -7,6 +7,7 @@ mod clock;
 mod config;
 mod persist;
 mod probe;
+mod settings;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
@@ -109,13 +110,25 @@ async fn main() -> anyhow::Result<()> {
         current: current_tx.subscribe(),
         clock,
     };
+    let settings: std::sync::Arc<dyn netwatch_adapter_web::Settings> =
+        std::sync::Arc::new(settings::FileSettings {
+            path: config.source.clone(),
+            database: database.clone(),
+            writes: writes.clone(),
+        });
     tokio::spawn({
         let live = live.clone();
         async move {
-            if let Err(error) =
-                netwatch_adapter_web::serve(listen, database, live, layers, names, flush, current)
-                    .await
-            {
+            let daemon = netwatch_adapter_web::Daemon {
+                database,
+                live,
+                layers,
+                targets: names,
+                flush,
+                current,
+                settings,
+            };
+            if let Err(error) = netwatch_adapter_web::serve(listen, daemon).await {
                 tracing::error!(%error, "the UI server stopped");
             }
         }

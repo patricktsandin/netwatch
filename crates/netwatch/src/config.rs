@@ -18,6 +18,9 @@ const SYSTEM_PATH: &str = "/etc/netwatch/netwatch.toml";
 
 #[derive(Debug)]
 pub struct Config {
+    /// The file it was read from, or `None` for the built-in defaults. The settings
+    /// page edits this file (ADR-0035).
+    pub source: Option<PathBuf>,
     pub listen: SocketAddr,
     pub database: PathBuf,
     pub targets: Vec<Target>,
@@ -62,19 +65,22 @@ struct RawTarget {
 /// Loads the configuration from wherever it lives, then applies the environment's
 /// overrides.
 pub fn load() -> anyhow::Result<Config> {
-    let (text, origin) = match std::env::var_os("NETWATCH_CONFIG") {
+    let (text, origin, source) = match std::env::var_os("NETWATCH_CONFIG") {
         Some(path) => (
             std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?,
-            PathBuf::from(path).display().to_string(),
+            PathBuf::from(&path).display().to_string(),
+            Some(PathBuf::from(path)),
         ),
         None if std::path::Path::new(SYSTEM_PATH).exists() => (
             std::fs::read_to_string(SYSTEM_PATH).context("reading /etc/netwatch/netwatch.toml")?,
             SYSTEM_PATH.to_owned(),
+            Some(PathBuf::from(SYSTEM_PATH)),
         ),
-        None => (DEFAULTS.to_owned(), "built-in defaults".to_owned()),
+        None => (DEFAULTS.to_owned(), "built-in defaults".to_owned(), None),
     };
     let mut config = parse(&text).with_context(|| format!("invalid configuration in {origin}"))?;
+    config.source = source;
     if let Some(database) = std::env::var_os("NETWATCH_DB") {
         config.database = PathBuf::from(database);
     }
@@ -130,6 +136,7 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
         });
     }
     Ok(Config {
+        source: None,
         listen: raw
             .listen
             .parse()

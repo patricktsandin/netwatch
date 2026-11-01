@@ -67,8 +67,10 @@ grep -q '^database = "%{_sharedstatedir}/netwatch/netwatch.db"$' \
 %{_bindir}/netwatch
 %{_unitdir}/netwatch.service
 %{_sysusersdir}/netwatch.conf
-%dir %{_sysconfdir}/netwatch
-%config(noreplace) %{_sysconfdir}/netwatch/netwatch.toml
+# The settings page rewrites the file in place, through a temporary file beside it
+# (ADR-0035), so the service's group may write both.
+%attr(0775,root,netwatch) %dir %{_sysconfdir}/netwatch
+%attr(0664,root,netwatch) %config(noreplace) %{_sysconfdir}/netwatch/netwatch.toml
 
 %changelog
 * Sat Oct 31 2026 Patrick <patrick@sandin.tech> - 0.1.0-1

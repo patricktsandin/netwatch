@@ -15,6 +15,8 @@
 //! - `GET /api/layers`: each layer's latest health report, by role key
 //! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
+//! - `GET /api/config`: the targets as the settings page edits them
+//! - `PUT /api/config`: replaces the targets, then the daemon restarts (ADR-0035)
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - `GET /report?from_us=<µs>&until_us=<µs>`: an incident report as a printable page,
 //!   and `GET /report.txt?…` as plain text (ADR-0033)
@@ -34,7 +36,7 @@ use std::path::PathBuf;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -47,6 +49,7 @@ pub use api::{
     BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, ReadingPoint,
     ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView, status_text,
 };
+pub use api::{ConfigView, TargetSpec};
 
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../web/dist"]
@@ -55,6 +58,16 @@ struct Spa;
 
 /// Asks the writer to write everything it has received, and resolves once it has.
 pub type Flush = std::sync::Arc<dyn Fn() -> tokio::sync::oneshot::Receiver<()> + Send + Sync>;
+
+/// Reads and writes the configuration for the settings page (ADR-0035). The
+/// composition root owns the file format, so it implements this.
+pub trait Settings: Send + Sync {
+    /// The targets as configured, and whether they can be saved.
+    fn view(&self) -> ConfigView;
+    /// Validates and saves `targets` as the complete list, then arranges for the
+    /// daemon to restart with them. An error is a message for people.
+    fn save(&self, targets: Vec<TargetSpec>) -> Result<(), String>;
+}
 
 /// The daemon's current view, kept up to date by the composition root.
 #[derive(Debug, Clone, Default)]
@@ -83,18 +96,29 @@ struct AppState {
     live: broadcast::Sender<LiveMessage>,
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: std::sync::Arc<Vec<TargetView>>,
+    settings: std::sync::Arc<dyn Settings>,
+}
+
+/// What the daemon gives the UI server: where history is, and its live views.
+pub struct Daemon {
+    /// The SQLite database, which each read opens on its own.
+    pub database: PathBuf,
+    /// Live messages, broadcast to every WebSocket.
+    pub live: broadcast::Sender<LiveMessage>,
+    /// Each layer's latest health report.
+    pub layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
+    /// Every configured target's name.
+    pub targets: Vec<TargetView>,
+    /// The flush barrier (ADR-0029).
+    pub flush: Flush,
+    /// Statuses and bindings.
+    pub current: watch::Receiver<Current>,
+    /// The configuration, for the settings page (ADR-0035).
+    pub settings: std::sync::Arc<dyn Settings>,
 }
 
 /// Serves the API and the SPA on `address` until the process ends.
-pub async fn serve(
-    address: SocketAddr,
-    database: PathBuf,
-    live: broadcast::Sender<LiveMessage>,
-    layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
-    targets: Vec<TargetView>,
-    flush: Flush,
-    current: watch::Receiver<Current>,
-) -> std::io::Result<()> {
+pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
     let app = Router::new()
         .route("/api/roles", get(roles))
         .route("/api/samples", get(samples))
@@ -108,17 +132,19 @@ pub async fn serve(
         .route("/api/layers", get(layer_reports))
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
+        .route("/api/config", get(config).put(save_config))
         .route("/api/live", get(live_socket))
         .route("/report", get(report_page))
         .route("/report.txt", get(report_text))
         .fallback(spa)
         .with_state(AppState {
-            flush,
-            current,
-            database,
-            live,
-            layers,
-            targets: std::sync::Arc::new(targets),
+            flush: daemon.flush,
+            current: daemon.current,
+            database: daemon.database,
+            live: daemon.live,
+            layers: daemon.layers,
+            targets: std::sync::Arc::new(daemon.targets),
+            settings: daemon.settings,
         });
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "serving the UI");
@@ -422,6 +448,64 @@ async fn report_text(
         report::render::text(&report, &label),
     )
         .into_response())
+}
+
+async fn config(State(state): State<AppState>) -> Json<ConfigView> {
+    Json(state.settings.view())
+}
+
+/// Whether a write request came from the UI itself, not from another web page the
+/// browser is showing (ADR-0035): a cross-site page can't set `X-Netwatch` without a
+/// CORS preflight, which is never answered, and a DNS-rebound name fails the `Host`
+/// check.
+pub fn from_the_ui(headers: &HeaderMap) -> bool {
+    let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
+    let marked = headers
+        .get("x-netwatch")
+        .is_some_and(|v| v.as_bytes() == b"1");
+    let json = text(header::CONTENT_TYPE).is_some_and(|t| t.starts_with("application/json"));
+    let host = text(header::HOST).unwrap_or("");
+    let hostname = host
+        .rsplit_once(':')
+        .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(host, |(name, _)| name);
+    let literal = hostname == "localhost"
+        || hostname.parse::<std::net::IpAddr>().is_ok()
+        || hostname
+            .strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok());
+    let same_origin = text(header::ORIGIN).is_none_or(|origin| {
+        origin
+            .split_once("://")
+            .is_some_and(|(_, authority)| authority == host)
+    });
+    marked && json && literal && same_origin
+}
+
+async fn save_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !from_the_ui(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "settings can only be saved from the netwatch UI".to_owned(),
+        ));
+    }
+    let targets: Vec<TargetSpec> = serde_json::from_slice(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("not a list of targets: {e}"),
+        )
+    })?;
+    let settings = state.settings.clone();
+    tokio::task::spawn_blocking(move || settings.save(targets))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|message| (StatusCode::UNPROCESSABLE_ENTITY, message))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn target_list(State(state): State<AppState>) -> Json<Vec<TargetView>> {

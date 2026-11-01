@@ -36,6 +36,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 toml = "1"
+toml_edit = "0.25"
 libc = "0.2"
 axum = { version = "0.8", features = ["ws"] }
 rust-embed = { version = "8", features = ["mime-guess"] }

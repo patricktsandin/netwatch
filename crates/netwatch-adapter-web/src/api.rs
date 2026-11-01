@@ -10,7 +10,7 @@ use netwatch_shared::uom::si::time::microsecond;
 use netwatch_shared::{Gauge, Role, WallTime};
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// A role that has samples.
@@ -465,4 +465,37 @@ pub fn concerns(kind: &str, role: Option<Role>, known: &[Role]) -> Vec<String> {
             .collect(),
         (_, role) => vec![role.unwrap_or(Role::Kernel).key()],
     }
+}
+
+/// One target as the settings page edits it (ADR-0035): the file's own values, so
+/// `dns = "system"` stays `system`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct TargetSpec {
+    /// The stable id, or `null` for a new target, which the daemon numbers.
+    pub id: Option<u32>,
+    /// A name for people; `null` for the daemon's default name.
+    pub name: Option<String>,
+    /// `icmp`, `dns`, or `https`.
+    pub kind: String,
+    /// An address for `icmp`; an address or `system` for `dns`; an `https://` URL.
+    pub address: String,
+    /// For `https`: the status the response must have.
+    pub expect_status: Option<u16>,
+    /// For `https`: text the response body must contain.
+    pub expect_body: Option<String>,
+}
+
+/// The settings page's view of the configuration.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct ConfigView {
+    /// The file the daemon loaded, or `null` if it runs on its built-in defaults.
+    pub path: Option<String>,
+    /// Whether saving is possible. If not, `reason` says why.
+    pub editable: bool,
+    /// Why saving isn't possible, if it isn't.
+    pub reason: Option<String>,
+    /// Every configured target, in file order.
+    pub targets: Vec<TargetSpec>,
 }
