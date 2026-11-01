@@ -116,3 +116,4 @@ dialog .spacer { flex: 1; }
 dialog .hint.error { color: var(--failing); white-space: pre-wrap; }
 dialog .danger-zone { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
 dialog button.danger { border-color: var(--failing); color: var(--failing); }
+.identity.public { color: var(--text); border-color: var(--line); }

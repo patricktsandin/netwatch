@@ -33,7 +33,8 @@ export type EventKind =
   | "source-disabled"
   | "clock-jump"
   | "config-drift"
-  | "radio";
+  | "radio"
+  | "public-address";
 
 /** One event, drawn as an event marker on the rows it concerns. */
 export interface Marker {

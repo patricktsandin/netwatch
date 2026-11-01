@@ -113,6 +113,7 @@ const EVENT_KINDS: readonly EventKind[] = [
   "clock-jump",
   "config-drift",
   "radio",
+  "public-address",
 ];
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {
@@ -399,4 +400,10 @@ export function parseConfig(value: unknown): Config {
     reason: nullableString(c.reason, "config.reason"),
     targets: array(c.targets, "config.targets").map(parseTargetSpec),
   };
+}
+
+/** The public identity, in words, from `/api/host`; `null` until known. */
+export function parsePublic(value: unknown): string | null {
+  const host = record<{ public: unknown }>(value, "host");
+  return nullableString(host.public ?? null, "host.public");
 }

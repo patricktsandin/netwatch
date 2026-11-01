@@ -21,7 +21,8 @@
 //! - `DELETE /api/history`: flushes all history (ADR-0038)
 //! - `GET /api/live`: a WebSocket of [`LiveMessage`]s
 //! - `GET /report?from_us=<µs>&until_us=<µs>`: an incident report as a printable page,
-//!   and `GET /report.txt?…` as plain text (ADR-0033)
+//!   `GET /report.txt?…` as plain text (ADR-0033), and `GET /report.csv?…`, the raw
+//!   samples around each episode (ADR-0039)
 //! - everything else: the SPA from `web/dist`, embedded in release builds
 //!
 //! Reads open their own SQLite connection, which WAL mode lets run alongside the
@@ -149,6 +150,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/api/live", get(live_socket))
         .route("/report", get(report_page))
         .route("/report.txt", get(report_text))
+        .route("/report.csv", get(report_csv))
         .fallback(spa)
         .with_state(AppState {
             flush: daemon.flush,
@@ -324,6 +326,8 @@ async fn incidents(
 struct ReportQuery {
     from_us: i64,
     until_us: i64,
+    /// The viewer's offset from UTC in minutes, east positive, for local times.
+    offset_min: Option<i64>,
 }
 
 /// Longest stretch read from raw samples for one episode's evidence. Longer ones use
@@ -362,10 +366,135 @@ fn history_between(
     Ok(rollups)
 }
 
+/// How measurements are taken, for the report (ADR-0009, ADR-0030, ADR-0031, ADR-0034).
+const METHOD: &[&str] = &[
+    "Probes: ICMP echo to each ICMP target every 5 s (2 s timeout); hops 1 to 3 toward each, by TTL-limited \
+     echo every 1 s (0.9 s timeout), hop 1 shared by every target; a DNS query (. IN NS) to each DNS target \
+     every 5 s; an HTTPS GET to each HTTPS target every 10 s (5 s timeout), checked against its expected \
+     status. All probes are pinned to the egress interface.",
+    "A role is degraded when any of its last 12 probes was lost, and failing (an outage) when half or more \
+     were. Loss at a hop that doesn't carry through to the later hops or the target is the router \
+     deprioritizing ICMP, not loss, and is never an incident.",
+    "An incident's probable cause is the most upstream role whose own incident began first (or within 10 s). \
+     An episode is incidents linked by probable cause. Beyond the gateway means it began at hop 2 or further.",
+    "Hop identities are the addresses of the routers that sent ICMP time-exceeded. Times are UTC, from this \
+     host's clock.",
+];
+
+/// The longest episode timeline, before steps grow from a minute to 10 minutes.
+const MINUTE_STEPS_UP_TO_US: i64 = 2 * 3600 * 1_000_000;
+const HOUR_US: i64 = 3600 * 1_000_000;
+const DAY_US: i64 = 24 * HOUR_US;
+
+fn wall_now() -> WallTime {
+    WallTime::from_unix_micros(
+        i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_micros(),
+        )
+        .unwrap_or(i64::MAX),
+    )
+}
+
+fn event_kind_text(kind: &str) -> &str {
+    match kind {
+        "epoch-started" => "identity changed",
+        "epoch-ended" => "identity lost",
+        "desynchronized" => "topology resync started",
+        "resynchronized" => "topology resynchronized",
+        "kernel-log" => "kernel log",
+        "source-disabled" => "source disabled",
+        "clock-jump" => "clock jump",
+        "config-drift" => "sysctl changed",
+        "radio" => "radio changed",
+        "public-address" => "public address",
+        other => other,
+    }
+}
+
+/// Everything the report says about the connection, from current state (ADR-0039).
+fn connection(state: &AppState) -> Vec<(String, String)> {
+    let current = state.current.borrow().clone();
+    let binding = |key: &str| current.bindings.get(key).map(|b| b.identity.clone());
+    let mut facts: Vec<(String, Option<String>)> = vec![
+        ("NIC".to_owned(), binding("nic")),
+        ("Link".to_owned(), current.host.link.clone()),
+        ("Tunnel".to_owned(), binding("tunnel")),
+        ("Local address".to_owned(), binding("local-interface")),
+    ];
+    // Hops by distance and family, each router once.
+    for ttl in 1..=3 {
+        for (family, v6) in [("IPv4", false), ("IPv6", true)] {
+            let mut routers: Vec<String> = current
+                .bindings
+                .iter()
+                .filter(|(key, _)| key.starts_with("hop:") && key.ends_with(&format!(":{ttl}")))
+                .map(|(_, b)| b.identity.clone())
+                .filter(|a| a.contains(':') == v6)
+                .collect();
+            routers.sort();
+            routers.dedup();
+            let what = if ttl == 1 {
+                format!("{family} gateway")
+            } else {
+                format!("{family} hop {ttl}")
+            };
+            facts.push((what, (!routers.is_empty()).then(|| routers.join(", "))));
+        }
+    }
+    facts.push(("Public address".to_owned(), current.host.public.clone()));
+    let resolvers: Vec<String> = state
+        .targets
+        .iter()
+        .filter(|t| t.name.starts_with("system resolver"))
+        .map(|t| t.name.clone())
+        .collect();
+    facts.push((
+        "System resolver".to_owned(),
+        (!resolvers.is_empty()).then(|| resolvers.join(", ")),
+    ));
+    let layers = state.layers.borrow().clone();
+    for (what, key) in [("Wi-Fi", "wifi"), ("Cellular", "cellular")] {
+        facts.push((
+            what.to_owned(),
+            layers.get(key).and_then(|l| l.notes.first().cloned()),
+        ));
+    }
+    facts
+        .into_iter()
+        .filter_map(|(k, v)| Some((k, v?)))
+        .collect()
+}
+
+fn about(state: &AppState) -> Vec<(String, String)> {
+    let host = state.current.borrow().host.clone();
+    let clock = match (host.clock_synchronized, host.clock_error_us) {
+        (Some(true), Some(error)) => Some(format!(
+            "synchronized (estimated error {:.1} ms)",
+            error as f64 / 1000.0
+        )),
+        (Some(true), None) => Some("synchronized".to_owned()),
+        (Some(false), _) => Some("NOT synchronized: timestamps may be off".to_owned()),
+        (None, _) => None,
+    };
+    [
+        ("Host", host.hostname),
+        ("Kernel", host.kernel),
+        ("netwatch", Some(host.version)),
+        ("Clock", clock),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| Some((k.to_owned(), v?)))
+    .collect()
+}
+
 async fn build_report(
     state: &AppState,
     query: ReportQuery,
 ) -> Result<(report::render::Report, BTreeMap<String, String>), (StatusCode, String)> {
+    use report::analysis;
     if query.until_us <= query.from_us {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -376,50 +505,106 @@ async fn build_report(
         WallTime::from_unix_micros(query.from_us),
         WallTime::from_unix_micros(query.until_us),
     );
-    let now = WallTime::from_unix_micros(
-        i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros(),
-        )
-        .unwrap_or(i64::MAX),
-    );
-    let (episodes, summary) = read(state, move |store| {
+    let now = wall_now();
+    let raw_since = now.as_unix_micros() - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * DAY_US;
+    let span = until.as_unix_micros() - from.as_unix_micros();
+    let (period, period_us) = if span <= 7 * DAY_US {
+        ("Hour", HOUR_US)
+    } else {
+        ("Day", DAY_US)
+    };
+    let (episodes, summary, periods, events) = read(state, move |store| {
         let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
-        let identities = store.epoch_identities(from, until)?;
-        let episodes = report::episodes(&store.incidents(from, until)?)
-            .into_iter()
-            .map(|episode| {
-                let end = episode.ended.unwrap_or(until).min(until);
-                let on_path = report::roles_on_paths(&episode.affected, &known);
-                let evidence: Vec<_> = history_between(store, episode.started.max(from), end, now)?
+        let identities = store.epoch_identities(
+            WallTime::from_unix_micros(from.as_unix_micros() - HOUR_US),
+            until,
+        )?;
+        let mut episodes = Vec::new();
+        for episode in report::episodes(&store.incidents(from, until)?) {
+            let start = episode.started.max(from);
+            let end = episode.ended.unwrap_or(until).min(until);
+            let on_path = report::roles_on_paths(&episode.affected, &known);
+            let on = |r: &netwatch_history::Rollup| on_path.contains(&r.role);
+            let evidence: Vec<_> = history_between(store, start, end, now)?
+                .into_iter()
+                .filter(on)
+                .collect();
+            // The hour before the episode itself began, which may be before the span.
+            let before_from =
+                WallTime::from_unix_micros(episode.started.as_unix_micros() - HOUR_US);
+            let before: Vec<_> = history_between(store, before_from, episode.started, now)?
+                .into_iter()
+                .filter(on)
+                .collect();
+            let before = report::path_stats(&before, &identities)
+                .into_iter()
+                .filter_map(|s| Some((s.role, s.median_ms?)))
+                .collect();
+            let raw = start.as_unix_micros() >= raw_since;
+            let step_us = if end.as_unix_micros() - start.as_unix_micros() <= MINUTE_STEPS_UP_TO_US
+            {
+                60_000_000
+            } else {
+                600_000_000
+            };
+            let (reasons, timeline) = if raw {
+                let samples: Vec<_> = store
+                    .samples_between(
+                        start,
+                        end.min(WallTime::from_unix_micros(
+                            start.as_unix_micros() + RAW_EVIDENCE_LIMIT_US,
+                        )),
+                    )?
                     .into_iter()
-                    .filter(|r| on_path.contains(&r.role))
+                    .filter(|s| on_path.contains(&s.role))
                     .collect();
-                Ok((episode, report::path_stats(&evidence, &identities)))
+                let mut targets: Vec<Role> = episode
+                    .affected
+                    .iter()
+                    .filter(|r| matches!(r, Role::Target(_)))
+                    .cloned()
+                    .collect();
+                if targets.is_empty() {
+                    targets.clone_from(&episode.affected);
+                }
+                (
+                    analysis::loss_reasons(&samples),
+                    analysis::timeline(&samples, &episode.cause, &targets, start, step_us),
+                )
+            } else {
+                (BTreeMap::new(), Vec::new())
+            };
+            episodes.push(report::render::EpisodeReport {
+                path: report::path_stats(&evidence, &identities),
+                episode,
+                before,
+                reasons,
+                timeline,
+                step_us,
+                raw,
+            });
+        }
+        let history = history_between(store, from, until, now)?;
+        let summary = report::path_stats(&history, &identities);
+        let targets: Vec<&netwatch_history::Rollup> = history
+            .iter()
+            .filter(|r| matches!(r.role, Role::Target(_)))
+            .collect();
+        let periods = analysis::by_period(&targets, period_us);
+        let events: Vec<report::render::EventLine> = store
+            .events(from)?
+            .into_iter()
+            .filter(|e| e.at < until)
+            .map(|e| report::render::EventLine {
+                at: e.at,
+                kind: event_kind_text(&e.kind).to_owned(),
+                role: e.role.as_deref().and_then(Role::from_key),
+                detail: e.detail.unwrap_or_default(),
             })
-            .collect::<Result<Vec<_>, netwatch_adapter_sqlite::StoreError>>()?;
-        let summary = report::path_stats(&history_between(store, from, until, now)?, &identities);
-        Ok((episodes, summary))
+            .collect();
+        Ok((episodes, summary, periods, events))
     })
     .await?;
-    let current = state.current.borrow().clone();
-    let identity = |key: &str| current.bindings.get(key).map(|b| b.identity.clone());
-    let gateway = current
-        .bindings
-        .iter()
-        .find(|(key, _)| key.starts_with("hop:") && key.ends_with(":1"))
-        .map(|(_, b)| b.identity.clone());
-    let host = [
-        ("NIC", identity("nic")),
-        ("Tunnel", identity("tunnel")),
-        ("Address", identity("local-interface")),
-        ("Gateway", gateway),
-    ]
-    .into_iter()
-    .filter_map(|(what, id)| id.map(|id| (what.to_owned(), id)))
-    .collect();
     let names = state
         .targets
         .iter()
@@ -430,9 +615,19 @@ async fn build_report(
             from,
             until,
             generated: now,
-            host,
+            utc_offset_s: query.offset_min.unwrap_or(0).clamp(-24 * 60, 24 * 60) * 60,
+            about: about(state),
+            connection: connection(state),
+            method: METHOD.iter().map(|m| (*m).to_owned()).collect(),
             episodes,
             summary,
+            periods,
+            period,
+            events,
+            csv_href: format!(
+                "/report.csv?from_us={}&until_us={}",
+                query.from_us, query.until_us
+            ),
         },
         names,
     ))
@@ -460,6 +655,64 @@ async fn report_text(
     Ok((
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
         report::render::text(&report, &label),
+    )
+        .into_response())
+}
+
+/// How much before and after each episode the CSV includes.
+const CSV_MARGIN_US: i64 = 2 * 60 * 1_000_000;
+
+/// The raw samples around every episode in the span, as CSV (ADR-0039).
+async fn report_csv(
+    State(state): State<AppState>,
+    Query(query): Query<ReportQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let (from, until) = (
+        WallTime::from_unix_micros(query.from_us),
+        WallTime::from_unix_micros(query.until_us),
+    );
+    let (samples, identities) = read(&state, move |store| {
+        // Each episode's window, and only the roles on its affected paths, as in the
+        // report's path tables.
+        let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
+        let mut samples = Vec::new();
+        for e in report::episodes(&store.incidents(from, until)?) {
+            let end = e.ended.unwrap_or(until).min(until).as_unix_micros();
+            let start = e.started.max(from).as_unix_micros() - CSV_MARGIN_US;
+            let end = (end + CSV_MARGIN_US).min(start + RAW_EVIDENCE_LIMIT_US);
+            let on_path = report::roles_on_paths(&e.affected, &known);
+            samples.extend(
+                store
+                    .samples_between(
+                        WallTime::from_unix_micros(start),
+                        WallTime::from_unix_micros(end),
+                    )?
+                    .into_iter()
+                    .filter(|s| on_path.contains(&s.role)),
+            );
+        }
+        // Overlapping windows read some samples twice.
+        samples.sort_by(|a, b| (a.at, &a.role).cmp(&(b.at, &b.role)));
+        samples.dedup_by(|a, b| a.at == b.at && a.role == b.role);
+        let identities = store.epoch_identities(from, until)?;
+        Ok((samples, identities))
+    })
+    .await?;
+    let names: BTreeMap<String, String> = state
+        .targets
+        .iter()
+        .map(|t| (t.key.clone(), t.name.clone()))
+        .collect();
+    let label = |role: &Role| report::label(role, &names);
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"netwatch-samples.csv\"",
+            ),
+        ],
+        report::analysis::csv(&samples, &identities, &label),
     )
         .into_response())
 }

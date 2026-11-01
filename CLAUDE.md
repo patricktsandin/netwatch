@@ -33,9 +33,12 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
 - **Incidents** (ADR-0031, ADR-0034): every grading opens, escalates, and closes
   incidents, with a probable cause that began first. They are stored forever, and
   `specs/incidents.qnt` holds the tracker.
-- **Incident reports** (ADR-0033): `/report` and `/report.txt` group incidents into
-  episodes along cause links, placed beyond the gateway or on this host or LAN, with
-  path evidence.
+- **Incident reports** (ADR-0033, ADR-0039): `/report`, `/report.txt`, and
+  `/report.csv`. They cover the host, clock, connection, public identity, and summary
+  with availability; episodes along cause links, with path evidence, baselines, loss
+  reasons, and timelines; loss and RTT by hour; events; and the method.
+- **Host facts** (ADR-0039): the public identity from Cloudflare's trace every 5 min
+  (in the header), and the NIC's link facts and carrier flaps.
 - **Settings** (ADR-0035): targets are editable in the UI. The daemon rewrites its
   config file in place, then re-executes itself.
 - **UI:**

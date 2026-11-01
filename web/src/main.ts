@@ -18,6 +18,7 @@ import {
   parseStatuses,
   parseBindings,
   parseGauges,
+  parsePublic,
   parseIncidents,
   parseReadingRollups,
   parseReadings,
@@ -80,6 +81,8 @@ let names: ReadonlyMap<string, string> = new Map();
 let statuses: ReadonlyMap<RoleKey, Status> = new Map();
 let bindings: ReadonlyMap<RoleKey, Binding> = new Map();
 let zoom: { min: number; max: number } | null = null;
+/** This host's public address and where it enters Cloudflare (ADR-0039). */
+let publicIdentity: string | null = null;
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
 
@@ -281,6 +284,7 @@ function renderIdentities(): void {
   const el = document.getElementById("identities");
   if (el === null) return;
   el.replaceChildren(
+    ...(publicIdentity === null ? [] : [element("span", "identity public", `public: ${publicIdentity}`)]),
     ...[...bindings.entries()]
       .filter(([role]) => !role.startsWith("target") && !role.startsWith("hop"))
       .map(([role, b]) => element("span", "identity", `${role}: ${b.identity} (epoch ${String(b.epoch)})`)),
@@ -310,6 +314,7 @@ async function backfill(from: Micros): Promise<void> {
   gauges = parseGauges(await fetchJson("/api/gauges"));
   statuses = parseStatuses(await fetchJson("/api/status"));
   bindings = parseBindings(await fetchJson("/api/bindings"));
+  publicIdentity = parsePublic(await fetchJson("/api/host"));
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);
@@ -386,6 +391,14 @@ function connect(): void {
           break;
         case "event":
           markers.push(live.marker);
+          if (live.marker.kind === "public-address") {
+            void fetchJson("/api/host")
+              .then((host) => {
+                publicIdentity = parsePublic(host);
+                renderIdentities();
+              })
+              .catch(report);
+          }
           renderIdentities();
           for (const key of live.marker.concerns) redraw(key);
           break;
@@ -520,7 +533,12 @@ reportDialog?.addEventListener("close", () => {
   const path = { page: "/report", text: "/report.txt" }[reportDialog.returnValue];
   if (path === undefined) return;
   const micros = (input: HTMLInputElement): number => new Date(input.value).getTime() * 1000;
-  open(`${path}?from_us=${String(micros(from))}&until_us=${String(micros(until))}`, "_blank");
+  // The viewer's offset, so the report can show local times beside UTC.
+  const offset = -new Date().getTimezoneOffset();
+  open(
+    `${path}?from_us=${String(micros(from))}&until_us=${String(micros(until))}&offset_min=${String(offset)}`,
+    "_blank",
+  );
 });
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {

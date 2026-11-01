@@ -7,6 +7,7 @@
 //! role on the affected paths measured meanwhile ([`PathStats`]). [`render`] writes
 //! the result as text and HTML.
 
+pub mod analysis;
 pub mod render;
 
 use std::collections::BTreeMap;
@@ -226,9 +227,14 @@ pub fn path_stats(
                 .iter()
                 .max_by_key(|&(_, &count)| count)
                 .map(|(epoch, _)| *epoch);
+            // A target's epoch is its pin's (ADR-0020): the interface it left by, which
+            // says nothing about the target, so targets show none.
+            let identity = most
+                .filter(|_| !matches!(role, Role::Target(_)))
+                .and_then(|e| identities.get(&e).cloned());
             PathStats {
                 role,
-                identity: most.and_then(|e| identities.get(&e).cloned()),
+                identity,
                 sent: acc.summary.count,
                 lost: acc.summary.lost,
                 median_ms: acc.histogram.quantile_us(0.5).map(|us| us as f64 / 1000.0),
