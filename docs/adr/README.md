@@ -45,3 +45,4 @@ to "Superseded".
 | [0037](0037-drop-reasons-by-reason-only.md) | Drop reasons are counted by reason only | Accepted |
 | [0038](0038-flushing-history.md) | Flushing all history from the UI | Accepted |
 | [0039](0039-a-complete-noc-report.md) | A complete NOC report, and the facts it needs | Accepted |
+| [0040](0040-path-traces-router-names-and-ticket-details.md) | Path traces, router names, and ticket details | Accepted |

@@ -132,6 +132,18 @@ words are defined elsewhere in this file.
   the target's *egress path* changes.
 - **Suspected rate limiting**: loss at a *hop* that doesn't carry through to later hops.
   It is shown as such, never as loss.
+- **Path trace**: a one-off TTL sweep toward a *target*'s address, beyond the *hops*
+  measured continuously, recording who answered at each TTL (ADR-0040). A *routine
+  trace* runs at startup and every 6 h; an *episode trace* runs when an *incident*
+  opens on the target or on one of its hops beyond hop 1.
+- **Trace schedule**: decides when each *target* is traced: routine traces, episode
+  traces at most once per cooldown, and never two at once (`specs/traces.qnt`).
+- **Router name**: what a *responding address* is called: its PTR name, and its *origin
+  AS* (ADR-0040).
+- **Origin AS**: the autonomous system that announces the prefix an address is in:
+  whose network a *hop* is in.
+- **First public hop**: the first *hop* whose address isn't private, shared, or
+  link-local: most likely where the ISP's network begins.
 - **Target**: a user-configured endpoint probed by an *echo probe*, *DNS probe*, or
   *HTTP probe*.
 - **Timestamp source**: where a receive time came from: a kernel timestamp
@@ -177,6 +189,10 @@ words are defined elsewhere in this file.
   loss, min, average, max, p50, p95, p99, and jitter. Rollups merge (see *merge*).
 - **Merge**: combining two *rollups* of adjacent intervals into one. It is associative
   and commutative, and proven in the *verified crate*.
+- **Jitter**: the mean absolute difference between consecutive answered RTTs of one
+  *role* (RFC 3550's interarrival jitter, unsmoothed).
+- **Loss burst**: a run of consecutive lost *probes* of one *role*. Its length is the
+  number of probes in the run.
 - **Retention**: how long each *tier* is kept: raw 7 days, 1m 90 days, 1h indefinitely.
 
 ## Presentation
@@ -205,6 +221,9 @@ words are defined elsewhere in this file.
   when its *probable cause* is at or before hop 1, and *beyond the gateway* otherwise.
 - **Incident report**: a printable account of the *episodes* in a time span, with path
   evidence for each, for sending to an ISP (ADR-0033).
+- **Ticket details**: the customer's account number, service address, contact, ISP
+  ticket reference, and description, typed in for one *incident report*. Never stored
+  by the daemon (ADR-0040).
 - **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
 - **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
   at that time.

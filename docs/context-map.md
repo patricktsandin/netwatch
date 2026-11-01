@@ -10,8 +10,8 @@ the map changes, the layout changes in the same commit. Terms are defined in
 | Context | Kind | Owns | Crate |
 |---|---|---|---|
 | **Topology** | Core | egress paths, roles → identities, identity epochs, topology events | `netwatch-topology` |
-| **Probing** | Core | probe streams, cadence, probe lifecycle, reply matching, hop discovery, stream sharing | `netwatch-probing` |
-| **Host health** | Supporting | telemetry sources, counters, gauges, drop reasons, kernel log lines, suspend gaps, clock health, config drift | `netwatch-host-health` |
+| **Probing** | Core | probe streams, cadence, probe lifecycle, reply matching, hop discovery, stream sharing, path traces and the trace schedule | `netwatch-probing` |
+| **Host health** | Supporting | telemetry sources, counters, gauges, drop reasons, kernel log lines, suspend gaps, clock health, config drift, public identity, link facts, router names | `netwatch-host-health` |
 | **History** | Supporting | samples, tiers, rollups, merge, retention | `netwatch-history` |
 | **Presentation** | Generic | rows, status, read models, live stream, backfill | `netwatch-adapter-web` + `web/` |
 
