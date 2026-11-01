@@ -94,6 +94,15 @@ Where the implementation sharpened the original map:
 - **Presentation reads behind a flush barrier.** Every API read first flushes the
   History writer, so a backfill never misses a sample that the live stream already
   sent (ADR-0029).
+- **Radios are roles off the path** (ADR-0036). The netlink adapter reads nl80211, and
+  `netwatch-adapter-modem` reads ModemManager. Host health grades both, and their
+  values are gauge readings, which History stores beside samples (ADR-0032).
+- **Drop reasons are kernel counters** (ADR-0037). `netwatch-adapter-ebpf` loads
+  `netwatch-ebpf` and feeds its counts into the kernel layer's `CounterWatch`, like
+  any `/proc` counter.
+- **Incidents come from Probing's grading** (ADR-0031, ADR-0034). History stores
+  them, and Presentation groups them into episodes for reports (ADR-0033). Grouping
+  is presentation, so it stays out of the domain crates.
 - **Configuration is the composition root's.** `netwatch::config` parses the TOML file
   into validated targets. No domain crate knows the file exists.
 

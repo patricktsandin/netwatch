@@ -48,8 +48,12 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
 - **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, and
   `incidents.qnt`, all TLC-exhaustive and conformance-tested.
 
-Next: Wi-Fi (nl80211) and cellular (ModemManager) gauges, then eBPF drop reasons
-(ADR-0008).
+- **Radios** (ADR-0036): `wifi` and `cellular` roles, off the path, graded every 5 s
+  from nl80211 and ModemManager, with gauges and attachment-change events.
+- **Drop reasons** (ADR-0037): an eBPF program on `tp_btf/kfree_skb`, counted by
+  reason and named from BTF, feeding the kernel layer. Build it with nightly and
+  `bpf-linker` (aya-build runs from `netwatch-adapter-ebpf`'s build script; it is the
+  one non-default workspace member). The capability test runs with `--ignored`.
 
 Deliberately left unbuilt for now:
 - persisting and graphing HTTPS phase timings, and the `colo=` identity
