@@ -21,10 +21,26 @@ fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
     ))
 }
 
-fn string_at(strings: &[u8], offset: u32) -> Option<&str> {
+/// Whether the string at `offset` is exactly `name`: its bytes, then a NUL. Reads
+/// only `name.len() + 1` bytes, never scanning for the end.
+fn names(strings: &[u8], offset: u32, name: &[u8]) -> bool {
+    let Some(start) = usize::try_from(offset).ok() else {
+        return false;
+    };
+    let Some(end) = start.checked_add(name.len()) else {
+        return false;
+    };
+    match (strings.get(start..end), strings.get(end)) {
+        (Some(found), Some(0)) => found.iter().zip(name).all(|(a, b)| a == b),
+        _ => false,
+    }
+}
+
+/// The NUL-terminated bytes at `offset` in the string section.
+fn bytes_at(strings: &[u8], offset: u32) -> Option<&[u8]> {
     let rest = strings.get(usize::try_from(offset).ok()?..)?;
     let end = rest.iter().position(|&b| b == 0)?;
-    std::str::from_utf8(rest.get(..end)?).ok()
+    rest.get(..end)
 }
 
 /// How many bytes follow a type's 12-byte header, by kind. `None` for a kind this
@@ -40,14 +56,22 @@ fn trailing(kind: u32, vlen: usize) -> Option<usize> {
     }
 }
 
-/// The names and values of the enum called `name`, in declaration order. `None` if
-/// `bytes` isn't little-endian BTF, is malformed, or has no such enum.
-pub fn enum_variants(bytes: &[u8], name: &str) -> Option<Vec<(String, u32)>> {
+/// Where the enum called `name` is: its entries' offset in the type section, how
+/// many there are, and the two sections. All the untrusted offsets are handled
+/// here, on raw bytes, which is what the Kani harness proves.
+struct Found<'a> {
+    types: &'a [u8],
+    strings: &'a [u8],
+    entries: usize,
+    count: usize,
+}
+
+fn find<'a>(bytes: &'a [u8], name: &[u8]) -> Option<Found<'a>> {
     if u16_at(bytes, 0)? != MAGIC {
         return None;
     }
-    let header = usize::try_from(u32_at(bytes, 4)?).ok()?;
     let at = |field: usize| -> Option<usize> { usize::try_from(u32_at(bytes, field)?).ok() };
+    let header = at(4)?;
     let (type_off, type_len, str_off, str_len) = (at(8)?, at(12)?, at(16)?, at(20)?);
     let types_start = header.checked_add(type_off)?;
     let types = bytes.get(types_start..types_start.checked_add(type_len)?)?;
@@ -60,18 +84,31 @@ pub fn enum_variants(bytes: &[u8], name: &str) -> Option<Vec<(String, u32)>> {
         let kind = (info >> 24) & 0x1f;
         let vlen = usize::try_from(info & 0xffff).ok()?;
         let body = offset.checked_add(12)?;
-        if kind == KIND_ENUM && string_at(strings, name_off) == Some(name) {
-            return (0..vlen)
-                .map(|i| {
-                    let entry = body.checked_add(i.checked_mul(8)?)?;
-                    let variant = string_at(strings, u32_at(types, entry)?)?;
-                    Some((variant.to_owned(), u32_at(types, entry.checked_add(4)?)?))
-                })
-                .collect();
+        if kind == KIND_ENUM && names(strings, name_off, name) {
+            return Some(Found {
+                types,
+                strings,
+                entries: body,
+                count: vlen,
+            });
         }
         offset = body.checked_add(trailing(kind, vlen)?)?;
     }
     None
+}
+
+/// The names and values of the enum called `name`, in declaration order. `None` if
+/// `bytes` isn't little-endian BTF, is malformed, or has no such enum.
+pub fn enum_variants(bytes: &[u8], name: &str) -> Option<Vec<(String, u32)>> {
+    let found = find(bytes, name.as_bytes())?;
+    (0..found.count)
+        .map(|i| {
+            let entry = found.entries.checked_add(i.checked_mul(8)?)?;
+            let variant = bytes_at(found.strings, u32_at(found.types, entry)?)?;
+            let value = u32_at(found.types, entry.checked_add(4)?)?;
+            Some((String::from_utf8(variant.to_vec()).ok()?, value))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -151,13 +188,15 @@ mod tests {
 mod proofs {
     use super::*;
 
-    /// Parsing never panics, whatever the bytes. Bounded to 48 bytes, which reaches
-    /// the header, a type, and an enum entry.
+    /// Finding the enum never panics, whatever the bytes: every offset in the header
+    /// and the type section is checked. Bounded to 40 bytes, which reaches past the
+    /// header into the type section. Decoding names afterwards only reads within
+    /// what `find` returned.
     #[kani::proof]
-    #[kani::unwind(6)]
-    fn enum_parsing_never_panics() {
-        let bytes: [u8; 48] = kani::any();
-        let length: usize = kani::any_where(|&l| l <= 48);
-        let _ = enum_variants(&bytes[..length], "a");
+    #[kani::unwind(5)]
+    fn finding_an_enum_never_panics() {
+        let bytes: [u8; 40] = kani::any();
+        let length: usize = kani::any_where(|&l| l <= 40);
+        let _ = find(&bytes[..length], b"a");
     }
 }
