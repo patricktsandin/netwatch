@@ -74,6 +74,11 @@ words are defined elsewhere in this file.
 - **Radio role**: `wifi` or `cellular`: a wireless device, whether it carries the
   *egress path* or stands by as a backup (ADR-0036). Radio roles are off the path:
   neither *upstream* nor *downstream* of anything.
+- **Public identity**: the address this host's traffic leaves the ISP with, and the
+  anycast site (`colo`) and country where it enters Cloudflare, read from Cloudflare's
+  trace page (ADR-0039).
+- **Link facts**: a NIC's negotiated speed, duplex, driver, MTU, and carrier-change
+  count, read from sysfs (ADR-0039).
 - **BSSID**: the identity of the Wi-Fi access point a wireless NIC is connected to.
 - **Serving cell**: the identity of the cell a cellular NIC is attached to.
 - **Point of presence**: the anycast site that answered a *target*, such as Cloudflare's
