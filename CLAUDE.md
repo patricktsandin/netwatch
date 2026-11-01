@@ -28,26 +28,39 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - Both graded every 1 s.
   - Kernel log lines (with `CAP_SYSLOG`), wall-clock jumps, and network sysctl
     changes become event markers. Clock sync state comes from `adjtimex`.
-- **History:** raw samples (7 days), plus 1m (90 days) and 1h (forever) rollups merged
-  with the verified algebra.
+- **History:** raw samples and gauge readings (7 days), plus 1m (90 days) and 1h
+  (forever) rollups, merged with the verified algebra. NIC throughput is a gauge.
+- **Incidents** (ADR-0031, ADR-0034): every grading opens, escalates, and closes
+  incidents, with a probable cause that began first. They are stored forever, and
+  `specs/incidents.qnt` holds the tracker.
+- **Incident reports** (ADR-0033): `/report` and `/report.txt` group incidents into
+  episodes along cause links, placed beyond the gateway or on this host or LAN, with
+  path evidence.
+- **Settings** (ADR-0035): targets are editable in the UI. The daemon rewrites its
+  config file in place, then re-executes itself.
 - **UI:**
-  - A layered stack with 1 h / 24 h / 30 d ranges.
+  - A layered stack with 1 h / 24 h / 30 d ranges, an RTT chart per role, and a
+    gauge chart per unit.
   - A live stream with backfill behind a flush barrier.
-  - Epoch and kernel-log markers, and rate-limit-aware hop status.
-- **Specs:** `topology.qnt`, `probing.qnt`, and `live_backfill.qnt`, all
-  TLC-exhaustive and conformance-tested.
+  - Incident bands, event markers only on the rows they concern, hover tooltips, and
+    rate-limit-aware hop status.
+  - Report and Settings dialogs.
+- **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, and
+  `incidents.qnt`, all TLC-exhaustive and conformance-tested.
 
-Not yet built, roughly in priority order:
+Next: Wi-Fi (nl80211) and cellular (ModemManager) gauges, then eBPF drop reasons
+(ADR-0008).
+
+Deliberately left unbuilt for now:
 - persisting and graphing HTTPS phase timings, and the `colo=` identity
-- IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC),
-  and IPv6 DNS/HTTPS targets
-- ethtool driver stats, Wi-Fi (nl80211), cellular (ModemManager)
-- percentile bands on the rollup charts, and pan/zoom into history beyond the
-  selected range
+- IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC)
+- ethtool driver stats and qdisc stats
+- percentile bands on the rollup charts, and pan/zoom beyond the selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
-- eBPF drop reasons and qdisc stats (ADR-0008)
-- runtime target management through the API
 - kernel receive timestamps (`SO_TIMESTAMPING`)
+
+Two daemons on one host (say, the service and a dev build) share the gateway's ICMP
+rate limit, about one reply per second, so one of them sees hop 1 go silent.
 
 ## Non-negotiables
 
