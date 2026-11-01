@@ -41,3 +41,4 @@ to "Superseded".
 | [0033](0033-incident-reports.md) | Incident reports for an ISP | Accepted |
 | [0034](0034-causes-come-first.md) | A probable cause comes first, and episodes follow causes | Accepted |
 | [0035](0035-configuration-from-the-ui.md) | Configuring targets from the UI | Accepted |
+| [0036](0036-radio-roles.md) | Radio roles: Wi-Fi and cellular, carrying traffic or standing by | Accepted |

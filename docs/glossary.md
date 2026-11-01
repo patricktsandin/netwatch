@@ -71,6 +71,9 @@ words are defined elsewhere in this file.
 - **Tunnel endpoint**: the remote address of a *tunnel*. Its own *egress path* identifies
   the NIC underneath.
 - **Gateway**: the next-hop router on an *egress path*.
+- **Radio role**: `wifi` or `cellular`: a wireless device, whether it carries the
+  *egress path* or stands by as a backup (ADR-0036). Radio roles are off the path:
+  neither *upstream* nor *downstream* of anything.
 - **BSSID**: the identity of the Wi-Fi access point a wireless NIC is connected to.
 - **Serving cell**: the identity of the cell a cellular NIC is attached to.
 - **Point of presence**: the anycast site that answered a *target*, such as Cloudflare's
