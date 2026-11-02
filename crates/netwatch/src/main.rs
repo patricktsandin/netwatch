@@ -200,7 +200,8 @@ async fn main() -> anyhow::Result<()> {
         Time::new::<second>(0.9),
         SequenceSpace::ICMP,
     )
-    .context("hop stream configuration")?;
+    .context("hop stream configuration")?
+    .ttl_limited();
     // The stack baseline (ADR-0008): ICMP echo over loopback, which the kernel always
     // numbers ifindex 1 (LOOPBACK_IFINDEX).
     let loopback = Identity::Interface {
@@ -363,8 +364,10 @@ async fn main() -> anyhow::Result<()> {
             tracer.start(request, destination);
         }
     };
-    // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
-    let mut last_clocks = (clock.wall_now(), clock.now());
+    // Wall-clock jumps and changes to network sysctls are events (ADR-0008). The wall
+    // clock is held against the time since boot, which a suspend doesn't stop.
+    let since_boot = || netwatch_adapter_procfs::since_boot().unwrap_or_default();
+    let mut last_clocks = (clock.wall_now(), since_boot());
     let mut last_sysctls = netwatch_adapter_procfs::sysctls();
     // Network-relevant kernel log lines become event markers (ADR-0008). Reading the
     // log needs CAP_SYSLOG; without it the source is disabled, and says so (ADR-0007).
@@ -424,11 +427,11 @@ async fn main() -> anyhow::Result<()> {
                         &layers_tx,
                     ),
                 );
-                let clocks = (clock.wall_now(), clock.now());
+                let clocks = (clock.wall_now(), since_boot());
                 let wall_us = clocks.0.as_unix_micros() - last_clocks.0.as_unix_micros();
-                let monotonic_us = i64::try_from(clocks.1.as_nanos().saturating_sub(last_clocks.1.as_nanos()) / 1_000).unwrap_or(i64::MAX);
-                if (wall_us - monotonic_us).abs() > 1_000_000 {
-                    let jump_s = (wall_us - monotonic_us) as f64 / 1e6;
+                let boot_us = i64::try_from(clocks.1.saturating_sub(last_clocks.1).as_micros()).unwrap_or(i64::MAX);
+                if (wall_us - boot_us).abs() > 1_000_000 {
+                    let jump_s = (wall_us - boot_us) as f64 / 1e6;
                     tracing::warn!(jump_s, "wall clock jumped");
                     recorder.note("clock-jump", Role::Kernel, format!("wall clock jumped by {jump_s:+.1} s"));
                 }
@@ -445,6 +448,18 @@ async fn main() -> anyhow::Result<()> {
                     Identity::Interface { index, .. } => Some(index),
                     Identity::Address(_) => None,
                 });
+                if nic.is_none() && nic_watch.take().is_some() {
+                    // No NIC carries the path now (a tunnel, or no route): its last
+                    // grade and link facts describe an interface no longer measured.
+                    layer_health.remove(&Role::Nic);
+                    layers_tx.send_modify(|all| {
+                        all.remove(&Role::Nic.key());
+                    });
+                    current_tx.send_modify(|c| {
+                        c.host.link = None;
+                        c.host.link_speed_mbps = None;
+                    });
+                }
                 if let Some(index) = nic {
                     if nic_watch.as_ref().is_none_or(|(watched, _, _)| *watched != index) {
                         nic_watch = Some((index, CounterWatch::new(NIC_RULES), Throughput::default()));
@@ -581,6 +596,15 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(update) = radios.recv() => {
                 let (role, identity, report) = match update {
+                    // Its last grade describes a radio no longer read.
+                    radio::Update::Gone(role) => {
+                        layer_health.remove(&role);
+                        layers_tx.send_modify(|all| {
+                            all.remove(&role.key());
+                        });
+                        attachments.remove(&role);
+                        continue;
+                    }
                     radio::Update::Wifi(device) => (
                         Role::Wifi,
                         Some(Identity::Interface { index: device.index, name: device.name }),

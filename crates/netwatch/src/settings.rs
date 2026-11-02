@@ -142,14 +142,8 @@ impl FileSettings {
     fn next_id(&self, text: &str) -> anyhow::Result<u32> {
         let in_file = specs(text)?.iter().filter_map(|t| t.id).max();
         let in_history = netwatch_adapter_sqlite::Store::open(&self.database)?
-            .roles()?
-            .into_iter()
-            .filter_map(|(role, _)| match role {
-                netwatch_shared::Role::Target(id)
-                | netwatch_shared::Role::Hop { target: id, .. } => Some(id.get()),
-                _ => None,
-            })
-            .max();
+            .highest_target_id()?
+            .map(netwatch_shared::TargetId::get);
         Ok(in_file.max(in_history).map_or(1, |id| id.saturating_add(1)))
     }
 }

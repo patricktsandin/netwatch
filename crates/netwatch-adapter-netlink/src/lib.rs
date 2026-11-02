@@ -85,8 +85,18 @@ fn run(monitor: &Socket, observations: &mpsc::Sender<Observation>) -> io::Result
 }
 
 /// Resolves the egress path now and sends the global roles' complete state.
+///
+/// A resolution that fails sends nothing, rather than ending the watcher: it races a
+/// change in progress (a link deleted between the route and link lookups), and the
+/// notification of that change resolves again. Only a closed consumer is an error.
 fn publish(observations: &mpsc::Sender<Observation>) -> io::Result<()> {
-    let path = resolve_egress()?;
+    let path = match resolve_egress() {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%error, "egress resolution failed; waiting for the next change");
+            return Ok(());
+        }
+    };
     for observation in egress::observations(path.as_ref()) {
         send(observations, observation)?;
     }

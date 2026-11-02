@@ -74,11 +74,11 @@ impl ProbeSocket {
     /// [`SendFailure`], never as an error: a failed send is an outcome (ADR-0015).
     pub fn send(&self, sequence: ProbeSequence, token: ProbeIndex) -> Result<(), SendFailure> {
         let packet = icmp::echo_request(self.family, sequence, token);
-        self.socket
-            .get_ref()
-            .send_to(&packet, &self.destination.into())
-            .map(drop)
-            .map_err(send_failure)
+        send_once(|| {
+            self.socket
+                .get_ref()
+                .send_to(&packet, &self.destination.into())
+        })
     }
 
     /// Waits for the next reply or ICMP error that answers one of our probes.
@@ -109,7 +109,10 @@ impl ProbeSocket {
         // `Read` for `&Socket` fills an initialized buffer, which avoids socket2's
         // `MaybeUninit`-based `recv`.
         let mut reader = socket;
-        let len = io::Read::read(&mut reader, &mut buffer)?;
+        let len = match io::Read::read(&mut reader, &mut buffer) {
+            Err(e) if is_pending_icmp_error(&e) => return Ok(None),
+            other => other?,
+        };
         Ok(
             icmp::parse_echo_reply(self.family, &buffer[..len]).map(|reply| Received {
                 reply,
@@ -119,33 +122,80 @@ impl ProbeSocket {
     }
 
     fn read_error(&self, socket: &Socket) -> io::Result<Option<Received>> {
-        let mut data = [MaybeUninit::<u8>::uninit(); 256];
-        let mut control = [MaybeUninit::<u8>::uninit(); 256];
-        let mut buffers = [MaybeUninitSlice::new(&mut data)];
-        let mut message = MsgHdrMut::new()
-            .with_buffers(&mut buffers)
-            .with_control(&mut control);
-        let len = socket.recvmsg(&mut message, libc::MSG_ERRQUEUE)?;
-        let control_len = message.control_len();
-        let data: Vec<u8> = initialized(&data, len);
-        let control: Vec<u8> = initialized(&control, control_len);
-        let Some(error) = errqueue::parse(&control) else {
-            return Ok(None);
-        };
-        let Some(kind) = icmp::error_kind(self.family, error.icmp_type, error.icmp_code) else {
-            return Ok(None);
-        };
-        Ok(
-            icmp::parse_own_request(self.family, &data).map(|(sequence, token)| Received {
-                reply: Reply {
-                    sequence,
-                    token,
-                    kind,
-                },
-                responder: error.offender,
-            }),
-        )
+        read_error(socket, self.family, |own| {
+            icmp::parse_own_request(self.family, own)
+        })
     }
+}
+
+/// Reads one ICMP error from `socket`'s error queue (`IP_RECVERR`). The kernel quotes
+/// our original packet with it, and `own` parses that quote into the sequence and
+/// token of the probe it answers, so the error is matched exactly (ADR-0023). `None`
+/// for an error that isn't an answer to one of our probes.
+pub(crate) fn read_error(
+    socket: &Socket,
+    family: Family,
+    own: impl Fn(&[u8]) -> Option<(ProbeSequence, Option<ProbeIndex>)>,
+) -> io::Result<Option<Received>> {
+    let mut data = [MaybeUninit::<u8>::uninit(); 256];
+    let mut control = [MaybeUninit::<u8>::uninit(); 256];
+    let mut buffers = [MaybeUninitSlice::new(&mut data)];
+    let mut message = MsgHdrMut::new()
+        .with_buffers(&mut buffers)
+        .with_control(&mut control);
+    let len = socket.recvmsg(&mut message, libc::MSG_ERRQUEUE)?;
+    let control_len = message.control_len();
+    let data: Vec<u8> = initialized(&data, len);
+    let control: Vec<u8> = initialized(&control, control_len);
+    let Some(error) = errqueue::parse(&control) else {
+        return Ok(None);
+    };
+    let Some(kind) = icmp::error_kind(family, error.icmp_type, error.icmp_code) else {
+        return Ok(None);
+    };
+    Ok(own(&data).map(|(sequence, token)| Received {
+        reply: Reply {
+            sequence,
+            token,
+            kind,
+        },
+        responder: error.offender,
+    }))
+}
+
+/// Whether a receive failed only because an ICMP error arrived. With `IP_RECVERR`,
+/// the kernel also leaves each one as the socket's pending error, which the next
+/// `read` returns once, without the packet it answers. The error queue has already
+/// delivered it, matched to its probe, so it says nothing more.
+pub(crate) fn is_pending_icmp_error(error: &io::Error) -> bool {
+    // The errnos `icmp_err_convert` and `icmpv6_err_convert` give ICMP errors.
+    matches!(
+        error.raw_os_error(),
+        Some(
+            libc::ENETUNREACH
+                | libc::EHOSTUNREACH
+                | libc::ECONNREFUSED
+                | libc::ENOPROTOOPT
+                | libc::EMSGSIZE
+                | libc::EOPNOTSUPP
+                | libc::ENONET
+                | libc::EACCES
+                | libc::EHOSTDOWN
+                | libc::EPROTO
+        )
+    )
+}
+
+/// Sends with `send`. A send that fails with a pending ICMP error (see
+/// [`is_pending_icmp_error`]) sent nothing, and the failure consumed that error, so
+/// it is sent again, once.
+pub(crate) fn send_once(send: impl Fn() -> io::Result<usize>) -> Result<(), SendFailure> {
+    match send() {
+        Err(e) if is_pending_icmp_error(&e) => send(),
+        other => other,
+    }
+    .map(drop)
+    .map_err(send_failure)
 }
 
 /// The domain's reason for a failed send (ADR-0015: a failed send is an outcome).
@@ -178,7 +228,7 @@ fn initialized(buffer: &[MaybeUninit<u8>], len: usize) -> Vec<u8> {
         .collect()
 }
 
-fn enable_recverr(socket: &Socket, family: Family) -> io::Result<()> {
+pub(crate) fn enable_recverr(socket: &Socket, family: Family) -> io::Result<()> {
     let (level, option) = match family {
         Family::V4 => (libc::SOL_IP, libc::IP_RECVERR),
         Family::V6 => (libc::SOL_IPV6, libc::IPV6_RECVERR),

@@ -10,7 +10,7 @@ use std::io;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use http_body_util::{BodyExt, Empty, Limited};
+use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper_util::rt::TokioIo;
 use netwatch_shared::InterfaceName;
@@ -24,7 +24,8 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 pub enum Expected {
     /// Exactly this status, and any body.
     Status(u16),
-    /// Exactly this status, with a body containing this text.
+    /// Exactly this status, with a body containing this text within its first
+    /// [`BODY_LIMIT`] bytes. The text is not empty.
     StatusWithBody(u16, String),
 }
 
@@ -68,8 +69,9 @@ pub enum HttpsResult {
     Failed(io::Error),
 }
 
-/// The largest body read while checking for the expected text.
-const BODY_LIMIT: usize = 16 * 1024;
+/// How much of the body is read while checking for the expected text. A longer body
+/// is not an error: the rest is left unread.
+pub const BODY_LIMIT: usize = 16 * 1024;
 
 fn tls() -> &'static TlsConnector {
     static CONNECTOR: OnceLock<TlsConnector> = OnceLock::new();
@@ -112,7 +114,7 @@ struct Fetched {
     first_byte: Instant,
     done: Instant,
     status: u16,
-    body: Bytes,
+    body: Vec<u8>,
 }
 
 /// GETs `https://{host}{path}` over IPv4 through interface `pin`, verifying the
@@ -151,11 +153,7 @@ async fn fetch(host: &str, path: &str, pin: &InterfaceName) -> io::Result<Fetche
         .map_err(io::Error::other)?;
     let first_byte = Instant::now();
     let status = response.status().as_u16();
-    let body = Limited::new(response.into_body(), BODY_LIMIT)
-        .collect()
-        .await
-        .map_err(io::Error::other)?
-        .to_bytes();
+    let body = head(response.into_body()).await?;
     let done = Instant::now();
     driver.abort();
     Ok(Fetched {
@@ -168,6 +166,21 @@ async fn fetch(host: &str, path: &str, pin: &InterfaceName) -> io::Result<Fetche
         status,
         body,
     })
+}
+
+/// The body's first [`BODY_LIMIT`] bytes, or all of it if it is shorter.
+async fn head(mut body: hyper::body::Incoming) -> io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    while head.len() < BODY_LIMIT {
+        let Some(frame) = body.frame().await else {
+            break;
+        };
+        if let Ok(data) = frame.map_err(io::Error::other)?.into_data() {
+            let room = BODY_LIMIT - head.len();
+            head.extend_from_slice(&data[..data.len().min(room)]);
+        }
+    }
+    Ok(head)
 }
 
 async fn exchange(target: HttpsTarget, pin: InterfaceName) -> io::Result<HttpsResult> {

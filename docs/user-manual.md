@@ -26,7 +26,9 @@ This manual covers day-to-day use. For installing, see
 Open <http://127.0.0.1:8732> in a browser on the machine netwatch runs on. The page
 is only served to that machine, never to the network. To view it from elsewhere, use
 an SSH tunnel: `ssh -L 8732:127.0.0.1:8732 that-host`, then open the same address
-locally.
+locally. Use an IP address or `localhost` in the address bar: netwatch refuses a
+request by any other name, and from any other web page, so that sites you visit can't
+read it.
 
 netwatch runs as a background service and keeps measuring whether or not the page is
 open. Graphs update live while it is.
@@ -85,6 +87,17 @@ a real problem on another. When they differ, hover over the status to see each.
   there.
 
 ![A tooltip over a lost probe](images/tooltip.png)
+
+A lost probe's tooltip says why it was lost:
+
+| Reason | Meaning |
+|---|---|
+| timed out | No answer in time. |
+| unreachable | A router or the host answered that it can't be reached, such as a DNS server whose host is up but whose resolver isn't. |
+| time exceeded | The probe expired on the way, in a routing loop or on a path too long for it. |
+| refused | A DNS server answered with an error. |
+| unexpected response | An HTTPS target answered, but not as expected, such as a captive portal's page. |
+| send failed | netwatch couldn't send it, for example because the interface had just gone. |
 
 Over 24 h and 30 d, each point summarizes a minute or an hour, so a single lost probe
 shows up as loss in that minute rather than as a gap.

@@ -108,6 +108,7 @@ function epoch(value: unknown, what: string): Epoch {
 const LOSS_REASONS: readonly LossReason[] = [
   "timed-out",
   "unreachable",
+  "time-exceeded",
   "refused",
   "unexpected-response",
   "send-failed",

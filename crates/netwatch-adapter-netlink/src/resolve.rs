@@ -116,7 +116,19 @@ fn get_route(socket: &Socket, destination: IpAddr) -> io::Result<Option<RouteMes
         .push(RouteAttribute::Destination(RouteAddress::from(destination)));
     match request(socket, RouteNetlinkMessage::GetRoute(message))? {
         Reply::Message(RouteNetlinkMessage::NewRoute(route)) => Ok(Some(route)),
-        Reply::Error(code) if code == libc::ENETUNREACH || code == libc::EHOSTUNREACH => Ok(None),
+        // `unreachable`, `blackhole`, and `prohibit` routes (a VPN kill switch) answer
+        // with these: the kernel sends nothing out, so there is no egress path.
+        Reply::Error(code)
+            if [
+                libc::ENETUNREACH,
+                libc::EHOSTUNREACH,
+                libc::EINVAL,
+                libc::EACCES,
+            ]
+            .contains(&code) =>
+        {
+            Ok(None)
+        }
         Reply::Error(code) => Err(io::Error::from_raw_os_error(code)),
         Reply::Message(other) => Err(invalid_data(format!(
             "unexpected reply to RTM_GETROUTE: {other:?}"

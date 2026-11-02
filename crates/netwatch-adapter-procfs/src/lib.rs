@@ -245,6 +245,26 @@ pub fn clock_state() -> Option<ClockState> {
     })
 }
 
+/// The time since boot, suspend included (`CLOCK_BOOTTIME`). Unlike the monotonic
+/// clock, it keeps counting while the host sleeps, so the wall clock advancing over
+/// a suspend is not a jump against it.
+pub fn since_boot() -> Option<std::time::Duration> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a live, writable `timespec`, which is all `clock_gettime`
+    // writes into.
+    #[allow(unsafe_code)]
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut now) };
+    (result == 0).then(|| {
+        std::time::Duration::new(
+            u64::try_from(now.tv_sec).unwrap_or(0),
+            u32::try_from(now.tv_nsec).unwrap_or(0),
+        )
+    })
+}
+
 /// Network-relevant sysctls whose changes are recorded as config drift (ADR-0008).
 pub const WATCHED_SYSCTLS: &[&str] = &[
     "net/ipv4/ip_forward",

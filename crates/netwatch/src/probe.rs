@@ -208,6 +208,7 @@ fn measurement(outcome: ProbeOutcome) -> Measurement {
         ProbeOutcome::Answered { rtt } => Measurement::RoundTrip(rtt),
         ProbeOutcome::TimedOut => Measurement::Lost(Loss::TimedOut),
         ProbeOutcome::Unreachable { code } => Measurement::Lost(Loss::Unreachable(code.0)),
+        ProbeOutcome::TimeExceeded => Measurement::Lost(Loss::TimeExceeded),
         ProbeOutcome::Refused { code } => Measurement::Lost(Loss::Refused(code)),
         ProbeOutcome::UnexpectedResponse { code } => {
             Measurement::Lost(Loss::UnexpectedResponse(code))

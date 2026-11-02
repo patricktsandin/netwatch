@@ -42,6 +42,7 @@ fn every_kind_of_measurement_round_trips() {
         Measurement::RoundTrip(Time::new::<microsecond>(3_688.0)),
         Measurement::Lost(Loss::TimedOut),
         Measurement::Lost(Loss::Unreachable(3)),
+        Measurement::Lost(Loss::TimeExceeded),
         Measurement::Lost(Loss::Refused(2)),
         Measurement::Lost(Loss::UnexpectedResponse(302)),
         Measurement::Lost(Loss::SendFailed),
@@ -683,4 +684,30 @@ fn migration_9_makes_an_identity_back_long_after_a_start_a_change() {
             s("epoch-started", "eth0 (ifindex 5)"),
         ]
     );
+}
+
+#[test]
+fn the_highest_target_id_outlives_the_raw_samples() {
+    // Target 30's raw samples are pruned after 7 days, but its epochs, rollups, and
+    // incidents stay, so its id is still taken (ADR-0009).
+    let mut store = Store::open(&fresh("highest-target")).unwrap();
+    assert_eq!(store.highest_target_id().unwrap(), None);
+    store
+        .record_event(
+            &TopologyEvent::EpochStarted {
+                epoch: epoch(3),
+                role: Role::Hop {
+                    target: TargetId::new(30),
+                    ttl: netwatch_shared::HopTtl::new(std::num::NonZeroU8::MIN),
+                },
+                identity: Identity::Address("192.0.2.1".parse().unwrap()),
+            },
+            WallTime::from_unix_micros(10),
+            false,
+        )
+        .unwrap();
+    store
+        .write_samples(&[sample(20, Measurement::Lost(Loss::TimedOut))])
+        .unwrap();
+    assert_eq!(store.highest_target_id().unwrap(), Some(TargetId::new(30)));
 }

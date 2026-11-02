@@ -63,6 +63,8 @@ pub enum Loss {
     TimedOut,
     /// An ICMP destination-unreachable error, with its code.
     Unreachable(u8),
+    /// An ICMP time-exceeded error: the probe expired in transit (ADR-0049).
+    TimeExceeded,
     /// The server answered with an error, with its code (a DNS rcode).
     Refused(u8),
     /// A response that wasn't the expected one, with what arrived (an HTTP status).

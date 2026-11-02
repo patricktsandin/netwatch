@@ -1,9 +1,10 @@
-//! Saving settings is refused unless the request comes from the UI itself (ADR-0035).
+//! Saving settings is refused unless the request comes from the UI itself (ADR-0035),
+//! and nothing is answered to another site (ADR-0050).
 
 #![allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015), including in helpers.
 
 use axum::http::{HeaderMap, HeaderValue, header};
-use netwatch_adapter_web::from_the_ui;
+use netwatch_adapter_web::{from_the_ui, same_site};
 
 fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
     let mut map = HeaderMap::new();
@@ -57,4 +58,25 @@ fn a_cross_site_or_rebound_request_may_not() {
         HeaderValue::from_static("https://evil.example"),
     );
     assert!(!from_the_ui(&other_origin), "another origin");
+}
+
+#[test]
+fn another_site_may_not_read_either() {
+    // A WebSocket from another page: CORS doesn't stop it, the site check does.
+    let socket = headers(&[
+        ("host", "127.0.0.1:8732"),
+        ("origin", "https://evil.example"),
+    ]);
+    assert!(!same_site(&socket), "another origin");
+    assert!(
+        !same_site(&headers(&[("host", "evil.example:8732")])),
+        "DNS rebinding"
+    );
+
+    let ui = headers(&[
+        ("host", "127.0.0.1:8732"),
+        ("origin", "http://127.0.0.1:8732"),
+    ]);
+    assert!(same_site(&ui));
+    assert!(same_site(&headers(&[("host", "localhost:8732")])), "curl");
 }

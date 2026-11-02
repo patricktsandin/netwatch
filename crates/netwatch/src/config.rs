@@ -185,9 +185,10 @@ fn https(url: &str, status: Option<u16>, body: Option<String>) -> anyhow::Result
     Ok(HttpsTarget {
         host: host.to_owned(),
         path: path.to_owned(),
+        // Every body contains the empty text, so an empty `expect_body` asks for nothing.
         expected: match body {
-            Some(text) => Expected::StatusWithBody(status, text),
-            None => Expected::Status(status),
+            Some(text) if !text.is_empty() => Expected::StatusWithBody(status, text),
+            _ => Expected::Status(status),
         },
     })
 }
@@ -225,6 +226,12 @@ mod tests {
             (target.host.as_str(), target.path.as_str()),
             ("example.com", "/")
         );
+    }
+
+    #[test]
+    fn an_empty_expected_body_expects_only_the_status() {
+        let target = https("https://example.com/", Some(204), Some(String::new())).unwrap();
+        assert_eq!(target.expected, Expected::Status(204));
     }
 
     #[test]

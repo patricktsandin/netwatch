@@ -12,7 +12,13 @@ export type Micros = Brand<number, "Micros">;
 /** An identity epoch. */
 export type Epoch = Brand<number, "Epoch">;
 
-export type LossReason = "timed-out" | "unreachable" | "refused" | "unexpected-response" | "send-failed";
+export type LossReason =
+  | "timed-out"
+  | "unreachable"
+  | "time-exceeded"
+  | "refused"
+  | "unexpected-response"
+  | "send-failed";
 
 export type Measurement =
   { readonly kind: "round-trip"; readonly rttMs: number } | { readonly kind: "lost"; readonly reason: LossReason };

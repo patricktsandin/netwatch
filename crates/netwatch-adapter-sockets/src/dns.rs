@@ -50,6 +50,21 @@ pub fn parse_response(packet: &[u8]) -> Option<Reply> {
     })
 }
 
+/// Parses our own query, as an ICMP error quotes it on the error queue: its ID is
+/// the sequence of the probe the error answers (ADR-0049). `None` for anything that
+/// isn't exactly one of our queries, including one quoted too short to tell.
+pub fn parse_own_query(packet: &[u8]) -> Option<ProbeSequence> {
+    let header = packet.get(..HEADER)?;
+    let is_query = header[2] & 0x80 == 0;
+    let questions = u16::from_be_bytes([header[4], header[5]]);
+    if !is_query || questions != 1 || packet.get(HEADER..QUERY_LEN)? != QUESTION {
+        return None;
+    }
+    Some(ProbeSequence::new(u16::from_be_bytes([
+        header[0], header[1],
+    ])))
+}
+
 /// Kani proof harnesses (ADR-0016).
 #[cfg(kani)]
 mod proofs {
@@ -70,6 +85,30 @@ mod proofs {
             assert!(packet[HEADER..QUERY_LEN] == QUESTION);
             assert!(reply.sequence.get().to_be_bytes() == [packet[0], packet[1]]);
         }
+    }
+
+    /// For every input of up to 24 bytes, parsing a quoted query never panics, and
+    /// whatever it accepts is a query for exactly our question.
+    #[kani::proof]
+    #[kani::unwind(26)]
+    fn parse_own_query_never_panics_and_accepts_only_our_query() {
+        let buffer: [u8; 24] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= buffer.len());
+        let packet = &buffer[..len];
+        if let Some(sequence) = parse_own_query(packet) {
+            assert!(len >= QUERY_LEN);
+            assert!(packet[2] & 0x80 == 0);
+            assert!(packet[HEADER..QUERY_LEN] == QUESTION);
+            assert!(sequence.get().to_be_bytes() == [packet[0], packet[1]]);
+        }
+    }
+
+    /// Our query, quoted whole, parses back to its ID.
+    #[kani::proof]
+    fn our_query_quoted_parses_to_its_sequence() {
+        let sequence = ProbeSequence::new(kani::any());
+        assert!(parse_own_query(&query(sequence)) == Some(sequence));
     }
 
     /// A query, turned into a NOERROR response by a server, parses back to its ID.
@@ -96,6 +135,17 @@ mod tests {
             parse_response(&packet).map(|r| r.kind),
             Some(ReplyKind::Refused(2))
         );
+    }
+
+    #[test]
+    fn a_quoted_query_is_matched_by_its_id_and_a_short_quote_by_nothing() {
+        let packet = query(ProbeSequence::new(7));
+        assert_eq!(parse_own_query(&packet), Some(ProbeSequence::new(7)));
+        // A router that quotes only the UDP header leaves nothing to match by.
+        assert_eq!(parse_own_query(&packet[..2]), None);
+        let mut response = packet;
+        response[2] |= 0x80;
+        assert_eq!(parse_own_query(&response), None);
     }
 
     #[test]

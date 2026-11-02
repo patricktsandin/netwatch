@@ -19,7 +19,7 @@ use netwatch_history::{Histogram, Loss, Measurement, Rollup, Sample, Tier};
 use netwatch_probing::incident::{Incident, Severity};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::microsecond;
-use netwatch_shared::{Identity, IdentityEpoch, Role, WallTime};
+use netwatch_shared::{Identity, IdentityEpoch, Role, TargetId, WallTime};
 use netwatch_topology::TopologyEvent;
 use netwatch_verified::Summary;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -37,6 +37,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008-resumed-epochs.sql"),
     include_str!("../migrations/0009-resumed-only-at-a-start.sql"),
     include_str!("../migrations/0010-epochs-by-role.sql"),
+    include_str!("../migrations/0011-time-exceeded-loss.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -165,6 +166,7 @@ impl Store {
                     Measurement::Lost(Loss::Unreachable(code)) => {
                         (None, Some("unreachable"), Some(u16::from(code)))
                     }
+                    Measurement::Lost(Loss::TimeExceeded) => (None, Some("time-exceeded"), None),
                     Measurement::Lost(Loss::Refused(code)) => {
                         (None, Some("refused"), Some(u16::from(code)))
                     }
@@ -292,15 +294,13 @@ impl Store {
             .collect::<Result<_, _>>()?;
         let mut samples = Vec::new();
         for role in keys.iter().filter_map(|k| Role::from_key(k)) {
-            for stored in self.samples(&role, from)? {
-                if stored.at < until {
-                    samples.push(Sample {
-                        role: role.clone(),
-                        epoch: stored.epoch,
-                        at: stored.at,
-                        measurement: stored.measurement,
-                    });
-                }
+            for stored in self.samples_in(&role, from, until)? {
+                samples.push(Sample {
+                    role: role.clone(),
+                    epoch: stored.epoch,
+                    at: stored.at,
+                    measurement: stored.measurement,
+                });
             }
         }
         Ok(samples)
@@ -342,12 +342,29 @@ impl Store {
         tier: Tier,
         since: WallTime,
     ) -> Result<Vec<Rollup>, StoreError> {
+        self.rollups_in(role, tier, since, WallTime::from_unix_micros(i64::MAX))
+    }
+
+    /// The role's rollups of `tier` with `from <= start < until`, oldest first.
+    fn rollups_in(
+        &self,
+        role: &Role,
+        tier: Tier,
+        from: WallTime,
+        until: WallTime,
+    ) -> Result<Vec<Rollup>, StoreError> {
         let mut query = self.connection.prepare_cached(
             "SELECT epoch, start_us, count, lost, rtt_sum_us, rtt_min_us, rtt_max_us, histogram
-             FROM rollups WHERE role = ?1 AND tier = ?2 AND start_us >= ?3 ORDER BY start_us",
+             FROM rollups WHERE role = ?1 AND tier = ?2 AND start_us >= ?3 AND start_us < ?4
+             ORDER BY start_us",
         )?;
         let rows = query.query_map(
-            params![role.key(), tier_text(tier), since.as_unix_micros()],
+            params![
+                role.key(),
+                tier_text(tier),
+                from.as_unix_micros(),
+                until.as_unix_micros()
+            ],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -413,11 +430,7 @@ impl Store {
             .collect::<Result<_, _>>()?;
         let mut all = Vec::new();
         for role in keys.iter().filter_map(|k| Role::from_key(k)) {
-            all.extend(
-                self.rollups(&role, tier, from)?
-                    .into_iter()
-                    .filter(|r| r.start < until),
-            );
+            all.extend(self.rollups_in(&role, tier, from, until)?);
         }
         Ok(all)
     }
@@ -464,13 +477,50 @@ impl Store {
         Ok(roles)
     }
 
+    /// The highest target id anywhere in the store: in samples and readings, and in
+    /// the epochs, rollups, incidents, and traces that outlive them. A new target
+    /// gets a higher one, so that no id is ever reused (ADR-0009).
+    pub fn highest_target_id(&self) -> Result<Option<TargetId>, StoreError> {
+        let mut query = self.connection.prepare_cached(
+            "SELECT DISTINCT role FROM samples
+             UNION SELECT DISTINCT role FROM readings
+             UNION SELECT DISTINCT role FROM epochs
+             UNION SELECT DISTINCT role FROM rollups
+             UNION SELECT DISTINCT role FROM reading_rollups
+             UNION SELECT DISTINCT role FROM incidents
+             UNION SELECT DISTINCT role FROM traces",
+        )?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))?;
+        let mut highest = None;
+        for row in rows {
+            let id = match Role::from_key(&row?) {
+                Some(Role::Target(id) | Role::Hop { target: id, .. }) => id,
+                _ => continue,
+            };
+            highest = highest.max(Some(id));
+        }
+        Ok(highest)
+    }
+
     /// The role's samples at or after `since`, oldest first.
     pub fn samples(&self, role: &Role, since: WallTime) -> Result<Vec<StoredSample>, StoreError> {
+        self.samples_in(role, since, WallTime::from_unix_micros(i64::MAX))
+    }
+
+    /// The role's samples with `from <= at < until`, oldest first. The bound is in
+    /// the query, so a window in the past reads only that window.
+    fn samples_in(
+        &self,
+        role: &Role,
+        from: WallTime,
+        until: WallTime,
+    ) -> Result<Vec<StoredSample>, StoreError> {
         let mut query = self.connection.prepare_cached(
             "SELECT at_us, epoch, rtt_us, loss, loss_code FROM samples
-             WHERE role = ?1 AND at_us >= ?2 ORDER BY at_us",
+             WHERE role = ?1 AND at_us >= ?2 AND at_us < ?3 ORDER BY at_us",
         )?;
-        let rows = query.query_map(params![role.key(), since.as_unix_micros()], |row| {
+        let bounds = params![role.key(), from.as_unix_micros(), until.as_unix_micros()];
+        let rows = query.query_map(bounds, |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
@@ -490,6 +540,7 @@ impl Store {
                 (None, Some("unreachable"), Some(code)) => {
                     Measurement::Lost(Loss::Unreachable(u8::try_from(code).unwrap_or(u8::MAX)))
                 }
+                (None, Some("time-exceeded"), _) => Measurement::Lost(Loss::TimeExceeded),
                 (None, Some("refused"), Some(code)) => {
                     Measurement::Lost(Loss::Refused(u8::try_from(code).unwrap_or(u8::MAX)))
                 }

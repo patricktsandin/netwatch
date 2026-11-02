@@ -77,7 +77,7 @@ pub enum ReplyKind {
     /// A destination-unreachable error.
     Unreachable(UnreachableCode),
     /// A time-exceeded error: the answer to a hop probe, from the router at that
-    /// hop.
+    /// hop, and a loss on any other stream (ADR-0049).
     TimeExceeded,
     /// The server answered, but with an error, such as DNS SERVFAIL or REFUSED (the
     /// rcode).
@@ -102,6 +102,9 @@ pub enum ProbeOutcome {
         /// The error's ICMP code.
         code: UnreachableCode,
     },
+    /// An ICMP time-exceeded error answered a probe whose TTL wasn't limited: it
+    /// expired in transit, in a routing loop or on a path longer than its TTL.
+    TimeExceeded,
     /// The server answered with an error code, such as a DNS rcode.
     Refused {
         /// The error code.
@@ -274,9 +277,13 @@ impl ProbeStream {
             return Vec::new();
         };
         let outcome = match reply.kind {
-            ReplyKind::Echo | ReplyKind::TimeExceeded => ProbeOutcome::Answered {
+            ReplyKind::Echo => ProbeOutcome::Answered {
                 rtt: now.since(p.sent_at),
             },
+            ReplyKind::TimeExceeded if self.config.is_ttl_limited() => ProbeOutcome::Answered {
+                rtt: now.since(p.sent_at),
+            },
+            ReplyKind::TimeExceeded => ProbeOutcome::TimeExceeded,
             ReplyKind::Unreachable(code) => ProbeOutcome::Unreachable { code },
             ReplyKind::Refused(code) => ProbeOutcome::Refused { code },
             ReplyKind::Unexpected(code) => ProbeOutcome::UnexpectedResponse { code },

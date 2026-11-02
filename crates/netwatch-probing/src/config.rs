@@ -38,6 +38,7 @@ pub struct StreamConfig {
     cadence: Time,
     timeout: Time,
     space: SequenceSpace,
+    ttl_limited: bool,
 }
 
 /// Why a stream configuration was rejected.
@@ -75,7 +76,24 @@ impl StreamConfig {
             cadence,
             timeout,
             space,
+            ttl_limited: false,
         })
+    }
+
+    /// The same configuration, for a stream whose probes carry a limited TTL (hop
+    /// probes). On such a stream, time exceeded is the answer of the router at that
+    /// TTL; on any other, it is a loss (ADR-0049).
+    #[must_use]
+    pub fn ttl_limited(self) -> Self {
+        Self {
+            ttl_limited: true,
+            ..self
+        }
+    }
+
+    /// Whether the stream's probes carry a limited TTL.
+    pub fn is_ttl_limited(&self) -> bool {
+        self.ttl_limited
     }
 
     /// How often the stream sends.

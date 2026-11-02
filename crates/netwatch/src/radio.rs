@@ -18,6 +18,8 @@ pub enum Update {
     Wifi(netwatch_adapter_netlink::WifiDevice),
     /// The modem, and its network interface's identity, if it has one.
     Cellular(Option<Identity>, netwatch_adapter_modem::Modem),
+    /// A radio read before is no longer there.
+    Gone(Role),
 }
 
 /// Starts reading the radios. A radio this host doesn't have sends nothing, so its
@@ -33,6 +35,7 @@ pub fn spawn(egress: watch::Receiver<Option<Binding>>) -> mpsc::Receiver<Update>
             }
         };
         let mut tick = tokio::time::interval(EVERY);
+        let (mut wifi_seen, mut cellular_seen) = (false, false);
         loop {
             tick.tick().await;
             // The Wi-Fi device carrying the egress path wins, if there is one.
@@ -42,16 +45,29 @@ pub fn spawn(egress: watch::Receiver<Option<Binding>>) -> mpsc::Receiver<Update>
             });
             match netwatch_adapter_netlink::wifi(prefer).await {
                 Ok(Some(device)) => {
+                    wifi_seen = true;
                     let _ = tx.send(Update::Wifi(device)).await;
+                }
+                Ok(None) if wifi_seen => {
+                    wifi_seen = false;
+                    let _ = tx.send(Update::Gone(Role::Wifi)).await;
                 }
                 Ok(None) => {}
                 Err(error) => tracing::debug!(%error, "cannot read nl80211"),
             }
-            if let Some(manager) = modems.as_mut()
-                && let Some(modem) = manager.read().await
-            {
-                let identity = modem.interface.as_deref().and_then(interface);
-                let _ = tx.send(Update::Cellular(identity, modem)).await;
+            if let Some(manager) = modems.as_mut() {
+                match manager.read().await {
+                    Some(modem) => {
+                        cellular_seen = true;
+                        let identity = modem.interface.as_deref().and_then(interface);
+                        let _ = tx.send(Update::Cellular(identity, modem)).await;
+                    }
+                    None if cellular_seen => {
+                        cellular_seen = false;
+                        let _ = tx.send(Update::Gone(Role::Cellular)).await;
+                    }
+                    None => {}
+                }
             }
         }
     });

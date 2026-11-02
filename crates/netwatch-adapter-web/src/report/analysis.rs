@@ -102,6 +102,7 @@ pub fn loss_text(loss: Loss) -> String {
     match loss {
         Loss::TimedOut => "timed out".to_owned(),
         Loss::Unreachable(code) => format!("ICMP destination unreachable, code {code}"),
+        Loss::TimeExceeded => "ICMP time exceeded (expired in transit)".to_owned(),
         Loss::Refused(code) => format!("DNS error, rcode {code}"),
         Loss::UnexpectedResponse(status) => format!("unexpected HTTP status {status}"),
         Loss::SendFailed => "could not be sent".to_owned(),

@@ -228,7 +228,10 @@ fn retired_stream_stops_sending_but_still_resolves_what_is_in_flight() {
 
 #[test]
 fn time_exceeded_answers_a_hop_probe() {
-    let mut stream = icmp_stream();
+    let config = StreamConfig::new(secs(1.0), secs(0.8), SequenceSpace::ICMP)
+        .unwrap()
+        .ttl_limited();
+    let mut stream = ProbeStream::new(config, at(0));
     stream.tick(at(0));
     let hop = Reply {
         kind: ReplyKind::TimeExceeded,
@@ -242,6 +245,26 @@ fn time_exceeded_answers_a_hop_probe() {
             outcome: ProbeOutcome::Answered {
                 rtt: Time::new::<millisecond>(2.0)
             },
+        }]
+    );
+}
+
+#[test]
+fn time_exceeded_is_a_loss_on_a_stream_without_a_ttl_limit() {
+    // A routing loop toward the target: some router's time exceeded is not the
+    // target answering (ADR-0049).
+    let mut stream = icmp_stream();
+    stream.tick(at(0));
+    let looped = Reply {
+        kind: ReplyKind::TimeExceeded,
+        ..echo(0)
+    };
+
+    assert_eq!(
+        stream.reply(looped, at(2)),
+        vec![Output::Resolved {
+            index: ProbeIndex::new(0),
+            outcome: ProbeOutcome::TimeExceeded,
         }]
     );
 }

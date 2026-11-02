@@ -8,57 +8,47 @@ use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
-const NS: &str = "netwatch-failover-test";
-
-fn ip(args: &str) {
+fn ip(ns: &str, args: &str) {
     let status = Command::new("sudo")
-        .args(["-n", "ip", "-n", NS])
+        .args(["-n", "ip", "-n", ns])
         .args(args.split_whitespace())
         .status()
         .unwrap();
-    assert!(status.success(), "ip -n {NS} {args}");
+    assert!(status.success(), "ip -n {ns} {args}");
 }
 
 /// Deletes the namespace (and everything in it) even if the test fails.
-struct Namespace(Option<Child>);
+struct Namespace(&'static str, Option<Child>);
 
 impl Drop for Namespace {
     fn drop(&mut self) {
-        if let Some(mut daemon) = self.0.take() {
+        if let Some(mut daemon) = self.1.take() {
             let _ = Command::new("sudo")
                 .args(["-n", "kill", &daemon.id().to_string()])
                 .status();
             let _ = daemon.wait();
         }
         let _ = Command::new("sudo")
-            .args(["-n", "ip", "netns", "del", NS])
+            .args(["-n", "ip", "netns", "del", self.0])
             .status();
     }
 }
 
-#[test]
-#[ignore = "needs passwordless sudo to create a network namespace"]
-fn daemon_follows_default_route_failover_and_back() {
+/// Runs the daemon in a fresh namespace `ns` prepared by `setup`, applies `changes`, and
+/// returns the NIC epochs it started, in order, by interface name.
+fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String> {
     let _ = Command::new("sudo")
-        .args(["-n", "ip", "netns", "del", NS])
+        .args(["-n", "ip", "netns", "del", ns])
         .status();
     let status = Command::new("sudo")
-        .args(["-n", "ip", "netns", "add", NS])
+        .args(["-n", "ip", "netns", "add", ns])
         .status()
         .unwrap();
     assert!(status.success());
-    let mut namespace = Namespace(None);
-
-    ip("link set lo up");
-    ip("link add a0 type veth peer name a1");
-    ip("link add b0 type veth peer name b1");
-    for link in ["a0", "a1", "b0", "b1"] {
-        ip(&format!("link set {link} up"));
+    let mut namespace = Namespace(ns, None);
+    for command in setup {
+        ip(ns, command);
     }
-    ip("addr add 10.0.1.2/24 dev a0");
-    ip("addr add 10.0.2.2/24 dev b0");
-    ip("route add default via 10.0.1.1 dev a0 metric 100");
-    ip("route add default via 10.0.2.1 dev b0 metric 600");
 
     // `sudo` doesn't pass the parent's environment, so set the log filter explicitly.
     let daemon = Command::new("sudo")
@@ -67,7 +57,7 @@ fn daemon_follows_default_route_failover_and_back() {
             "ip",
             "netns",
             "exec",
-            NS,
+            ns,
             "env",
             "RUST_LOG=info",
             "NO_COLOR=1",
@@ -76,35 +66,75 @@ fn daemon_follows_default_route_failover_and_back() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    namespace.0 = Some(daemon);
+    namespace.1 = Some(daemon);
     sleep(Duration::from_millis(500));
+    for command in changes {
+        ip(ns, command);
+        sleep(Duration::from_millis(500));
+    }
 
-    ip("link set a0 down");
-    sleep(Duration::from_millis(500));
-    ip("link set a0 up");
-    ip("route add default via 10.0.1.1 dev a0 metric 100");
-    sleep(Duration::from_millis(500));
-
-    let mut daemon = namespace.0.take().unwrap();
+    let mut daemon = namespace.1.take().unwrap();
     let _ = Command::new("sudo")
         .args(["-n", "kill", &daemon.id().to_string()])
         .status();
     let mut log = String::new();
     std::io::Read::read_to_string(daemon.stdout.as_mut().unwrap(), &mut log).unwrap();
     let _ = daemon.wait();
-
-    let nic_epochs: Vec<&str> = log
-        .lines()
+    log.lines()
         .filter(|line| line.contains("epoch started") && line.contains("role=Nic"))
         .map(|line| {
-            if line.contains("\"a0\"") {
-                "a0"
-            } else if line.contains("\"b0\"") {
-                "b0"
-            } else {
-                "?"
-            }
+            ["a0", "b0"]
+                .into_iter()
+                .find(|name| line.contains(&format!("\"{name}\"")))
+                .unwrap_or("?")
+                .to_owned()
         })
-        .collect();
-    assert_eq!(nic_epochs, ["a0", "b0", "a0"], "daemon log:\n{log}");
+        .collect()
+}
+
+const TWO_UPLINKS: &[&str] = &[
+    "link set lo up",
+    "link add a0 type veth peer name a1",
+    "link add b0 type veth peer name b1",
+    "link set a0 up",
+    "link set a1 up",
+    "link set b0 up",
+    "link set b1 up",
+    "addr add 10.0.1.2/24 dev a0",
+    "addr add 10.0.2.2/24 dev b0",
+    "route add default via 10.0.1.1 dev a0 metric 100",
+    "route add default via 10.0.2.1 dev b0 metric 600",
+];
+
+#[test]
+#[ignore = "needs passwordless sudo to create a network namespace"]
+fn daemon_follows_default_route_failover_and_back() {
+    let epochs = nic_epochs(
+        "netwatch-failover-test",
+        TWO_UPLINKS,
+        &[
+            "link set a0 down",
+            "link set a0 up",
+            "route add default via 10.0.1.1 dev a0 metric 100",
+        ],
+    );
+    assert_eq!(epochs, ["a0", "b0", "a0"]);
+}
+
+#[test]
+#[ignore = "needs passwordless sudo to create a network namespace"]
+fn daemon_keeps_following_topology_through_a_kill_switch_route() {
+    // A `blackhole` or `prohibit` default route makes the route lookup fail. That is
+    // no egress path, and the watcher must still see the uplink come back after it.
+    let epochs = nic_epochs(
+        "netwatch-kill-switch-test",
+        TWO_UPLINKS,
+        &[
+            "route add blackhole default metric 50",
+            "route del blackhole default metric 50",
+            "route add prohibit default metric 50",
+            "route del prohibit default metric 50",
+        ],
+    );
+    assert_eq!(epochs, ["a0", "a0", "a0"]);
 }

@@ -55,3 +55,4 @@ to "Superseded".
 | [0047](0047-a-nearby-target-follows-its-router.md) | A nearby target follows its router; what a stop left open | Accepted |
 | [0048](0048-a-shared-hop-is-one-thing.md) | A shared hop is one thing, for traces and the map too | Accepted |
 | [0049](0049-icmp-errors-answer-only-what-they-say.md) | ICMP errors answer only what they say | Accepted |
+| [0050](0050-every-request-is-checked-for-its-site.md) | Every request is checked for its site | Accepted |

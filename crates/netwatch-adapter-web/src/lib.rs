@@ -163,6 +163,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/report.txt", get(report_text))
         .route("/report.csv", get(report_csv))
         .fallback(spa)
+        .layer(axum::middleware::from_fn(guard_site))
         .with_state(AppState {
             flush: daemon.flush,
             current: daemon.current,
@@ -847,14 +848,24 @@ async fn config(State(state): State<AppState>) -> Json<ConfigView> {
 
 /// Whether a write request came from the UI itself, not from another web page the
 /// browser is showing (ADR-0035): a cross-site page can't set `X-Netwatch` without a
-/// CORS preflight, which is never answered, and a DNS-rebound name fails the `Host`
-/// check.
+/// CORS preflight, which is never answered, and the request must be [`same_site`].
 pub fn from_the_ui(headers: &HeaderMap) -> bool {
-    let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
     let marked = headers
         .get("x-netwatch")
         .is_some_and(|v| v.as_bytes() == b"1");
-    let json = text(header::CONTENT_TYPE).is_some_and(|t| t.starts_with("application/json"));
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("application/json"));
+    marked && json && same_site(headers)
+}
+
+/// Whether a request may be answered at all (ADR-0050): its `Host` is an IP literal
+/// or `localhost`, which a DNS-rebound name is not, and its `Origin`, if it has one,
+/// is that host, which another web page's is not. WebSockets aren't covered by CORS,
+/// so without this any page could read the live stream.
+pub fn same_site(headers: &HeaderMap) -> bool {
+    let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
     let host = text(header::HOST).unwrap_or("");
     let hostname = host
         .rsplit_once(':')
@@ -871,7 +882,19 @@ pub fn from_the_ui(headers: &HeaderMap) -> bool {
             .split_once("://")
             .is_some_and(|(_, authority)| authority == host)
     });
-    marked && json && literal && same_origin
+    literal && same_origin
+}
+
+async fn guard_site(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if same_site(request.headers()) {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            "netwatch answers only its own UI, by an IP address or localhost",
+        )
+            .into_response()
+    }
 }
 
 async fn save_config(
