@@ -69,13 +69,18 @@ impl Socket {
     }
 }
 
-/// Where a probe task reports: every probe's resolution, and any source it finds it
-/// can't run.
+/// Where a probe task reports: every probe's resolution, and whether its role's
+/// source can run: the reason it can't, or `None` once it can again.
 #[derive(Debug, Clone)]
 pub struct Reports {
     pub resolutions: mpsc::Sender<Resolution>,
-    pub disabled: mpsc::UnboundedSender<String>,
+    pub disabled: mpsc::UnboundedSender<(Role, Option<String>)>,
 }
+
+/// How long a role whose socket couldn't be opened waits before trying again, if
+/// its pin doesn't change first. The cause may pass, such as a route that is not
+/// there yet at boot.
+const REOPEN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Keeps one role probed (a target, or one hop toward it when `ttl` is set) through
 /// whatever the current egress pin is. When the pin changes, a new stream starts on
@@ -91,6 +96,7 @@ pub async fn run_role(
     clock: Clock,
 ) {
     let mut retire_current: Option<oneshot::Sender<()>> = None;
+    let mut failing = false;
     loop {
         let pin = pins.borrow_and_update().clone();
         if let Some(retire) = retire_current.take() {
@@ -101,6 +107,9 @@ pub async fn run_role(
         {
             match Socket::open(kind, destination, index.get()) {
                 Ok(socket) => {
+                    if std::mem::take(&mut failing) {
+                        let _ = reports.disabled.send((role.clone(), None));
+                    }
                     let (retire, retired) = oneshot::channel();
                     retire_current = Some(retire);
                     let stream = ProbeStream::new(config, clock.now());
@@ -119,11 +128,19 @@ pub async fn run_role(
                     // A probe kind that can't run is a disabled source, shown in the UI,
                     // never just a missing row (ADR-0007). One message per kind and
                     // cause, however many roles hit it.
-                    let _ = reports.disabled.send(disabled_reason(kind, &error));
+                    failing = true;
+                    let _ = reports
+                        .disabled
+                        .send((role.clone(), Some(disabled_reason(kind, &error))));
                 }
             }
         }
-        if pins.changed().await.is_err() {
+        if failing {
+            tokio::select! {
+                changed = pins.changed() => if changed.is_err() { return },
+                () = tokio::time::sleep(REOPEN_AFTER) => {}
+            }
+        } else if pins.changed().await.is_err() {
             return;
         }
     }
@@ -213,6 +230,9 @@ fn measurement(outcome: ProbeOutcome) -> Measurement {
         ProbeOutcome::UnexpectedResponse { code } => {
             Measurement::Lost(Loss::UnexpectedResponse(code))
         }
+        ProbeOutcome::ExchangeFailed { stage } => {
+            Measurement::Lost(Loss::ExchangeFailed(stage.code()))
+        }
         ProbeOutcome::SendFailed { .. } => Measurement::Lost(Loss::SendFailed),
     }
 }
@@ -288,8 +308,13 @@ async fn run_https_stream(
                         let reply = Reply { sequence, token: Some(index), kind: ReplyKind::Unexpected(status) };
                         stream.reply(reply, clock.now())
                     }
-                    HttpsResult::Failed(error) => {
-                        tracing::debug!(%error, ?role, "https probe failed");
+                    HttpsResult::Failed(stage, error) => {
+                        tracing::debug!(%error, ?stage, ?role, "https exchange failed");
+                        let reply = Reply { sequence, token: Some(index), kind: ReplyKind::ExchangeFailed(stage) };
+                        stream.reply(reply, clock.now())
+                    }
+                    HttpsResult::NotSent(error) => {
+                        tracing::debug!(%error, ?role, "https probe not sent");
                         let cause = error.raw_os_error().map_or(SendFailure::Other(0), SendFailure::Other);
                         stream.send_failed(index, cause)
                     }

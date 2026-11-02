@@ -173,6 +173,9 @@ impl Store {
                     Measurement::Lost(Loss::UnexpectedResponse(code)) => {
                         (None, Some("unexpected-response"), Some(code))
                     }
+                    Measurement::Lost(Loss::ExchangeFailed(stage)) => {
+                        (None, Some("exchange-failed"), Some(u16::from(stage)))
+                    }
                     Measurement::Lost(Loss::SendFailed) => (None, Some("send-failed"), None),
                 };
                 insert.execute(params![
@@ -546,6 +549,9 @@ impl Store {
                 }
                 (None, Some("unexpected-response"), Some(code)) => {
                     Measurement::Lost(Loss::UnexpectedResponse(code))
+                }
+                (None, Some("exchange-failed"), Some(code)) => {
+                    Measurement::Lost(Loss::ExchangeFailed(u8::try_from(code).unwrap_or(u8::MAX)))
                 }
                 (None, Some("send-failed"), _) => Measurement::Lost(Loss::SendFailed),
                 _ => continue, // The CHECK constraints make this unreachable.

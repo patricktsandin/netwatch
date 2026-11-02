@@ -40,6 +40,6 @@ pub mod trace;
 pub use config::{InvalidStreamConfig, SequenceSpace, StreamConfig};
 pub use health::Health;
 pub use stream::{
-    Output, ProbeIndex, ProbeOutcome, ProbeSequence, ProbeStream, Reply, ReplyKind, SendFailure,
-    UnreachableCode,
+    ExchangeStage, Output, ProbeIndex, ProbeOutcome, ProbeSequence, ProbeStream, Reply, ReplyKind,
+    SendFailure, UnreachableCode,
 };

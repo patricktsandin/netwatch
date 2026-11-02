@@ -32,6 +32,13 @@ pub enum Observation {
         /// The identity that answered for it.
         identity: Identity,
     },
+    /// The source that identified `role` reports it gone, such as a radio that was
+    /// unplugged (ADR-0051). Like [`Observation::ProbeIdentified`], it takes effect
+    /// immediately.
+    ProbeVanished {
+        /// The role that is now unbound.
+        role: Role,
+    },
     /// Notifications were lost (`ENOBUFS`), and the adapter has **already drained**
     /// its socket, discarding everything that was queued on it. Reporting this
     /// before the drain finishes breaks convergence (ADR-0021).

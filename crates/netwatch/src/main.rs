@@ -94,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
             flushed
         })
     };
+    let flush_on_exit = flush.clone();
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     let (current_tx, current) = watch::channel(netwatch_adapter_web::Current::default());
@@ -181,8 +182,11 @@ async fn main() -> anyhow::Result<()> {
     let (resolutions_tx, mut resolutions) = mpsc::channel::<probe::Resolution>(1024);
     // Sources that can't run: reported by the probe tasks and the kernel log watcher,
     // and shown with every kernel report (ADR-0007).
-    let (disabled_tx, mut disabled_rx) = mpsc::unbounded_channel::<String>();
+    let (disabled_tx, mut disabled_rx) = mpsc::unbounded_channel::<(Role, Option<String>)>();
+    // Sources disabled for the whole run, and probe roles whose socket can't open
+    // now, each with its reason.
     let mut disabled = std::collections::BTreeSet::new();
+    let mut probes_disabled: BTreeMap<Role, String> = BTreeMap::new();
     let reports = probe::Reports {
         resolutions: resolutions_tx.clone(),
         disabled: disabled_tx,
@@ -310,7 +314,9 @@ async fn main() -> anyhow::Result<()> {
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     // Every role's recent outcomes, and the layers' latest reports, from which the
     // daemon grades every role each second (ADR-0030).
-    let mut recent: HashMap<Role, VecDeque<(WallTime, bool)>> = HashMap::new();
+    // Each outcome is kept with when it arrived on the monotonic clock, which judges
+    // freshness: a step of the wall clock mustn't make every role stale (ADR-0004).
+    let mut recent: HashMap<Role, VecDeque<(netwatch_shared::Instant, bool)>> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
     // identity, read every 5 minutes.
@@ -402,6 +408,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // systemd stops the service with SIGTERM; a terminal with SIGINT.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("listening for SIGTERM")?;
     loop {
         tokio::select! {
             _ = kernel_tick.tick() => {
@@ -416,12 +425,14 @@ async fn main() -> anyhow::Result<()> {
                     c.host.clock_synchronized = kernel_report.clock.map(|(synchronized, _)| synchronized);
                     c.host.clock_error_us = kernel_report.clock.map(|(_, error)| error);
                 });
+                // One line per reason, however many roles share it.
+                let reasons: std::collections::BTreeSet<&String> = disabled.iter().chain(probes_disabled.values()).collect();
                 layer_health.insert(
                     Role::Kernel,
                     publish_layer(
                         Role::Kernel,
                         &kernel_report,
-                        &disabled.iter().cloned().collect::<Vec<_>>(),
+                        &reasons.into_iter().cloned().collect::<Vec<_>>(),
                         &[],
                         &live,
                         &layers_tx,
@@ -501,7 +512,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, now, &live, &current_tx);
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     // A member's copy of a shared hop has the owner's incidents too, and
@@ -547,7 +558,7 @@ async fn main() -> anyhow::Result<()> {
                     let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
                     incidents.outcome(&sample.role, sample.at, answered);
                     let outcomes = recent.entry(sample.role.clone()).or_default();
-                    outcomes.push_back((sample.at, answered));
+                    outcomes.push_back((clock.now(), answered));
                     if outcomes.len() > health::WINDOW {
                         outcomes.pop_front();
                     }
@@ -572,8 +583,11 @@ async fn main() -> anyhow::Result<()> {
                 // Traces written before the flush are gone; any written after it stay.
                 latest_traces.retain(|target, _| trace_generations.get(target).is_some_and(|&g| g >= flushed));
             }
-            Some(reason) = disabled_rx.recv() => {
-                disabled.insert(reason);
+            Some((role, reason)) = disabled_rx.recv() => {
+                match reason {
+                    Some(reason) => probes_disabled.insert(role, reason),
+                    None => probes_disabled.remove(&role),
+                };
             }
             Some(identity) = public_identities.recv() => {
                 if public_identity.as_ref() != Some(&identity) {
@@ -596,8 +610,12 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(update) = radios.recv() => {
                 let (role, identity, report) = match update {
-                    // Its last grade describes a radio no longer read.
+                    // Its epoch ends (ADR-0051), and its last grade describes a
+                    // radio no longer read.
                     radio::Update::Gone(role) => {
+                        for output in topology.observe(Observation::ProbeVanished { role: role.clone() }) {
+                            handle(output, clock.wall_now(), &observations_tx, &recorder);
+                        }
                         layer_health.remove(&role);
                         layers_tx.send_modify(|all| {
                             all.remove(&role.key());
@@ -656,7 +674,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             _ = tokio::signal::ctrl_c() => break,
+            _ = terminate.recv() => break,
         }
+    }
+    // What is batched is written before the process exits. Open epochs and incidents
+    // stay open: the next start reads them, to resume what it can (ADR-0047).
+    tracing::info!("stopping");
+    if tokio::time::timeout(std::time::Duration::from_secs(5), flush_on_exit())
+        .await
+        .is_err()
+    {
+        tracing::warn!("the writer didn't finish in time");
     }
     Ok(())
 }
@@ -835,8 +863,9 @@ impl Recorder {
 }
 
 /// Publishes a layer's health report to the UI, and logs it when something got worse.
-/// A role's outcomes older than this are too old to grade it by, so it is `Unknown`.
-const STALE_AFTER_US: i64 = 30_000_000;
+/// A role's outcomes older than this many seconds are too old to grade it by, so it
+/// is `Unknown`.
+const STALE_AFTER_S: f64 = 30.0;
 
 /// Grades every role from its recent outcomes, reads loss along each path, folds in
 /// the layer reports, and publishes the result together with every role's current
@@ -845,14 +874,14 @@ const STALE_AFTER_US: i64 = 30_000_000;
 /// tracked.
 #[allow(clippy::too_many_arguments)] // Each is one of the daemon's views.
 fn publish_current(
-    recent: &HashMap<Role, VecDeque<(WallTime, bool)>>,
+    recent: &HashMap<Role, VecDeque<(netwatch_shared::Instant, bool)>>,
     layers: &BTreeMap<Role, Health>,
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
     traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
     hop_streams: &[sharing::HopStream],
     destinations: &BTreeMap<TargetId, IpAddr>,
-    now: WallTime,
+    now: netwatch_shared::Instant,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
 ) -> BTreeMap<Role, Health> {
@@ -860,9 +889,9 @@ fn publish_current(
         .iter()
         .map(|(role, outcomes)| {
             let answered: Vec<bool> = outcomes.iter().map(|&(_, answered)| answered).collect();
-            let fresh = outcomes.back().is_some_and(|(at, _)| {
-                now.as_unix_micros() - at.as_unix_micros() <= STALE_AFTER_US
-            });
+            let fresh = outcomes
+                .back()
+                .is_some_and(|&(at, _)| now.since(at).get::<second>() <= STALE_AFTER_S);
             (role.clone(), health::grade(&answered, fresh))
         })
         .collect();

@@ -1,7 +1,15 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { parseIncident, parseMarker, parseMicros, parsePoint, parseReading, parseRoles } from "./api/parse";
+import {
+  parseIncident,
+  parseMarker,
+  parseMicros,
+  parsePoint,
+  parseReading,
+  parseRoles,
+  parseRollups,
+} from "./api/parse";
 import type { Incident, Marker, Micros, Point, Reading, RoleKey } from "./model";
 import { formatDuration, tooltip, upsertIncident, visibleIncidents, type Words } from "./tooltip";
 
@@ -57,7 +65,9 @@ describe("formatDuration", () => {
 });
 
 describe("tooltip", () => {
-  const row = (more: { points?: Point[]; readings?: Reading[]; incidents?: Incident[]; markers?: Marker[] } = {}) => ({
+  const row = (
+    more: { points?: readonly Point[]; readings?: Reading[]; incidents?: Incident[]; markers?: Marker[] } = {},
+  ) => ({
     roles: [target],
     points: more.points ?? [],
     readings: more.readings ?? [],
@@ -77,6 +87,20 @@ describe("tooltip", () => {
       text: "lost (timed out)",
     });
     expect(tooltip(hover(17.5), row({ points }), words).filter((l) => l.tone === "value")).toEqual([]);
+  });
+
+  it("shows an interval's median and how many of its probes were lost", () => {
+    const points = parseRollups([
+      { start_us: 10e6, epoch: 1, count: 60, lost: 0, p50_us: 4500 },
+      { start_us: 70e6, epoch: 1, count: 60, lost: 3, p50_us: 5000 },
+      { start_us: 130e6, epoch: 1, count: 60, lost: 60, p50_us: null },
+    ]);
+    const value = (at: number) => tooltip(hover(at), row({ points }), words).find((l) => l.tone === "value")?.text;
+    expect(value(10)).toBe("4.50 ms median");
+    expect(value(70)).toBe("5.00 ms median · 3 of 60 lost");
+    expect(value(130)).toBe("all 60 lost");
+    // The hover is near only the interval it is in.
+    expect(value(100)).toBeUndefined();
   });
 
   it("shows every gauge read at the nearest reading's time", () => {

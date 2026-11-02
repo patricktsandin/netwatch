@@ -336,3 +336,18 @@ fn resync_leaves_roles_identified_by_probing_alone() {
 
     assert_eq!(topology.binding(&hop()).map(|b| b.epoch), Some(epoch(1)));
 }
+
+#[test]
+fn a_role_probing_reports_gone_ends_its_epoch_even_while_desynchronized() {
+    let mut topology = Topology::new();
+    topology.observe(Observation::ProbeIdentified {
+        role: hop(),
+        identity: router(),
+    });
+    topology.observe(Observation::NotificationsLost);
+
+    let outputs = topology.observe(Observation::ProbeVanished { role: hop() });
+
+    assert_eq!(outputs, vec![ended(1, hop())]);
+    assert_eq!(topology.binding(&hop()), None);
+}

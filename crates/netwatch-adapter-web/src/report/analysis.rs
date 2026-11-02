@@ -105,6 +105,15 @@ pub fn loss_text(loss: Loss) -> String {
         Loss::TimeExceeded => "ICMP time exceeded (expired in transit)".to_owned(),
         Loss::Refused(code) => format!("DNS error, rcode {code}"),
         Loss::UnexpectedResponse(status) => format!("unexpected HTTP status {status}"),
+        Loss::ExchangeFailed(stage) => {
+            let at = match stage {
+                1 => "resolving the name",
+                2 => "connecting",
+                3 => "the TLS handshake",
+                _ => "the HTTP request",
+            };
+            format!("HTTPS exchange failed in {at}")
+        }
         Loss::SendFailed => "could not be sent".to_owned(),
     }
 }

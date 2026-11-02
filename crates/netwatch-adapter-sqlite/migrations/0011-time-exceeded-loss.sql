@@ -1,16 +1,17 @@
--- 0011: a probe whose TTL wasn't limited can expire in transit, and that is its own
--- kind of loss (ADR-0049). Rebuilt for the same reason as 0002. Never edit once
--- applied.
+-- 0011: a probe whose TTL wasn't limited can expire in transit (ADR-0049), and an
+-- HTTPS exchange can fail beyond this host, with its stage as its code (ADR-0052).
+-- Each is its own kind of loss. Rebuilt for the same reason as 0002. Never edit
+-- once applied.
 
 CREATE TABLE samples_0011 (
     role      TEXT    NOT NULL,
     epoch     INTEGER NOT NULL,
     at_us     INTEGER NOT NULL,
     rtt_us    INTEGER,
-    loss      TEXT CHECK (loss IN ('timed-out', 'unreachable', 'time-exceeded', 'refused', 'unexpected-response', 'send-failed')),
+    loss      TEXT CHECK (loss IN ('timed-out', 'unreachable', 'time-exceeded', 'refused', 'unexpected-response', 'exchange-failed', 'send-failed')),
     loss_code INTEGER,
     CHECK ((rtt_us IS NULL) <> (loss IS NULL)),
-    CHECK ((loss IN ('unreachable', 'refused', 'unexpected-response')) = (loss_code IS NOT NULL))
+    CHECK ((loss IN ('unreachable', 'refused', 'unexpected-response', 'exchange-failed')) = (loss_code IS NOT NULL))
 );
 INSERT INTO samples_0011 SELECT role, epoch, at_us, rtt_us, loss, loss_code FROM samples;
 DROP TABLE samples;

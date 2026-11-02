@@ -82,7 +82,9 @@ function overlay(points: () => readonly Point[], annotations: () => Annotations)
         ctx.lineWidth = 2 * devicePixelRatio;
         ctx.strokeStyle = color("--loss");
         for (const p of points()) {
-          if (p.measurement.kind !== "lost") continue;
+          // A mark wherever a probe was lost: a lost sample, or an interval with losses.
+          const m = p.measurement;
+          if (m.kind === "round-trip" || (m.kind === "summary" && m.lost === 0)) continue;
           const x = u.valToPos(seconds(p.at), "x", true);
           ctx.beginPath();
           ctx.moveTo(x, top + height);

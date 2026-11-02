@@ -44,13 +44,13 @@ describe("parseLive", () => {
 });
 
 describe("parseRollups", () => {
-  it("draws an interval at its median, or as a loss if nothing was answered", () => {
+  it("keeps an interval's median and its losses, inventing no reason for them", () => {
     const [answered, silent] = parseRollups([
       { start_us: 60e6, epoch: 1, count: 12, lost: 1, mean_us: 3000, p50_us: 2900, p95_us: 4000 },
       { start_us: 120e6, epoch: 1, count: 12, lost: 12, mean_us: null, p50_us: null, p95_us: null },
     ]);
-    expect(answered?.measurement).toEqual({ kind: "round-trip", rttMs: 2.9 });
-    expect(silent?.measurement.kind).toBe("lost");
+    expect(answered?.measurement).toEqual({ kind: "summary", rttMs: 2.9, count: 12, lost: 1 });
+    expect(silent?.measurement).toEqual({ kind: "summary", rttMs: null, count: 12, lost: 12 });
   });
 
   it("rejects more losses than samples", () => {

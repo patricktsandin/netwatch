@@ -48,7 +48,7 @@ import { compareRoles, label, rowLabel } from "./roles";
 import { membersOf, rowOf } from "./rows";
 import { latest, merge, plotColumns, since } from "./series";
 import { openSettings } from "./settingsDialog";
-import { tooltip, upsertIncident, visibleIncidents, visibleMarkers, type Words } from "./tooltip";
+import { tooltip, upsertIncident, valueText, visibleIncidents, visibleMarkers, type Words } from "./tooltip";
 import type { Status } from "./model";
 
 /** The time ranges the UI offers: raw samples for the last hour, then the rollup
@@ -65,6 +65,9 @@ const RANGES: Readonly<Record<Range, RangeSpec>> = {
   month: { spanUs: 30 * 24 * 3600e6, tier: "hour", maxGapUs: 2 * 3600e6 },
 };
 let range: Range = "hour";
+/** Counts the views: each range change or rebuild starts a new one, and a backfill
+ *  begun for an earlier view drops what it fetched rather than mix ranges. */
+let view = 0;
 
 interface Row {
   points: Point[];
@@ -301,9 +304,7 @@ function render(row: Row, key: RoleKey): void {
   const lastReading = row.readings.at(-1);
   const latestValue =
     last !== undefined
-      ? last.measurement.kind === "round-trip"
-        ? `${last.measurement.rttMs.toFixed(2)} ms`
-        : last.measurement.reason
+      ? valueText(last)
       : lastReading !== undefined
         ? row.readings
             .filter((r) => r.at === lastReading.at)
@@ -334,11 +335,15 @@ function renderIdentities(): void {
 }
 
 async function backfill(from: Micros): Promise<void> {
+  const started = view;
+  const tier = RANGES[range].tier;
+  const stale = (): boolean => view !== started;
   const [roles, events, recorded] = await Promise.all([
     fetchJson("/api/roles").then(parseRoles),
     fetchJson(`/api/events?since_us=${String(from)}`).then(parseMarkers),
     fetchJson(`/api/incidents?since_us=${String(from)}`).then(parseIncidents),
   ]);
+  if (stale()) return;
   markers = markers.concat(
     events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)),
   );
@@ -374,33 +379,31 @@ async function backfill(from: Micros): Promise<void> {
       .filter((key) => rowOf(shared, key) === key)
       .map(async (key) => {
         const row = addRow(key);
-        const tier = RANGES[range].tier;
         if (tier === null) {
-          const fetched = parsePoints(
-            await fetchJson(
-              `/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`,
-            ),
-          );
-          row.points = merge(row.points, fetched);
+          const pointsSince = latest(row.points) ?? from;
           const readingsSince = row.readings.at(-1)?.at ?? from;
-          const readings = parseReadings(
-            await fetchJson(`/api/readings?role=${encodeURIComponent(key)}&since_us=${String(readingsSince)}`),
-          );
+          const [fetched, readings] = await Promise.all([
+            fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(pointsSince)}`).then(parsePoints),
+            fetchJson(`/api/readings?role=${encodeURIComponent(key)}&since_us=${String(readingsSince)}`).then(
+              parseReadings,
+            ),
+          ]);
+          if (stale()) return;
+          row.points = merge(row.points, fetched);
           row.readings = mergeReadings(row.readings, readings);
         } else {
           // Rollups are re-read whole: the latest interval keeps growing until it closes.
-          row.points = [
-            ...parseRollups(
-              await fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`),
+          const [points, readings] = await Promise.all([
+            fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`).then(
+              parseRollups,
             ),
-          ];
-          row.readings = [
-            ...parseReadingRollups(
-              await fetchJson(
-                `/api/reading-rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`,
-              ),
-            ),
-          ];
+            fetchJson(
+              `/api/reading-rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`,
+            ).then(parseReadingRollups),
+          ]);
+          if (stale()) return;
+          row.points = [...points];
+          row.readings = [...readings];
         }
         render(row, key);
       }),
@@ -496,6 +499,7 @@ function connect(): void {
 /** Drops every row and backfills the selected range: after a flush, or when the
  *  theme changes, since charts take their colors when they're created. */
 function rebuild(): void {
+  view += 1;
   for (const row of rows.values()) row.rowEl.remove();
   rows.clear();
   void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
@@ -593,6 +597,7 @@ document.getElementById("reset-zoom")?.addEventListener("click", (event) => {
 });
 function selectRange(selected: Range): void {
   range = selected;
+  view += 1;
   setHash(selected === "hour" ? "" : `#${selected}`);
   zoom = null;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
@@ -610,6 +615,7 @@ document.getElementById("open-settings")?.addEventListener("click", () => {
   // After a save, the daemon restarts: the live stream drops and reconnects, and the
   // backfill brings the new targets' rows.
   void openSettings(() => {
+    view += 1;
     for (const row of rows.values()) row.rowEl.remove();
     rows.clear();
   }).catch(report);

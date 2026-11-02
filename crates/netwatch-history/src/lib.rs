@@ -69,6 +69,8 @@ pub enum Loss {
     Refused(u8),
     /// A response that wasn't the expected one, with what arrived (an HTTP status).
     UnexpectedResponse(u16),
+    /// An exchange failed beyond this host, with its stage's code (ADR-0052).
+    ExchangeFailed(u8),
     /// The probe couldn't be sent.
     SendFailed,
 }

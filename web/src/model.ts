@@ -13,15 +13,15 @@ export type Micros = Brand<number, "Micros">;
 export type Epoch = Brand<number, "Epoch">;
 
 export type LossReason =
-  | "timed-out"
-  | "unreachable"
-  | "time-exceeded"
-  | "refused"
-  | "unexpected-response"
-  | "send-failed";
+  "timed-out" | "unreachable" | "time-exceeded" | "refused" | "unexpected-response" | "exchange-failed" | "send-failed";
 
+/** One sample's measurement, or a rollup interval's summary: its median RTT (`null`
+ *  if nothing was answered) and how many of its probes were lost. A summary has no
+ *  loss reason: the daemon keeps only the count (ADR-0006). */
 export type Measurement =
-  { readonly kind: "round-trip"; readonly rttMs: number } | { readonly kind: "lost"; readonly reason: LossReason };
+  | { readonly kind: "round-trip"; readonly rttMs: number }
+  | { readonly kind: "lost"; readonly reason: LossReason }
+  | { readonly kind: "summary"; readonly rttMs: number | null; readonly count: number; readonly lost: number };
 
 /** One sample, as the UI sees it. */
 export interface Point {

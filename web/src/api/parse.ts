@@ -111,6 +111,7 @@ const LOSS_REASONS: readonly LossReason[] = [
   "time-exceeded",
   "refused",
   "unexpected-response",
+  "exchange-failed",
   "send-failed",
 ];
 const EVENT_KINDS: readonly EventKind[] = [
@@ -242,8 +243,8 @@ export function parseRoles(value: unknown): readonly RoleKey[] {
 }
 
 /**
- * Rollups from `/api/rollups`, as points the charts can draw: each interval is drawn
- * at its median RTT, or as a loss if nothing in it was answered.
+ * Rollups from `/api/rollups`, as points the charts can draw: each interval at its
+ * median RTT, with how many of its probes were lost.
  */
 export function parseRollups(value: unknown): readonly Point[] {
   return array(value, "rollups").map((r) => {
@@ -256,11 +257,10 @@ export function parseRollups(value: unknown): readonly Point[] {
     const count = integer(rollup.count, "rollup.count");
     const lost = integer(rollup.lost, "rollup.lost");
     if (lost > count) throw new ParseError("rollup: more lost than counted");
-    if (rollup.p50_us === null) {
-      return { at, epoch: rollupEpoch, measurement: { kind: "lost", reason: "timed-out" } };
-    }
-    const p50 = integer(rollup.p50_us, "rollup.p50_us");
-    return { at, epoch: rollupEpoch, measurement: { kind: "round-trip", rttMs: p50 / 1000 } };
+    const rttMs = rollup.p50_us === null ? null : integer(rollup.p50_us, "rollup.p50_us") / 1000;
+    if ((rttMs === null) !== (lost === count))
+      throw new ParseError("rollup: a median exactly when something was answered");
+    return { at, epoch: rollupEpoch, measurement: { kind: "summary", rttMs, count, lost } };
   });
 }
 

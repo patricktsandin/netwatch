@@ -140,9 +140,26 @@ function nearestReading(readings: readonly Reading[], at: Micros): Reading | und
   );
 }
 
-function valueText(point: Point): string {
+/** A point's value in words. Exported for the row's latest value. */
+export function valueText(point: Point): string {
   const m = point.measurement;
-  return m.kind === "round-trip" ? `${m.rttMs.toFixed(2)} ms` : `lost (${m.reason.replace(/-/g, " ")})`;
+  switch (m.kind) {
+    case "round-trip":
+      return `${m.rttMs.toFixed(2)} ms`;
+    case "lost":
+      return `lost (${m.reason.replace(/-/g, " ")})`;
+    case "summary": {
+      if (m.rttMs === null) return `all ${String(m.count)} lost`;
+      const lost = m.lost > 0 ? ` · ${String(m.lost)} of ${String(m.count)} lost` : "";
+      return `${m.rttMs.toFixed(2)} ms median${lost}`;
+    }
+    default:
+      return unreachable(m);
+  }
+}
+
+function unreachable(never: never): never {
+  throw new Error(`unhandled measurement: ${JSON.stringify(never)}`);
 }
 
 function incidentText(i: Incident, now: Micros, words: Words): string {

@@ -46,6 +46,31 @@ impl ProbeSequence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UnreachableCode(pub u8);
 
+/// Where an exchange with a server failed, beyond this host (ADR-0052).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExchangeStage {
+    /// The server's name didn't resolve.
+    Resolve,
+    /// The connection was refused, reset, or unreachable.
+    Connect,
+    /// The TLS handshake failed, such as a certificate that didn't verify.
+    Tls,
+    /// The HTTP request failed after the connection was up.
+    Request,
+}
+
+impl ExchangeStage {
+    /// The stage's code, as it is stored: 1 to 4, in the order of the exchange.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Resolve => 1,
+            Self::Connect => 2,
+            Self::Tls => 3,
+            Self::Request => 4,
+        }
+    }
+}
+
 /// Why the adapter couldn't send a probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SendFailure {
@@ -85,6 +110,8 @@ pub enum ReplyKind {
     /// The server answered, but not with the expected response, such as the wrong
     /// HTTP status (glossary: *expected response*).
     Unexpected(u16),
+    /// The exchange failed beyond this host, before any response.
+    ExchangeFailed(ExchangeStage),
 }
 
 /// The one outcome every probe gets. These are never collapsed into a missing value.
@@ -114,6 +141,12 @@ pub enum ProbeOutcome {
     UnexpectedResponse {
         /// What arrived instead, such as the HTTP status.
         code: u16,
+    },
+    /// An exchange with the server failed beyond this host, before any response
+    /// (ADR-0052).
+    ExchangeFailed {
+        /// Where it failed.
+        stage: ExchangeStage,
     },
     /// The probe could not be sent.
     SendFailed {
@@ -287,6 +320,7 @@ impl ProbeStream {
             ReplyKind::Unreachable(code) => ProbeOutcome::Unreachable { code },
             ReplyKind::Refused(code) => ProbeOutcome::Refused { code },
             ReplyKind::Unexpected(code) => ProbeOutcome::UnexpectedResponse { code },
+            ReplyKind::ExchangeFailed(stage) => ProbeOutcome::ExchangeFailed { stage },
         };
         vec![Output::Resolved {
             index: p.index,

@@ -9,6 +9,7 @@
 //!   `snapshots`
 //! - `probeIdentify` becomes `ProbeIdentified` for the spec's `PROBE_ROLE`, with the
 //!   identity the spec picked
+//! - `probeVanish` becomes `ProbeVanished` for `PROBE_ROLE`
 //!
 //! Every other action must leave the aggregate untouched. After every step, the test
 //! checks the outputs, every role's binding, and whether the view is synchronized.
@@ -253,6 +254,9 @@ fn replay(path: &Path) {
                     identity: identity(picked),
                 })
             }
+            "probeVanish" => Some(Observation::ProbeVanished {
+                role: role(PROBE_ROLE),
+            }),
             _ => None,
         };
         let outputs = observed.map_or_else(Vec::new, |o| topology.observe(o));

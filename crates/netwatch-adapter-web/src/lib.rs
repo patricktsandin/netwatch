@@ -111,6 +111,9 @@ struct AppState {
     flush: Flush,
     current: watch::Receiver<Current>,
     database: PathBuf,
+    /// Reader connections kept open between reads, so that a backfill's many reads
+    /// don't each open the database, set its pragmas, and check its migrations.
+    readers: std::sync::Arc<std::sync::Mutex<Vec<Store>>>,
     live: broadcast::Sender<LiveMessage>,
     layers: watch::Receiver<BTreeMap<String, LayerReportView>>,
     targets: std::sync::Arc<Vec<TargetView>>,
@@ -118,9 +121,12 @@ struct AppState {
     flush_history: FlushHistory,
 }
 
+/// How many idle reader connections are kept.
+const IDLE_READERS: usize = 4;
+
 /// What the daemon gives the UI server: where history is, and its live views.
 pub struct Daemon {
-    /// The SQLite database, which each read opens on its own.
+    /// The SQLite database, which reads open their own connections to.
     pub database: PathBuf,
     /// Live messages, broadcast to every WebSocket.
     pub live: broadcast::Sender<LiveMessage>,
@@ -168,6 +174,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
             flush: daemon.flush,
             current: daemon.current,
             database: daemon.database,
+            readers: std::sync::Arc::default(),
             live: daemon.live,
             layers: daemon.layers,
             targets: std::sync::Arc::new(daemon.targets),
@@ -203,7 +210,7 @@ struct IncidentsQuery {
     until_us: Option<i64>,
 }
 
-/// Runs a read against a fresh connection on the blocking pool.
+/// Runs a read on the blocking pool, against an idle reader connection or a new one.
 async fn read<T: Send + 'static>(
     state: &AppState,
     query: impl FnOnce(&Store) -> Result<T, netwatch_adapter_sqlite::StoreError> + Send + 'static,
@@ -212,9 +219,24 @@ async fn read<T: Send + 'static>(
     // for, so the read goes ahead.
     let _ = (state.flush)().await;
     let database = state.database.clone();
+    let readers = state.readers.clone();
     tokio::task::spawn_blocking(move || {
-        let store = Store::open(&database)?;
-        query(&store)
+        let idle = readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        let store = match idle {
+            Some(store) => store,
+            None => Store::open(&database)?,
+        };
+        let result = query(&store);
+        let mut idle = readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if idle.len() < IDLE_READERS {
+            idle.push(store);
+        }
+        result
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

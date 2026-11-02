@@ -9,6 +9,9 @@ use netwatch_topology::Binding;
 use tokio::sync::{mpsc, watch};
 
 const EVERY: Duration = Duration::from_secs(300);
+/// How long one read may take. Without a bound, a middlebox that accepts the
+/// connection and never answers would stop the reads for good.
+const TIMEOUT: Duration = Duration::from_secs(15);
 /// Until the first read succeeds (the egress path may not be known yet at startup).
 const UNTIL_KNOWN: Duration = Duration::from_secs(10);
 
@@ -31,6 +34,7 @@ pub fn spawn(egress: watch::Receiver<Option<Binding>>) -> mpsc::Receiver<PublicI
                 "one.one.one.one",
                 "/cdn-cgi/trace",
                 pin,
+                TIMEOUT,
             )
             .await
             {

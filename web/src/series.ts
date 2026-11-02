@@ -64,7 +64,7 @@ export function plotColumns(points: readonly Point[], maxGapUs: number): { xs: n
       ys.push(null);
     }
     xs.push(p.at);
-    ys.push(p.measurement.kind === "round-trip" ? p.measurement.rttMs : null);
+    ys.push(p.measurement.kind === "lost" ? null : p.measurement.rttMs);
   });
   return { xs, ys };
 }

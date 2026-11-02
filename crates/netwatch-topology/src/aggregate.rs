@@ -99,6 +99,7 @@ impl Topology {
             Observation::ProbeIdentified { role, identity } => {
                 self.bind(role, identity, &mut outputs);
             }
+            Observation::ProbeVanished { role } => self.end(&role, &mut outputs),
             Observation::NotificationsLost => self.lose(&mut outputs),
             Observation::SnapshotReceived(snapshot) => self.resync(snapshot, &mut outputs),
         }

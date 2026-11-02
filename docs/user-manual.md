@@ -97,6 +97,7 @@ A lost probe's tooltip says why it was lost:
 | time exceeded | The probe expired on the way, in a routing loop or on a path too long for it. |
 | refused | A DNS server answered with an error. |
 | unexpected response | An HTTPS target answered, but not as expected, such as a captive portal's page. |
+| exchange failed | An HTTPS target's name didn't resolve, its connection was refused, or its TLS handshake or request failed. The report says which. |
 | send failed | netwatch couldn't send it, for example because the interface had just gone. |
 
 Over 24 h and 30 d, each point summarizes a minute or an hour, so a single lost probe

@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015), including in helpers.
 
 use netwatch_probing::{
-    InvalidStreamConfig, Output, ProbeIndex, ProbeOutcome, ProbeSequence, ProbeStream, Reply,
-    ReplyKind, SendFailure, SequenceSpace, StreamConfig, UnreachableCode,
+    ExchangeStage, InvalidStreamConfig, Output, ProbeIndex, ProbeOutcome, ProbeSequence,
+    ProbeStream, Reply, ReplyKind, SendFailure, SequenceSpace, StreamConfig, UnreachableCode,
 };
 use netwatch_shared::Instant;
 use netwatch_shared::uom::si::f64::Time;
@@ -265,6 +265,26 @@ fn time_exceeded_is_a_loss_on_a_stream_without_a_ttl_limit() {
         vec![Output::Resolved {
             index: ProbeIndex::new(0),
             outcome: ProbeOutcome::TimeExceeded,
+        }]
+    );
+}
+
+#[test]
+fn an_exchange_that_failed_beyond_the_host_is_not_a_send_failure() {
+    let mut stream = icmp_stream();
+    stream.tick(at(0));
+    let forged = Reply {
+        kind: ReplyKind::ExchangeFailed(ExchangeStage::Tls),
+        ..echo(0)
+    };
+
+    assert_eq!(
+        stream.reply(forged, at(2)),
+        vec![Output::Resolved {
+            index: ProbeIndex::new(0),
+            outcome: ProbeOutcome::ExchangeFailed {
+                stage: ExchangeStage::Tls
+            },
         }]
     );
 }

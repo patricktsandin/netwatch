@@ -91,7 +91,7 @@ pub struct SamplePoint {
     #[ts(type = "number | null")]
     pub rtt_us: Option<i64>,
     /// Why it wasn't answered: `timed-out`, `unreachable`, `time-exceeded`,
-    /// `refused`, `unexpected-response`, or `send-failed`.
+    /// `refused`, `unexpected-response`, `exchange-failed`, or `send-failed`.
     pub loss: Option<String>,
 }
 
@@ -424,6 +424,7 @@ fn loss_text(loss: Loss) -> &'static str {
         Loss::TimeExceeded => "time-exceeded",
         Loss::Refused(_) => "refused",
         Loss::UnexpectedResponse(_) => "unexpected-response",
+        Loss::ExchangeFailed(_) => "exchange-failed",
         Loss::SendFailed => "send-failed",
     }
 }
