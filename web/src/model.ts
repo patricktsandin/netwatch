@@ -26,6 +26,8 @@ export interface Point {
 
 export type EventKind =
   | "epoch-started"
+  | "epoch-resumed"
+  | "started"
   | "epoch-ended"
   | "desynchronized"
   | "resynchronized"

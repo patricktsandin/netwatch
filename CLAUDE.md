@@ -27,6 +27,9 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - Kernel: snmp/netstat/softnet counters, PSI, conntrack, and neighbor tables.
   - NIC: `IFLA_STATS64` counters.
   - Both graded every 1 s.
+  - A restart starts new epochs, but a role back with the same identity is
+    `epoch-resumed`, which no row marks; one `started` marker goes on the kernel row
+    (ADR-0044).
   - Kernel log lines (with `CAP_SYSLOG`), wall-clock jumps, and network sysctl
     changes become event markers. Clock sync state comes from `adjtimex`.
 - **History:** raw samples and gauge readings (7 days), plus 1m (90 days) and 1h

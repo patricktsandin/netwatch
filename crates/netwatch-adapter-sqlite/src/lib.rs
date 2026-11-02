@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005-incidents.sql"),
     include_str!("../migrations/0006-readings.sql"),
     include_str!("../migrations/0007-traces.sql"),
+    include_str!("../migrations/0008-resumed-epochs.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -656,12 +657,29 @@ impl Store {
     pub fn last_identities(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
-        Ok(std::collections::BTreeMap::new())
+        let mut query = self.connection.prepare_cached(
+            "SELECT role, identity FROM epochs e
+             WHERE epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)",
+        )?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// The public address last noted, in words, before the daemon started.
     pub fn last_public_address(&self) -> Result<Option<String>, StoreError> {
-        Ok(None)
+        let detail: Option<Option<String>> = self
+            .connection
+            .query_row(
+                "SELECT detail FROM events WHERE kind = 'public-address'
+                 ORDER BY at_us DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // A change is noted as "before → after".
+        Ok(detail
+            .flatten()
+            .and_then(|d| d.rsplit(" → ").next().map(str::to_owned)))
     }
 
     /// The highest epoch ever stored, so that a restarted daemon's epochs don't
@@ -679,14 +697,17 @@ impl Store {
 /// The live UI uses this too, so live and stored events read identically. An
 /// `EpochStarted` that is `resumed` is `epoch-resumed`, not a change (ADR-0044).
 pub fn describe(event: &TopologyEvent, at: WallTime, resumed: bool) -> StoredEvent {
-    let _ = resumed;
     let (kind, role, epoch, detail) = match event {
         TopologyEvent::EpochStarted {
             epoch,
             role,
             identity,
         } => (
-            "epoch-started",
+            if resumed {
+                "epoch-resumed"
+            } else {
+                "epoch-started"
+            },
             Some(role.key()),
             Some(epoch_value(*epoch)),
             Some(identity_text(identity)),

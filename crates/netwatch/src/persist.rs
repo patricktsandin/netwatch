@@ -226,3 +226,12 @@ pub fn latest_traces(
     }
     Ok(latest)
 }
+
+/// What the store at `path` says each role was, by role key, and the public address,
+/// before this start (ADR-0044).
+pub fn before_start(
+    path: &std::path::Path,
+) -> anyhow::Result<(std::collections::BTreeMap<String, String>, Option<String>)> {
+    let store = Store::open(path)?;
+    Ok((store.last_identities()?, store.last_public_address()?))
+}

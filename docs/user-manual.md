@@ -105,6 +105,8 @@ its duration and probable cause.
 
 **Event markers** are dashed vertical lines for things that happened at a moment:
 - the NIC, address, or router changed
+- netwatch started, after a gap in the graphs. Things that are the same as before it
+  stopped aren't marked again.
 - a kernel log line about networking
 - the clock jumped
 - a network setting changed

@@ -119,6 +119,8 @@ function eventText(m: Marker, words: Words): string {
   const role = m.role === null ? "" : words.role(m.role);
   const texts: Record<EventKind, string> = {
     "epoch-started": `${role} is now ${detail}`,
+    "epoch-resumed": `${role} is still ${detail}`,
+    started: detail,
     "epoch-ended": `${role} lost its identity`,
     desynchronized: "lost track of topology changes; resyncing",
     resynchronized: "topology resynchronized",

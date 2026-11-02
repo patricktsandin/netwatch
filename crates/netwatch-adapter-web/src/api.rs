@@ -461,6 +461,7 @@ impl EventPoint {
 ///   loopback, which no path goes through, so its epochs concern only itself.
 /// - losing or regaining sync with the kernel's topology concerns the roles that
 ///   topology binds: the NIC, tunnel, and local interface
+/// - an epoch resumed after a restart concerns no role: nothing changed (ADR-0044)
 /// - anything else concerns the role it names, or the kernel if it names none
 pub fn concerns(kind: &str, role: Option<Role>, known: &[Role]) -> Vec<String> {
     match (kind, role) {
@@ -474,6 +475,8 @@ pub fn concerns(kind: &str, role: Option<Role>, known: &[Role]) -> Vec<String> {
                 )
                 .collect()
         }
+        // A restart resumed the identity: nothing changed (ADR-0044).
+        ("epoch-resumed", _) => Vec::new(),
         ("desynchronized" | "resynchronized", _) => [Role::Nic, Role::Tunnel, Role::LocalInterface]
             .iter()
             .map(Role::key)

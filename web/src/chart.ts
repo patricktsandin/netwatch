@@ -30,6 +30,8 @@ export interface Annotations {
 function markerColor(m: Marker): string {
   switch (m.kind) {
     case "epoch-started":
+    case "epoch-resumed":
+    case "started":
     case "epoch-ended":
     case "desynchronized":
     case "resynchronized":

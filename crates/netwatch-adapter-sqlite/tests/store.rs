@@ -584,16 +584,16 @@ fn migration_8_marks_restarts_resumed_and_drops_repeated_public_addresses() {
     {
         let mut store = Store::open(&path).unwrap();
         // A run with eth0, a restart with eth0 again, and within that run eth0
-        // going away and coming back.
+        // going away and coming back. Then a restart with a different NIC. Events
+        // are written in time order, as the daemon writes them.
         started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+        public(&mut store, 11, "A");
         started(&mut store, 2, Role::Nic, eth(b"eth0", 5), 20, false);
+        public(&mut store, 21, "A");
         ended(&mut store, 2, Role::Nic, 30);
         started(&mut store, 3, Role::Nic, eth(b"eth0", 5), 40, false);
-        // After a restart, a different NIC.
-        started(&mut store, 4, Role::Nic, eth(b"wlan0", 3), 50, false);
-        public(&mut store, 11, "A");
-        public(&mut store, 21, "A");
         public(&mut store, 41, "A → B");
+        started(&mut store, 4, Role::Nic, eth(b"wlan0", 3), 50, false);
         public(&mut store, 51, "B");
         public(&mut store, 61, "C");
         rusqlite::Connection::open(&path)

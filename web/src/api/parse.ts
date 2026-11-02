@@ -112,6 +112,8 @@ const LOSS_REASONS: readonly LossReason[] = [
 ];
 const EVENT_KINDS: readonly EventKind[] = [
   "epoch-started",
+  "epoch-resumed",
+  "started",
   "epoch-ended",
   "desynchronized",
   "resynchronized",

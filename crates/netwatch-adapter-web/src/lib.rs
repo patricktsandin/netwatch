@@ -426,6 +426,8 @@ fn wall_now() -> WallTime {
 fn event_kind_text(kind: &str) -> &str {
     match kind {
         "epoch-started" => "identity changed",
+        "epoch-resumed" => "identity resumed",
+        "started" => "netwatch started",
         "epoch-ended" => "identity lost",
         "desynchronized" => "topology resync started",
         "resynchronized" => "topology resynchronized",
@@ -696,7 +698,8 @@ async fn build_report(
         let events: Vec<report::render::EventLine> = store
             .events(from)?
             .into_iter()
-            .filter(|e| e.at < until)
+            // A resumed epoch isn't a change (ADR-0044); the start says it all.
+            .filter(|e| e.at < until && e.kind != "epoch-resumed")
             .map(|e| report::render::EventLine {
                 at: e.at,
                 kind: event_kind_text(&e.kind).to_owned(),

@@ -94,12 +94,25 @@ async fn main() -> anyhow::Result<()> {
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     let (current_tx, current) = watch::channel(netwatch_adapter_web::Current::default());
+    // What each role was, and the public address, before this start: a role that
+    // comes back the same has resumed, not changed (ADR-0044).
+    let (identities_before, mut public_before) =
+        persist::before_start(&database).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot read the identities before this start");
+            Default::default()
+        });
     let recorder = Recorder {
         writes: writes.clone(),
         live: live.clone(),
         current: current_tx.subscribe(),
         clock,
+        before_start: std::sync::Mutex::new(identities_before),
     };
+    recorder.note(
+        "started",
+        Role::Kernel,
+        format!("netwatch {} started", env!("CARGO_PKG_VERSION")),
+    );
     let settings: std::sync::Arc<dyn netwatch_adapter_web::Settings> =
         std::sync::Arc::new(settings::FileSettings {
             path: config.source.clone(),
@@ -518,11 +531,16 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(identity) = public_identities.recv() => {
                 if public_identity.as_ref() != Some(&identity) {
-                    let detail = match &public_identity {
-                        Some(before) => format!("{} → {}", before.text(), identity.text()),
-                        None => identity.text(),
-                    };
-                    recorder.note("public-address", Role::LocalInterface, detail);
+                    // The first one this run compares with the last one before it.
+                    let before = public_identity.as_ref().map(|p| p.text()).or_else(|| public_before.take());
+                    let now = identity.text();
+                    if before.as_ref() != Some(&now) {
+                        let detail = match before {
+                            Some(before) => format!("{before} → {now}"),
+                            None => now,
+                        };
+                        recorder.note("public-address", Role::LocalInterface, detail);
+                    }
                     current_tx.send_modify(|c| {
                         c.host.public = Some(identity.text());
                         c.host.public_address = Some(identity.address.to_string());
@@ -684,6 +702,8 @@ struct Recorder {
     live: broadcast::Sender<LiveMessage>,
     current: watch::Receiver<netwatch_adapter_web::Current>,
     clock: Clock,
+    /// Each role's identity before this start, by role key, until its first epoch.
+    before_start: std::sync::Mutex<BTreeMap<String, String>>,
 }
 
 impl Recorder {
@@ -694,10 +714,24 @@ impl Recorder {
         });
     }
 
+    /// Records a topology event. A role's first epoch this run with the identity it
+    /// had before the start resumes it, and isn't a change (ADR-0044).
     fn topology(&self, event: TopologyEvent) {
         let at = self.clock.wall_now();
-        self.show(netwatch_adapter_sqlite::describe(&event, at, false));
-        let _ = self.writes.send(persist::Write::Event(event, at, false));
+        let resumed = match &event {
+            TopologyEvent::EpochStarted { role, .. } => {
+                let before = self
+                    .before_start
+                    .lock()
+                    .ok()
+                    .and_then(|mut before| before.remove(&role.key()));
+                let identity = netwatch_adapter_sqlite::describe(&event, at, false).detail;
+                before.is_some() && before == identity
+            }
+            _ => false,
+        };
+        self.show(netwatch_adapter_sqlite::describe(&event, at, resumed));
+        let _ = self.writes.send(persist::Write::Event(event, at, resumed));
     }
 
     /// Records an event that isn't a topology event: a kernel log line, a clock jump,
