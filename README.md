@@ -24,6 +24,13 @@ the file named by `NETWATCH_CONFIG`. To install it as a service, from
 an RPM, with the install script on other distros, or as a container, see
 [deploy/README.md](deploy/README.md).
 
+![netwatch's main screen](docs/images/dashboard.png)
+
+- **Using it:** [docs/user-manual.md](docs/user-manual.md)
+- **What it is and how it's built, in one page:** [docs/overview.md](docs/overview.md),
+  with diagrams of the architecture, the data flow, and the database
+- **All the documentation:** [docs/README.md](docs/README.md)
+
 ## How it is built
 
 The codebase is meant to be a model of domain-driven design and formal methods applied

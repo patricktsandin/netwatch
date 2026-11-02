@@ -1,0 +1,35 @@
+// netwatch and everything it talks to (ADR-0005, ADR-0010). Render with
+// `npm run diagrams` in web/.
+digraph system_context {
+  graph [rankdir=LR, bgcolor="white", fontname="Helvetica", pad=0.3, nodesep=0.4, ranksep=0.9];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#8a8f98", fillcolor="#f4f6f8", margin="0.3,0.1"];
+  edge  [color="#8a8f98", arrowsize=0.7, fontname="Helvetica", fontsize=9, fontcolor="#555555"];
+
+  person [label=<<b>You</b><br/><font point-size="9" color="#666666">a browser on this host</font>>, shape=box, fillcolor="#fff6e5", color="#c9a24a"];
+  noc    [label=<<b>ISP's NOC</b><br/><font point-size="9" color="#666666">receives the report<br/>by email (you send it)</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+
+  subgraph cluster_host {
+    label="The monitored Linux host"; fontsize=12; style="rounded"; color="#5e7fb8"; fontcolor="#2d4a7a";
+    daemon [label=<<b>netwatch daemon</b><br/><font point-size="9" color="#666666">Rust · runs as the netwatch user<br/>with 4 optional capabilities<br/>serves the UI on 127.0.0.1:8732</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    db     [label=<<b>SQLite</b><br/><font point-size="9" color="#666666">/var/lib/netwatch/netwatch.db</font>>, shape=cylinder, fillcolor="#eaf0fa", color="#5e7fb8"];
+    config [label=<<b>Configuration</b><br/><font point-size="9" color="#666666">/etc/netwatch/netwatch.toml</font>>, shape=note, fillcolor="#eaf0fa", color="#5e7fb8"];
+    kernel [label=<<b>Linux kernel</b><br/><font point-size="9" color="#666666">rtnetlink · /proc · eBPF · kmsg</font>>];
+    mm     [label=<<b>ModemManager</b><br/><font point-size="9" color="#666666">D-Bus, if present</font>>, style="rounded,filled,dashed"];
+  }
+
+  gateway [label=<<b>Gateway and ISP routers</b><br/><font point-size="9" color="#666666">hops 1–3 continuously,<br/>4–30 in path traces</font>>];
+  targets [label=<<b>Targets</b><br/><font point-size="9" color="#666666">1.1.1.1, 8.8.8.8 (ICMP, DNS)<br/>Cloudflare HTTPS endpoints</font>>, fillcolor="#e9f5ee", color="#5e9c76"];
+  cymru   [label=<<b>Team Cymru</b><br/><font point-size="9" color="#666666">router AS names over DNS<br/>(asn_lookups = false turns off)</font>>, style="rounded,filled,dashed"];
+  cftrace [label=<<b>Cloudflare trace</b><br/><font point-size="9" color="#666666">this host's public address<br/>every 5 min</font>>, style="rounded,filled,dashed"];
+
+  person -> daemon [label="UI, live graphs,\nreports, settings\n(HTTP + WebSocket)", dir=both];
+  person -> noc [label="emails the\nincident report", style=dashed];
+  daemon -> db [label="samples, rollups,\nincidents, traces"];
+  daemon -> config [label="reads; settings\npage rewrites", dir=both];
+  kernel -> daemon [label="topology, counters,\ndrop reasons, log"];
+  mm -> daemon [label="cellular state"];
+  daemon -> gateway [label="TTL-limited probes"];
+  daemon -> targets [label="ICMP echo, DNS,\nHTTPS"];
+  daemon -> cymru [label="TXT lookups\n(router addresses only)"];
+  daemon -> cftrace [label="HTTPS"];
+}

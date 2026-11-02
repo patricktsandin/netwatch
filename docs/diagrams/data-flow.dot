@@ -1,0 +1,59 @@
+// How a measurement travels: from the kernel and the network, through the domain
+// state machines and the composition root's event loop, to SQLite and the browser
+// (ADR-0006, ADR-0012, ADR-0029). Render with `npm run diagrams` in web/.
+digraph data_flow {
+  graph [rankdir=LR, bgcolor="white", fontname="Helvetica", pad=0.3, nodesep=0.3, ranksep=0.7, newrank=true];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, color="#8a8f98", fillcolor="#f4f6f8", margin="0.28,0.08"];
+  edge  [color="#8a8f98", arrowsize=0.6, fontname="Helvetica", fontsize=9, fontcolor="#555555"];
+
+  subgraph cluster_sources {
+    label="Sources"; fontsize=11; style="rounded,dashed"; color="#b8bec7"; fontcolor="#444444";
+    rtnl  [label="rtnetlink\nlinks, addresses, routes"];
+    socks [label="probe sockets\nICMP · DNS · HTTPS · TTL-limited"];
+    proc  [label="/proc, PSI, adjtimex,\nIFLA_STATS64"];
+    bpf   [label="eBPF drop counters"];
+    kmsg  [label="/dev/kmsg"];
+    radio [label="nl80211, ModemManager"];
+  }
+
+  subgraph cluster_domain {
+    label="Domain state machines"; fontsize=11; style="rounded"; color="#5e7fb8"; fontcolor="#2d4a7a";
+    topo   [label="Topology\nroles → identities, epochs", fillcolor="#eaf0fa", color="#5e7fb8"];
+    probe  [label="Probing\nreply matching, grading,\nincident tracker, trace schedule", fillcolor="#eaf0fa", color="#5e7fb8"];
+    health [label="Host health\ncounters → gauges, layer grades", fillcolor="#eaf0fa", color="#5e7fb8"];
+  }
+
+  loop [label=<<b>Event loop</b><br/><font point-size="9" color="#555555">composition root (netwatch)<br/>stamps role, identity, epoch</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+
+  subgraph cluster_store {
+    label="History"; fontsize=11; style="rounded"; color="#5e9c76"; fontcolor="#2f6044";
+    writer [label="single writer\nbatched transactions", fillcolor="#e9f5ee", color="#5e9c76"];
+    db     [label="SQLite\nsamples, readings, events,\nincidents, traces", shape=cylinder, fillcolor="#e9f5ee", color="#5e9c76"];
+    roll   [label="rollups\n1 min, 1 h\n(verified merge)", fillcolor="#e9f5ee", color="#5e9c76"];
+  }
+
+  subgraph cluster_web {
+    label="Presentation"; fontsize=11; style="rounded,dashed"; color="#b8bec7"; fontcolor="#444444";
+    current [label="Current\nstatuses, bindings, layers"];
+    api     [label="REST API\nbackfill, reports"];
+    ws      [label="WebSocket\nlive stream"];
+    spa     [label="Browser SPA\ndraws only (ADR-0030)", fillcolor="#fff6e5", color="#c9a24a"];
+  }
+
+  rtnl -> topo [label="netlink messages"];
+  socks -> probe [label="replies, ICMP errors"];
+  proc -> health; bpf -> health; kmsg -> loop [label="log lines"]; radio -> health; radio -> topo [label="BSSID, cell"];
+  topo -> loop [label="bindings,\ntopology events"];
+  probe -> loop [label="samples, grades,\nincidents"];
+  health -> loop [label="readings,\nlayer reports"];
+  loop -> probe [label="hop identities,\ntrace requests", style=dashed, constraint=false];
+  loop -> writer [label="writes"];
+  writer -> db;
+  db -> roll [label="every minute"];
+  roll -> db [style=dashed];
+  loop -> current;
+  loop -> ws [label="samples, events,\nincidents"];
+  db -> api [label="reads behind a\nflush barrier (ADR-0029)"];
+  current -> api;
+  api -> spa; ws -> spa;
+}

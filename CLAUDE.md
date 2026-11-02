@@ -174,7 +174,9 @@ If a later step shows an earlier one was wrong, go back and fix it there.
 - **Significant decisions** get a new ADR ([0001](docs/adr/0001-record-architecture-decisions.md)).
   Accepted ADRs are never edited; a new ADR supersedes the old one.
 - **Docs:** update the glossary, context map, and specs in the same commit as the code
-  they describe.
+  they describe. The same goes for `docs/diagrams/` (schema, crates, data flow) and the
+  user manual (anything a user sees). Diagrams are Graphviz sources rendered by
+  `npm run diagrams` in `web/`; commit the SVGs with them.
 - **Done** means fmt, clippy, tests (including trace conformance), Quint model checking,
   Kani, and Verus all pass, plus `tsc --noEmit`, Vitest, and ESLint for the web app. For UI
   changes, also look at the graphs in a browser.
@@ -185,6 +187,7 @@ If a later step shows an earlier one was wrong, go back and fix it there.
 
 ```
 docs/{glossary.md, context-map.md, adr/}
+docs/{overview.md, user-manual.md, diagrams/, images/}   # for readers outside the code
 specs/                       # annotated Quint specs
 crates/
   netwatch-shared/           # domain: shared value objects and quantities
@@ -224,6 +227,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cd web && npm ci && npm run build                  # needed before a release build embeds it
 cd web && npm run dev                              # proxies /api and /ws to the daemon
+cd web && npm run diagrams                         # docs/diagrams/*.dot → *.svg
 cd web && npx tsc --noEmit && npx vitest run && npx eslint .
 ./scripts/check-specs.sh                           # every spec: typecheck, simulate, exhaustive TLC (~1 min)
 quint run specs/<f>.qnt --invariant=<name> --verbosity=3   # print a counterexample trace

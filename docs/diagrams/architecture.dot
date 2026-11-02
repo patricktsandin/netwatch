@@ -1,0 +1,49 @@
+// The crates: a sans-IO domain core inside a hexagonal shell (ADR-0012), laid out
+// by the context map (docs/context-map.md). Arrows point from a crate to what it
+// depends on. The composition root carries facts between contexts (for example,
+// a hop's identity from probing to topology), so the domain crates don't depend on
+// one another. Render with `npm run diagrams` in web/.
+digraph architecture {
+  graph [rankdir=TB, bgcolor="white", label="Arrows point to what a crate depends on. Every adapter also depends on shared.", labelloc=b, fontsize=11, fontcolor="#555555", fontname="Helvetica", pad=0.3, nodesep=0.3, ranksep=0.6, compound=true, newrank=true];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, color="#8a8f98", fillcolor="#f4f6f8", margin="0.28,0.08"];
+  edge  [color="#9aa0a8", arrowsize=0.6];
+
+  root [label=<<b>netwatch</b><br/><font point-size="9" color="#666666">composition root: config, tasks,<br/>the event loop, settings, traces</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+
+  subgraph cluster_adapters {
+    label="Adapters (I/O: translate the OS into domain types)"; fontsize=11; style="rounded"; color="#b8bec7"; fontcolor="#444444";
+    netlink [label=<<b>adapter-netlink</b><br/><font point-size="8" color="#666666">rtnetlink, nl80211</font>>];
+    sockets [label=<<b>adapter-sockets</b><br/><font point-size="8" color="#666666">ICMP, DNS, HTTPS, ARP/NDP,<br/>lookups</font>>];
+    procfs  [label=<<b>adapter-procfs</b><br/><font point-size="8" color="#666666">/proc, PSI, adjtimex, kmsg</font>>];
+    ebpf    [label=<<b>adapter-ebpf</b><br/><font point-size="8" color="#666666">loads netwatch-ebpf</font>>];
+    modem   [label=<<b>adapter-modem</b><br/><font point-size="8" color="#666666">ModemManager D-Bus</font>>];
+    sqlite  [label=<<b>adapter-sqlite</b><br/><font point-size="8" color="#666666">the single writer, migrations</font>>];
+    web     [label=<<b>adapter-web</b><br/><font point-size="8" color="#666666">REST, WebSocket, reports,<br/>embedded SPA</font>>];
+  }
+
+  subgraph cluster_domain {
+    label="Domain (pure state machines: no I/O, clocks, or async)"; fontsize=11; style="rounded"; color="#5e7fb8"; fontcolor="#2d4a7a";
+    topology [label=<<b>topology</b><br/><font point-size="8" color="#666666">core</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    probing  [label=<<b>probing</b><br/><font point-size="8" color="#666666">core</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    health   [label=<<b>host-health</b><br/><font point-size="8" color="#666666">supporting</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    history  [label=<<b>history</b><br/><font point-size="8" color="#666666">supporting</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    shared   [label=<<b>shared</b><br/><font point-size="8" color="#666666">value objects, quantities</font>>, fillcolor="#eaf0fa", color="#5e7fb8"];
+    verified [label=<<b>verified</b><br/><font point-size="8" color="#666666">Verus-proven algorithms</font>>, fillcolor="#e9f5ee", color="#5e9c76"];
+  }
+
+  spa [label=<<b>web/</b><br/><font point-size="9" color="#666666">TypeScript SPA (Vite, uPlot),<br/>embedded in the binary</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+  kernelprog [label=<<b>netwatch-ebpf</b><br/><font point-size="8" color="#666666">eBPF program, no_std</font>>, style="rounded,filled,dashed"];
+
+  root -> {netlink sockets procfs ebpf modem sqlite web};
+  root -> probing [lhead=cluster_domain];
+  web -> spa [style=dashed, label=" embeds", fontsize=9, fontcolor="#666666", fontname="Helvetica"];
+  ebpf -> kernelprog [style=dashed, label=" builds, loads", fontsize=9, fontcolor="#666666", fontname="Helvetica"];
+  {netlink sockets procfs ebpf modem sqlite web} -> topology [lhead=cluster_domain, style=invis];
+  // Exactly the dependencies in the crates' Cargo.toml files, except that every
+  // adapter also depends on shared, which would only add clutter here.
+  netlink -> topology; netlink -> health; sockets -> probing; procfs -> health; modem -> health;
+  sqlite -> history; sqlite -> probing; sqlite -> topology;
+  web -> sqlite [constraint=false]; web -> history; web -> health; web -> probing;
+  {topology probing health history} -> shared;
+  {topology probing health history} -> verified;
+}

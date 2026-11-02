@@ -1,0 +1,35 @@
+// How a role's grade becomes an incident, and incidents become an episode in a
+// report (ADR-0030, ADR-0031, ADR-0033, ADR-0034; specs/incidents.qnt). Render with
+// `npm run diagrams` in web/.
+digraph incident_lifecycle {
+  graph [rankdir=LR, bgcolor="white", fontname="Helvetica", pad=0.3, nodesep=0.5, ranksep=0.8];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, color="#8a8f98", fillcolor="#f4f6f8", margin="0.28,0.08"];
+  edge  [color="#8a8f98", arrowsize=0.6, fontname="Helvetica", fontsize=9, fontcolor="#555555"];
+
+  subgraph cluster_grade {
+    label=<Grading, every second, from the last 12 probes>; fontsize=11; style="rounded,dashed"; color="#b8bec7"; fontcolor="#444444";
+    healthy  [label=<<b>Healthy</b><br/><font point-size="9">none lost</font>>, fillcolor="#e1f1e7", color="#5e9c76"];
+    ratelim  [label=<<b>Rate-limited</b><br/><font point-size="9">a hop loses probes, but<br/>the path beyond it doesn't</font>>, fillcolor="#eef3fb", color="#7d95c0"];
+    degraded [label=<<b>Degraded</b><br/><font point-size="9">some lost</font>>, fillcolor="#fbf0d9", color="#c9a24a"];
+    failing  [label=<<b>Failing</b><br/><font point-size="9">half or more lost</font>>, fillcolor="#f6dfdf", color="#b85e5e"];
+  }
+
+  open [label=<<b>Incident open</b><br/><font point-size="9">starts at the first lost probe<br/>severity: degradation, or outage<br/>once it has been failing</font>>, fillcolor="#fbe9e9", color="#b85e5e"];
+  cause [label=<<b>Probable cause</b><br/><font point-size="9">the most upstream role whose incident<br/>opened before this one, or at most<br/>10 s after it, and is still open</font>>];
+  closed [label=<<b>Incident closed</b><br/><font point-size="9">ends at the first answered probe<br/>after the last loss; stored forever</font>>];
+  episode [label=<<b>Episode</b><br/><font point-size="9">incidents linked by cause:<br/>one problem, on this host / LAN<br/>or beyond the gateway</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+  trace [label=<<b>Episode path trace</b><br/><font point-size="9">for a target or hop 2+,<br/>at most every 10 min</font>>, style="rounded,filled,dashed"];
+  report [label=<<b>Incident report</b><br/><font point-size="9">HTML, text, CSV, for the ISP</font>>, fillcolor="#fff6e5", color="#c9a24a"];
+
+  degraded -> open [label="opens"];
+  failing -> open [label="opens or\nescalates"];
+  open -> cause [label="links"];
+  open -> trace [label="triggers", style=dashed];
+  open -> closed [label="first calm grade:\nhealthy, rate-limited,\nor unknown"];
+  closed -> episode;
+  cause -> episode [label="groups"];
+  episode -> report;
+  trace -> report [style=dashed];
+  healthy -> degraded [style=invis];
+  ratelim -> failing [style=invis];
+}

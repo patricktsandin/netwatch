@@ -110,7 +110,8 @@ as_root install -D -s -m 0755 target/release/netwatch "$destdir$bin"
 as_root install -d "$destdir$docs"
 as_root install -m 0644 README.md "$destdir$docs/README.md"
 as_root install -m 0644 deploy/README.md "$destdir$docs/DEPLOYING.md"
-as_root cp -r docs/adr docs/glossary.md docs/context-map.md "$destdir$docs/"
+as_root cp -r docs/adr docs/glossary.md docs/context-map.md docs/overview.md \
+    docs/user-manual.md docs/diagrams docs/images "$destdir$docs/"
 # The unit is the RPM's, pointed at this binary and its documentation.
 sed -e "s|^ExecStart=/usr/bin/netwatch|ExecStart=$bin|" \
     -e "s|^Documentation=.*|Documentation=file://$docs/README.md|" \

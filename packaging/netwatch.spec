@@ -64,6 +64,7 @@ grep -q '^database = "%{_sharedstatedir}/netwatch/netwatch.db"$' \
 
 %files
 %doc README.md DEPLOYING.md docs/adr docs/glossary.md docs/context-map.md
+%doc docs/overview.md docs/user-manual.md docs/diagrams docs/images
 %{_bindir}/netwatch
 %{_unitdir}/netwatch.service
 %{_sysusersdir}/netwatch.conf

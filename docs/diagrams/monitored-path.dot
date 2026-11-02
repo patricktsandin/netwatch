@@ -1,0 +1,36 @@
+// What netwatch watches: one host's path to the network, layer by layer
+// (ADR-0002). Each box is a role; its identity (shown in grey) can change, and
+// netwatch follows it. Render with `npm run diagrams` in web/.
+digraph monitored_path {
+  graph [rankdir=LR, bgcolor="white", fontname="Helvetica", pad=0.3, nodesep=0.35, ranksep=0.45,
+         label="Roles along one target's path, upstream to downstream. An incident's probable cause is the most upstream role with an incident.", labelloc=b, fontsize=12, fontcolor="#555555"];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#8a8f98", fillcolor="#f4f6f8", margin="0.3,0.1"];
+  edge  [color="#8a8f98", arrowsize=0.7, fontname="Helvetica", fontsize=9, fontcolor="#666666"];
+
+  subgraph cluster_host {
+    label="This host"; fontsize=12; fontcolor="#333333"; style="rounded,dashed"; color="#b8bec7";
+    kernel [label=<<b>Kernel</b><br/><font color="#666666" point-size="9">loopback RTT, counters,<br/>drop reasons, kernel log</font>>];
+    nic    [label=<<b>NIC</b><br/><font color="#666666" point-size="9">egress device (followed<br/>across failover), throughput</font>>];
+    tunnel [label=<<b>Tunnel</b><br/><font color="#666666" point-size="9">VPN device, if any</font>>, style="rounded,filled,dashed"];
+    local  [label=<<b>Local interface</b><br/><font color="#666666" point-size="9">source address</font>>];
+    wifi   [label=<<b>Wi-Fi</b><br/><font color="#666666" point-size="9">signal, bitrate, BSSID</font>>, fillcolor="#eef3fb", style="rounded,filled,dashed"];
+    cell   [label=<<b>Cellular</b><br/><font color="#666666" point-size="9">signal, operator, cell</font>>, fillcolor="#eef3fb", style="rounded,filled,dashed"];
+  }
+
+  subgraph cluster_lan {
+    label="Home / office network"; fontsize=12; fontcolor="#333333"; style="rounded,dashed"; color="#b8bec7";
+    hop1 [label=<<b>Hop 1</b><br/><font color="#666666" point-size="9">the gateway, every 1 s</font>>];
+  }
+
+  subgraph cluster_isp {
+    label="ISP and beyond"; fontsize=12; fontcolor="#333333"; style="rounded,dashed"; color="#b8bec7";
+    hop2  [label=<<b>Hop 2</b><br/><font color="#666666" point-size="9">every 1 s</font>>];
+    hop3  [label=<<b>Hop 3</b><br/><font color="#666666" point-size="9">every 1 s</font>>];
+    trace [label=<<b>Hops 4–30</b><br/><font color="#666666" point-size="9">path traces: every 6 h,<br/>and when an incident opens</font>>, style="rounded,filled,dashed"];
+    target [label=<<b>Target</b><br/><font color="#666666" point-size="9">ICMP / DNS every 5 s<br/>HTTPS every 10 s</font>>, fillcolor="#e9f5ee", color="#5e9c76"];
+  }
+
+  kernel -> nic -> tunnel -> local -> hop1 -> hop2 -> hop3 -> trace -> target;
+  kernel -> wifi [style=dotted, arrowhead=none, label="off the path"];
+  wifi -> cell [style=invis];
+}

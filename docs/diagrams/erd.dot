@@ -1,0 +1,115 @@
+// The SQLite schema (crates/netwatch-adapter-sqlite/migrations), as of migration
+// 0007. The database declares no foreign keys: the single writer (ADR-0006) keeps
+// these relationships, and history is keyed by role and identity epoch (ADR-0003).
+// Render with `npm run diagrams` in web/.
+digraph erd {
+  graph [rankdir=LR, bgcolor="white", fontname="Helvetica", pad=0.3, nodesep=0.35, ranksep=1.0,
+         label=<Solid lines: rows refer to another table's key. Dashed: rows name a role (kernel, nic, hop:1:2, target:1, …), which has no table of its own.<br/>PK: primary key. Times are µs since the Unix epoch (UTC). Retention under each table name.>, labelloc=b, fontsize=11, fontcolor="#555555"];
+  node  [shape=plain, fontname="Helvetica", fontsize=10];
+  edge  [color="#7d8590", arrowsize=0.7, arrowhead=crow, arrowtail=tee, dir=both, fontname="Helvetica", fontsize=9, fontcolor="#555555"];
+
+  role [shape=box, style="rounded,dashed", color="#9aa0a8", fontcolor="#444444", label=<<b>role</b><br/><font point-size="9">a key, not a table</font>>];
+
+  epochs [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
+    <tr><td bgcolor="#dfe8f6" colspan="2"><b>epochs</b><br/><font point-size="9">forever</font></td></tr>
+    <tr><td align="left" port="epoch"><b>epoch</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left" port="role">role</td><td align="left">TEXT</td></tr>
+    <tr><td align="left">identity</td><td align="left">TEXT</td></tr>
+    <tr><td align="left">started_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">ended_us</td><td align="left">INTEGER, open while NULL</td></tr></table>>];
+
+  samples [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
+    <tr><td bgcolor="#dfe8f6" colspan="2"><b>samples</b><br/><font point-size="9">7 days</font></td></tr>
+    <tr><td align="left" port="role">role</td><td align="left">TEXT</td></tr>
+    <tr><td align="left" port="epoch">epoch</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">at_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">rtt_us</td><td align="left">INTEGER, NULL if lost</td></tr>
+    <tr><td align="left">loss</td><td align="left">timed-out | unreachable | refused |<br/>unexpected-response | send-failed</td></tr>
+    <tr><td align="left">loss_code</td><td align="left">INTEGER</td></tr></table>>];
+
+  rollups [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
+    <tr><td bgcolor="#dfe8f6" colspan="2"><b>rollups</b><br/><font point-size="9">minute 90 days, hour forever</font></td></tr>
+    <tr><td align="left" port="role"><b>role</b></td><td align="left">TEXT PK</td></tr>
+    <tr><td align="left" port="epoch"><b>epoch</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left"><b>tier</b></td><td align="left">minute | hour, PK</td></tr>
+    <tr><td align="left"><b>start_us</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left">count, lost</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">rtt_sum_us, rtt_min_us, rtt_max_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">histogram</td><td align="left">BLOB</td></tr></table>>];
+
+  rollup_progress [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
+    <tr><td bgcolor="#dfe8f6" colspan="2"><b>rollup_progress</b></td></tr>
+    <tr><td align="left"><b>tier</b></td><td align="left">minute | hour, PK</td></tr>
+    <tr><td align="left">done_until_us</td><td align="left">INTEGER</td></tr></table>>];
+
+  readings [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e9c76">
+    <tr><td bgcolor="#e1f1e7" colspan="2"><b>readings</b><br/><font point-size="9">7 days</font></td></tr>
+    <tr><td align="left" port="role">role</td><td align="left">TEXT</td></tr>
+    <tr><td align="left" port="epoch">epoch</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">at_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">gauge</td><td align="left">TEXT (e.g. rx bit/s, signal dBm)</td></tr>
+    <tr><td align="left">value</td><td align="left">REAL</td></tr></table>>];
+
+  reading_rollups [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e9c76">
+    <tr><td bgcolor="#e1f1e7" colspan="2"><b>reading_rollups</b><br/><font point-size="9">minute 90 days, hour forever</font></td></tr>
+    <tr><td align="left" port="role"><b>role</b></td><td align="left">TEXT PK</td></tr>
+    <tr><td align="left" port="epoch"><b>epoch</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left"><b>tier</b>, <b>gauge</b>, <b>start_us</b></td><td align="left">PK</td></tr>
+    <tr><td align="left">count, sum, min, max</td><td align="left">INTEGER, REAL</td></tr></table>>];
+
+  events [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#b88a3e">
+    <tr><td bgcolor="#f6ecd9" colspan="2"><b>events</b><br/><font point-size="9">forever</font></td></tr>
+    <tr><td align="left"><b>id</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left">at_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">kind</td><td align="left">TEXT (epoch-started, kernel-log,<br/>trace, public-address, …)</td></tr>
+    <tr><td align="left" port="role">role</td><td align="left">TEXT, nullable</td></tr>
+    <tr><td align="left" port="epoch">epoch</td><td align="left">INTEGER, nullable</td></tr>
+    <tr><td align="left">detail</td><td align="left">TEXT</td></tr></table>>];
+
+  incidents [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#b85e5e">
+    <tr><td bgcolor="#f6dfdf" colspan="2"><b>incidents</b><br/><font point-size="9">forever</font></td></tr>
+    <tr><td align="left" port="role"><b>role</b></td><td align="left">TEXT PK</td></tr>
+    <tr><td align="left"><b>started_us</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left">ended_us</td><td align="left">INTEGER, open while NULL</td></tr>
+    <tr><td align="left">severity</td><td align="left">degradation | outage</td></tr>
+    <tr><td align="left" port="cause">cause</td><td align="left">TEXT: the probable cause's role</td></tr></table>>];
+
+  traces [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#7a5eb8">
+    <tr><td bgcolor="#e8e1f6" colspan="2"><b>traces</b><br/><font point-size="9">forever</font></td></tr>
+    <tr><td align="left" port="id"><b>id</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left" port="role">role</td><td align="left">TEXT: the target's role</td></tr>
+    <tr><td align="left">at_us</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">kind</td><td align="left">routine | episode</td></tr>
+    <tr><td align="left">destination</td><td align="left">TEXT: an IP address</td></tr>
+    <tr><td align="left">reached</td><td align="left">INTEGER (boolean)</td></tr>
+    <tr><td align="left">silent_from</td><td align="left">INTEGER: a TTL</td></tr></table>>];
+
+  trace_hops [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#7a5eb8">
+    <tr><td bgcolor="#e8e1f6" colspan="2"><b>trace_hops</b></td></tr>
+    <tr><td align="left" port="trace_id"><b>trace_id</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left" port="ttl"><b>ttl</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left">sent, answered</td><td align="left">INTEGER</td></tr>
+    <tr><td align="left">best_us, median_us</td><td align="left">INTEGER</td></tr></table>>];
+
+  trace_responders [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#7a5eb8">
+    <tr><td bgcolor="#e8e1f6" colspan="2"><b>trace_responders</b></td></tr>
+    <tr><td align="left" port="trace_id"><b>trace_id</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left" port="ttl"><b>ttl</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left"><b>position</b></td><td align="left">INTEGER PK</td></tr>
+    <tr><td align="left">address</td><td align="left">TEXT</td></tr>
+    <tr><td align="left">name</td><td align="left">TEXT: PTR and origin AS</td></tr></table>>];
+
+  epochs:epoch -> samples:epoch;
+  epochs:epoch -> rollups:epoch;
+  epochs:epoch -> readings:epoch;
+  epochs:epoch -> reading_rollups:epoch;
+  epochs:epoch -> events:epoch [arrowtail=teeodot, arrowhead=crowodot];
+  traces:id -> trace_hops:trace_id;
+  trace_hops:ttl -> trace_responders:ttl [label="(trace_id, ttl)"];
+
+  edge [style=dashed, color="#9aa0a8", arrowtail=none, arrowhead=crow];
+  role -> epochs:role;
+  role -> incidents:role;
+  role -> incidents:cause [arrowhead=crowodot];
+  role -> traces:role;
+}
