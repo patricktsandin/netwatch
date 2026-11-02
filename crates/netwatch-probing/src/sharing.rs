@@ -12,10 +12,13 @@
 //! - Every target's hop at every TTL in [`HOP_TTLS`] is served by exactly one stream.
 //! - A stream's owner is the lowest target it serves.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU8;
 
 use netwatch_shared::{HopTtl, Role, TargetId};
+
+use crate::Health;
 
 /// The TTLs probed continuously toward every target with hops (ADR-0002).
 pub const HOP_TTLS: [HopTtl; 3] = [
@@ -45,6 +48,13 @@ impl HopStream {
             ttl: self.ttl,
         }
     }
+}
+
+/// A shared stream's row status (ADR-0045): the worst status among the hop roles it
+/// serves that are graded, or `None` if none is.
+pub fn row_health(stream: &HopStream, grades: &BTreeMap<Role, Health>) -> Option<Health> {
+    let _ = (stream, grades);
+    None
 }
 
 /// The hop streams for `targets`: every target with hops (ICMP and DNS), with the

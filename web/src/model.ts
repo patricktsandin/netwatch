@@ -153,6 +153,15 @@ export interface NetworkMap {
   readonly edges: readonly MapEdge[];
 }
 
+/** A row several hop roles share, because one probe stream serves them all
+ *  (ADR-0045). Its key is its owner's, whose samples it draws. */
+export interface SharedRow {
+  readonly key: RoleKey;
+  /** Every role it shows, the owner first. */
+  readonly members: readonly RoleKey[];
+  readonly status: Status;
+}
+
 export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }
@@ -160,7 +169,12 @@ export type Live =
   | { readonly type: "cleared" }
   | { readonly type: "reading"; readonly role: RoleKey; readonly reading: Reading }
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
-  | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
+  | {
+      readonly type: "statuses";
+      readonly statuses: ReadonlyMap<RoleKey, Status>;
+      /** Each shared row's status, by row key. */
+      readonly rows: ReadonlyMap<RoleKey, Status>;
+    }
   | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> }
   | { readonly type: "map"; readonly map: NetworkMap };
 

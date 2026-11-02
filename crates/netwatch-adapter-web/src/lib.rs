@@ -17,6 +17,7 @@
 //! - `GET /api/host`: facts about the host and its connection (ADR-0039)
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
 //! - `GET /api/map`: the network map (ADR-0042)
+//! - `GET /api/rows`: the rows several hop roles share, with their statuses (ADR-0045)
 //! - `GET /api/config`: the targets as the settings page edits them
 //! - `PUT /api/config`: replaces the targets, then the daemon restarts (ADR-0035)
 //! - `DELETE /api/history`: flushes all history (ADR-0038)
@@ -51,7 +52,7 @@ use tokio::sync::{broadcast, watch};
 
 pub use api::{
     BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, MapView,
-    ReadingPoint, ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView,
+    ReadingPoint, ReadingRollupPoint, RoleSummary, RollupPoint, RowView, SamplePoint, TargetView,
     status_text,
 };
 pub use api::{ConfigView, HostView, TargetSpec};
@@ -91,6 +92,8 @@ pub struct Current {
     pub names: BTreeMap<String, String>,
     /// The network map (ADR-0042).
     pub map: MapView,
+    /// The shared hop rows (ADR-0045).
+    pub rows: Vec<RowView>,
 }
 
 impl Current {
@@ -151,6 +154,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
         .route("/api/map", get(network_map))
+        .route("/api/rows", get(shared_rows))
         .route("/api/host", get(host))
         .route("/api/config", get(config).put(save_config))
         .route("/api/history", axum::routing::delete(delete_history))
@@ -938,6 +942,10 @@ async fn bindings(State(state): State<AppState>) -> Json<BTreeMap<String, Bindin
 
 async fn network_map(State(state): State<AppState>) -> Json<MapView> {
     Json(state.current.borrow().map.clone())
+}
+
+async fn shared_rows(State(state): State<AppState>) -> Json<Vec<RowView>> {
+    Json(state.current.borrow().rows.clone())
 }
 
 async fn layer_reports(State(state): State<AppState>) -> Json<BTreeMap<String, LayerReportView>> {

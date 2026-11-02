@@ -825,6 +825,7 @@ fn publish_current(
     let map = network_map(&grades, topology, names, traces, &bindings);
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
+        rows: BTreeMap::new(),
     });
     let _ = live.send(LiveMessage::Bindings {
         bindings: bindings.clone(),

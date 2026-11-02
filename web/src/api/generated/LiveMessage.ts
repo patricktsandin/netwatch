@@ -38,7 +38,11 @@ incident: IncidentView, } | { "type": "statuses",
 /**
  * Status by role key.
  */
-statuses: { [key in string]: string }, } | { "type": "bindings", 
+statuses: { [key in string]: string }, 
+/**
+ * Each shared row's status, by row key (ADR-0045).
+ */
+rows: { [key in string]: string }, } | { "type": "bindings", 
 /**
  * Binding by role key.
  */

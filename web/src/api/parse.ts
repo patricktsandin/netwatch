@@ -11,6 +11,7 @@ import type { ReadingRollupPoint } from "./generated/ReadingRollupPoint";
 import type { LayerReportView } from "./generated/LayerReportView";
 import type { MapEdgeView } from "./generated/MapEdgeView";
 import type { MapNodeView } from "./generated/MapNodeView";
+import type { RowView } from "./generated/RowView";
 import type { SightingView } from "./generated/SightingView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
@@ -38,6 +39,7 @@ import type {
   Reading,
   RoleKey,
   Severity,
+  SharedRow,
   Status,
 } from "../model";
 
@@ -271,6 +273,17 @@ export function parseStatuses(value: unknown): ReadonlyMap<RoleKey, Status> {
   );
 }
 
+/** The rows several hop roles share (ADR-0045), from `/api/rows`. */
+export function parseSharedRows(value: unknown): readonly SharedRow[] {
+  return array(value, "rows").map((v) => {
+    const r = record<RowView>(v, "row");
+    const members = array(r.members, "row.members").map((m) => roleKey(m, "row.members"));
+    const key = roleKey(r.key, "row.key");
+    if (members[0] !== key) throw new ParseError("row.members: the owner comes first");
+    return { key, members, status: oneOf(r.status, ROLE_STATUSES, "row.status") };
+  });
+}
+
 /** Every role's binding, from `/api/bindings` or the live stream. */
 export function parseBindings(value: unknown): ReadonlyMap<RoleKey, Binding> {
   const all = record<Record<string, unknown>>(value, "bindings");
@@ -353,6 +366,7 @@ export function parseLive(value: unknown): Live {
     reading: unknown;
     report: unknown;
     statuses: unknown;
+    rows: unknown;
     bindings: unknown;
     map: unknown;
   }>(value, "live");
@@ -368,7 +382,7 @@ export function parseLive(value: unknown): Live {
     case "reading":
       return { type: "reading", role: roleKey(m.role, "live.role"), reading: parseReading(m.reading) };
     case "statuses":
-      return { type: "statuses", statuses: parseStatuses(m.statuses) };
+      return { type: "statuses", statuses: parseStatuses(m.statuses), rows: parseStatuses(m.rows) };
     case "bindings":
       return { type: "bindings", bindings: parseBindings(m.bindings) };
     case "layer":

@@ -54,6 +54,19 @@ pub fn status_text(health: netwatch_probing::Health) -> String {
     .to_owned()
 }
 
+/// A row that several hop roles share, because one probe stream serves them all
+/// (ADR-0045). Roles in no such row have rows of their own.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct RowView {
+    /// The row's key: its owner role's key, whose samples it draws.
+    pub key: String,
+    /// The keys of every role it shows, the owner first.
+    pub members: Vec<String>,
+    /// The worst of its members' statuses, as `status_text` spells it.
+    pub status: String,
+}
+
 /// A configured target, for labeling its rows.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]
@@ -299,6 +312,8 @@ pub enum LiveMessage {
     Statuses {
         /// Status by role key.
         statuses: BTreeMap<String, String>,
+        /// Each shared row's status, by row key (ADR-0045).
+        rows: BTreeMap<String, String>,
     },
     /// Every role's current identity, from Topology.
     Bindings {
