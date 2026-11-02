@@ -316,7 +316,12 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030).
     // Each outcome is kept with when it arrived on the monotonic clock, which judges
     // freshness: a step of the wall clock mustn't make every role stale (ADR-0004).
+    // The window holds one epoch's outcomes, so a grade never mixes identities.
+    let mut no_egress_since: Option<netwatch_shared::Instant> = None;
+    // The identity of the last egress pin, kept across times without one.
+    let mut last_egress: Option<Identity> = None;
     let mut recent: HashMap<Role, VecDeque<(netwatch_shared::Instant, bool)>> = HashMap::new();
+    let mut recent_epoch: HashMap<Role, netwatch_shared::IdentityEpoch> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
     // identity, read every 5 minutes.
@@ -408,6 +413,15 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // A `system` DNS target left out for want of a resolver is a disabled source
+    // until the resolver appears (ADR-0055).
+    for reason in &config.left_out {
+        tracing::warn!(%reason, "target left out");
+        recorder.note("source-disabled", Role::Kernel, reason.clone());
+        disabled.insert(reason.clone());
+    }
+    let mut resolver_checked = std::time::Instant::now();
+    let mut restarting = false;
     // systemd stops the service with SIGTERM; a terminal with SIGINT.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("listening for SIGTERM")?;
@@ -455,6 +469,21 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 last_sysctls = sysctls;
+                // `dns = "system"` follows the system's resolver: when it changes, such
+                // as on another network, or appears after an offline boot, the daemon
+                // restarts to probe the new one (ADR-0055).
+                if let Some(resolved) = config.system_resolver
+                    && !restarting
+                    && resolver_checked.elapsed() >= RESOLVER_CHECK_EVERY
+                {
+                    resolver_checked = std::time::Instant::now();
+                    let now = config::system_resolver();
+                    if now != resolved && now.is_some() {
+                        tracing::info!(before = ?resolved, ?now, "the system resolver changed; restarting");
+                        settings::restart_soon(writes.clone());
+                        restarting = true;
+                    }
+                }
                 let nic = topology.binding(&Role::Nic).and_then(|b| match b.identity {
                     Identity::Interface { index, .. } => Some(index),
                     Identity::Address(_) => None,
@@ -463,9 +492,7 @@ async fn main() -> anyhow::Result<()> {
                     // No NIC carries the path now (a tunnel, or no route): its last
                     // grade and link facts describe an interface no longer measured.
                     layer_health.remove(&Role::Nic);
-                    layers_tx.send_modify(|all| {
-                        all.remove(&Role::Nic.key());
-                    });
+                    publish_gone(&Role::Nic, "not on the path now", &live, &layers_tx);
                     current_tx.send_modify(|c| {
                         c.host.link = None;
                         c.host.link_speed_mbps = None;
@@ -512,7 +539,16 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), &live, &current_tx);
+                // No way out counts once it has lasted (ADR-0055): at a start, and
+                // between the observations of one change, there is briefly none.
+                let no_way_out = match egress_pin(&topology) {
+                    Some(_) => {
+                        no_egress_since = None;
+                        false
+                    }
+                    None => clock.now().since(*no_egress_since.get_or_insert(clock.now())).get::<second>() >= NO_EGRESS_AFTER_S,
+                };
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), no_way_out, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     // A member's copy of a shared hop has the owner's incidents too, and
@@ -538,6 +574,15 @@ async fn main() -> anyhow::Result<()> {
                     *current = egress;
                     changed
                 });
+                // A different way out from the last one known, across any time with
+                // none, is a different path: the routers the traces found beyond the
+                // hops aren't on it, and the map stops drawing them until a trace
+                // runs on it (ADR-0055). The same interface coming back keeps them.
+                if let Some(now) = egress_pin(&topology).map(|b| b.identity.clone())
+                    && last_egress.replace(now.clone()).is_some_and(|before| before != now)
+                {
+                    latest_traces.clear();
+                }
                 // The hops are on another path now (ADR-0054).
                 if changed {
                     let hops: Vec<Role> = topology.bindings().map(|(role, _)| role.clone()).filter(|role| matches!(role, Role::Hop { .. })).collect();
@@ -562,6 +607,9 @@ async fn main() -> anyhow::Result<()> {
                     let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
                     incidents.outcome(&sample.role, sample.at, answered);
                     let outcomes = recent.entry(sample.role.clone()).or_default();
+                    if recent_epoch.insert(sample.role.clone(), sample.epoch) != Some(sample.epoch) {
+                        outcomes.clear();
+                    }
                     outcomes.push_back((clock.now(), answered));
                     if outcomes.len() > health::WINDOW {
                         outcomes.pop_front();
@@ -621,9 +669,7 @@ async fn main() -> anyhow::Result<()> {
                             handle(output, clock.wall_now(), &observations_tx, &recorder);
                         }
                         layer_health.remove(&role);
-                        layers_tx.send_modify(|all| {
-                            all.remove(&role.key());
-                        });
+                        publish_gone(&role, "no longer there", &live, &layers_tx);
                         attachments.remove(&role);
                         continue;
                     }
@@ -881,6 +927,41 @@ impl Recorder {
 }
 
 /// Publishes a layer's health report to the UI, and logs it when something got worse.
+/// Replaces a layer's last report with one that says why it has none now, so that
+/// nothing shows a report of something no longer measured (ADR-0030).
+fn publish_gone(
+    role: &Role,
+    why: &str,
+    live: &broadcast::Sender<LiveMessage>,
+    layers: &watch::Sender<BTreeMap<String, LayerReportView>>,
+) {
+    let view = LayerReportView {
+        status: status_text(Health::Unknown),
+        notes: vec![why.to_owned()],
+        increases: Vec::new(),
+        resets: Vec::new(),
+        pressure: None,
+        conntrack_fill: None,
+        clock_synchronized: None,
+        clock_error_us: None,
+        disabled: Vec::new(),
+    };
+    let _ = live.send(LiveMessage::Layer {
+        role: role.key(),
+        report: view.clone(),
+    });
+    layers.send_modify(|all| {
+        all.insert(role.key(), view);
+    });
+}
+
+/// How often the system's resolver is read again, for `dns = "system"`.
+const RESOLVER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long there must have been no egress path before the path is graded down
+/// (ADR-0055).
+const NO_EGRESS_AFTER_S: f64 = 5.0;
+
 /// A role's outcomes older than this many seconds are too old to grade it by, so it
 /// is `Unknown`.
 const STALE_AFTER_S: f64 = 30.0;
@@ -900,6 +981,7 @@ fn publish_current(
     hop_streams: &[sharing::HopStream],
     destinations: &BTreeMap<TargetId, IpAddr>,
     now: netwatch_shared::Instant,
+    no_way_out: bool,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
 ) -> BTreeMap<Role, Health> {
@@ -919,10 +1001,10 @@ fn publish_current(
     }
     let grades = health::along_paths(&grades);
     // With no way out, nothing is measured, and the path is down (ADR-0053).
-    let grades = if egress_pin(topology).is_some() {
-        grades
-    } else {
+    let grades = if no_way_out {
         health::without_egress(&grades)
+    } else {
+        grades
     };
     let statuses: BTreeMap<String, String> = grades
         .iter()

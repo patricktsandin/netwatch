@@ -49,7 +49,7 @@ COPY --from=build /out/ /
 ENV NETWATCH_CONFIG=/etc/netwatch/netwatch.toml
 VOLUME ["/etc/netwatch", "/var/lib/netwatch"]
 EXPOSE 8732
-# netwatch shuts down cleanly on SIGINT. As PID 1 it would ignore SIGTERM.
+# netwatch shuts down cleanly, flushing what it has batched, on SIGINT or SIGTERM.
 STOPSIGNAL SIGINT
 ENTRYPOINT ["/usr/bin/netwatch-entrypoint"]
 LABEL org.opencontainers.image.title="netwatch" \

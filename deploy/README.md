@@ -76,11 +76,11 @@ With docker, use the same options with `docker run`. Each option matters:
 | `-v …:/etc/netwatch` | The configuration, which the settings page rewrites. The first start copies the defaults in. |
 | `-v …:/var/lib/netwatch` | The history database. |
 | `-v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket` | Optional: cellular stats from ModemManager. |
-| `-v /run/systemd/resolve:/run/systemd/resolve:ro` | Needed on hosts that run systemd-resolved (Fedora, Ubuntu, and others). There the container's `/etc/resolv.conf` names only the local stub, so the `system` DNS target has no upstream resolver and netwatch refuses the configuration. Leave it out where `/run/systemd/resolve` doesn't exist. |
+| `-v /run/systemd/resolve:/run/systemd/resolve:ro` | Needed on hosts that run systemd-resolved (Fedora, Ubuntu, and others). There the container's `/etc/resolv.conf` names only the local stub, so the `system` DNS target has no upstream resolver and is left out. Leave it out where `/run/systemd/resolve` doesn't exist. |
 
 Run it rootful (`sudo podman`) for everything. A rootless container's capabilities
-apply only inside its user namespace, so ARP/NDP probes, the kernel log, and drop
-reasons are disabled. ICMP, DNS, HTTPS, and hop probes still work.
+apply only inside its user namespace, so the kernel log and drop reasons are
+disabled. ICMP, DNS, HTTPS, and hop probes still work.
 
 `podman stop netwatch` stops it cleanly. The image sets `SIGINT` as its stop signal.
 To use a different listen address or database path, set `NETWATCH_LISTEN` or

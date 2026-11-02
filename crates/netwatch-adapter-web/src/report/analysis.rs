@@ -12,12 +12,31 @@ use netwatch_shared::{Gauge, IdentityEpoch, Role, WallTime};
 
 use super::{Episode, Place, utc};
 
-/// Total and longest outage time beyond the gateway within `from..until`, with
+/// Which outages a report adds up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outages {
+    /// Outages beyond the gateway: the ISP's network or further.
+    BeyondGateway,
+    /// Outages caused by the local interface: no way out at all (ADR-0053). No
+    /// probe could be sent, so no availability figure includes this time.
+    NoWayOut,
+}
+
+/// Total and longest time of `which` outages within `from..until`, with
 /// overlapping episodes counted once. Open episodes end at `until`.
-pub fn outage_beyond_gateway(episodes: &[Episode], from: WallTime, until: WallTime) -> (i64, i64) {
+pub fn outage_time(
+    episodes: &[Episode],
+    which: Outages,
+    from: WallTime,
+    until: WallTime,
+) -> (i64, i64) {
+    let counts = |e: &Episode| match which {
+        Outages::BeyondGateway => e.place == Place::BeyondGateway,
+        Outages::NoWayOut => e.cause == Role::LocalInterface,
+    };
     let mut spans: Vec<(i64, i64)> = episodes
         .iter()
-        .filter(|e| e.place == Place::BeyondGateway && e.severity == Severity::Outage)
+        .filter(|e| e.severity == Severity::Outage && counts(e))
         .map(|e| {
             let end = e.ended.unwrap_or(until).min(until);
             (e.started.max(from).as_unix_micros(), end.as_unix_micros())
@@ -147,7 +166,9 @@ fn length_bucket(length: u64) -> usize {
     }
 }
 
-/// Every role's loss pattern, from its samples in time order.
+/// Every role's loss pattern, from its samples in time order. A run of losses, and
+/// a step between answers, never span two epochs: they would join two identities,
+/// such as the routers before and after a failover (ADR-0003).
 pub fn loss_patterns(samples: &[Sample]) -> BTreeMap<Role, LossPattern> {
     let mut by_role: BTreeMap<Role, Vec<&Sample>> = BTreeMap::new();
     for s in samples {
@@ -173,7 +194,12 @@ pub fn loss_patterns(samples: &[Sample]) -> BTreeMap<Role, LossPattern> {
                 }
             };
             let (mut previous, mut sum, mut steps) = (None::<f64>, 0.0, 0u64);
+            let mut epoch = None;
             for s in samples {
+                if epoch.replace(s.epoch).is_some_and(|e| e != s.epoch) {
+                    end_run(&mut run, &mut pattern);
+                    previous = None;
+                }
                 match s.measurement {
                     Measurement::Lost(_) => run += 1,
                     Measurement::RoundTrip(rtt) => {
@@ -356,14 +382,31 @@ mod tests {
             episode(400, Some(900), Place::BeyondGateway, Severity::Degradation),
             episode(950, None, Place::BeyondGateway, Severity::Outage),
         ];
+        let beyond = Outages::BeyondGateway;
         assert_eq!(
-            outage_beyond_gateway(&episodes, s(0), s(1000)),
+            outage_time(&episodes, beyond, s(0), s(1000)),
             (150_000_000, 90_000_000)
         );
         // Clipped to the span: only what falls inside it counts.
         assert_eq!(
-            outage_beyond_gateway(&episodes, s(45), s(205)),
+            outage_time(&episodes, beyond, s(45), s(205)),
             (50_000_000, 45_000_000)
+        );
+    }
+
+    #[test]
+    fn time_without_a_way_out_is_the_outages_the_local_interface_caused() {
+        let no_way_out = Episode {
+            cause: Role::LocalInterface,
+            ..episode(100, Some(400), Place::HostOrLan, Severity::Outage)
+        };
+        let episodes = [
+            no_way_out,
+            episode(500, Some(600), Place::HostOrLan, Severity::Outage),
+        ];
+        assert_eq!(
+            outage_time(&episodes, Outages::NoWayOut, s(0), s(1000)),
+            (300_000_000, 300_000_000)
         );
     }
 
@@ -413,6 +456,30 @@ mod tests {
         assert_eq!((p.bursts, p.longest, p.by_length), (3, 3, [2, 1, 0, 0]));
         // |14 − 10| and |12 − 14|.
         assert_eq!(p.jitter_ms, Some(3.0));
+    }
+
+    #[test]
+    fn no_burst_or_jitter_step_spans_two_epochs() {
+        // Hop 1 fails over from a 1 ms gateway to a 35 ms one (ADR-0054).
+        let in_epoch = |n, at, m| Sample {
+            epoch: IdentityEpoch::new(NonZeroU64::new(n).unwrap()),
+            ..sample("hop:1:1", at, m)
+        };
+        let lost = || Measurement::Lost(Loss::TimedOut);
+        let patterns = loss_patterns(&[
+            in_epoch(1, 1, rtt(1.0)),
+            in_epoch(1, 2, rtt(2.0)),
+            in_epoch(1, 3, lost()),
+            in_epoch(2, 4, lost()),
+            in_epoch(2, 5, rtt(35.0)),
+            in_epoch(2, 6, rtt(36.0)),
+        ]);
+        let p = &patterns[&role("hop:1:1")];
+        // Two runs of one, one per router, not a run of two.
+        assert_eq!((p.bursts, p.longest), (2, 1));
+        // |2 − 1| and |36 − 35|: never |35 − 2|.
+        let jitter = p.jitter_ms.unwrap();
+        assert!((jitter - 1.0).abs() < 1e-9, "{jitter}");
     }
 
     #[test]

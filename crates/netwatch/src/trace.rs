@@ -128,48 +128,62 @@ async fn run(
     })
 }
 
-/// Every round's probe at one TTL. Each round's probe has the round as its
-/// sequence number, so a late answer to an earlier round is never taken for this
-/// one's (ADR-0004).
+/// Every round's probe at one TTL. Rounds are sent on their schedule whatever is
+/// answered (a fixed cadence, ADR-0004), and each has [`TIMEOUT`] from its own send
+/// to be answered. Each round's probe has the round as its sequence number, so a
+/// late answer to an earlier round is never taken for another's (ADR-0023).
 async fn sweep(socket: ProbeSocket, ttl: HopTtl, clock: Clock) -> Vec<TraceProbe> {
     let start = tokio::time::Instant::now();
-    let mut probes = Vec::new();
-    for round in 0..ROUNDS {
-        tokio::time::sleep_until(start + ROUND_EVERY * u32::from(round)).await;
-        let sequence = ProbeSequence::new(round);
-        let sent = clock.now();
-        let mut probe = TraceProbe {
-            ttl,
-            responder: None,
-            rtt: None,
-            ends_path: false,
+    let unanswered = || TraceProbe {
+        ttl,
+        responder: None,
+        rtt: None,
+        ends_path: false,
+    };
+    let mut probes: Vec<TraceProbe> = (0..ROUNDS).map(|_| unanswered()).collect();
+    let mut sent = Vec::with_capacity(usize::from(ROUNDS));
+    let last_answer = start + ROUND_EVERY * u32::from(ROUNDS - 1) + TIMEOUT;
+    let mut receiving = true;
+    loop {
+        let next = u16::try_from(sent.len()).unwrap_or(ROUNDS);
+        let wake = if next < ROUNDS {
+            start + ROUND_EVERY * u32::from(next)
+        } else {
+            last_answer
         };
-        if socket
-            .send(sequence, ProbeIndex::new(u64::from(round)))
-            .is_ok()
-        {
-            let answer = tokio::time::timeout(TIMEOUT, async {
-                loop {
-                    match socket.recv().await {
-                        Ok(received) if received.reply.sequence == sequence => {
-                            return Some(received);
-                        }
-                        Ok(_) => {}
-                        Err(_) => return None,
+        tokio::select! {
+            () = tokio::time::sleep_until(wake) => {
+                if next == ROUNDS {
+                    break;
+                }
+                // A send that fails leaves its round unanswered.
+                let ok = socket.send(ProbeSequence::new(next), ProbeIndex::new(u64::from(next))).is_ok();
+                sent.push(ok.then(|| clock.now()));
+            }
+            received = socket.recv(), if receiving => match received {
+                Ok(received) => {
+                    let round = usize::from(received.reply.sequence.get());
+                    let at = sent.get(round).copied().flatten();
+                    if let (Some(at), Some(probe)) = (at, probes.get_mut(round))
+                        && probe.rtt.is_none()
+                        && clock.now().since(at).get::<netwatch_shared::uom::si::time::second>()
+                            <= TIMEOUT.as_secs_f64()
+                    {
+                        probe.responder = received.responder;
+                        probe.rtt = Some(clock.now().since(at));
+                        probe.ends_path = matches!(
+                            received.reply.kind,
+                            ReplyKind::Echo | ReplyKind::Unreachable(_)
+                        );
                     }
                 }
-            })
-            .await;
-            if let Ok(Some(received)) = answer {
-                probe.responder = received.responder;
-                probe.rtt = Some(clock.now().since(sent));
-                probe.ends_path = matches!(
-                    received.reply.kind,
-                    ReplyKind::Echo | ReplyKind::Unreachable(_)
-                );
-            }
+                // The socket can't be read: the rounds left go unanswered.
+                Err(_) => receiving = false,
+            },
         }
-        probes.push(probe);
+        if sent.len() == usize::from(ROUNDS) && probes.iter().all(|p| p.rtt.is_some()) {
+            break;
+        }
     }
     probes
 }

@@ -8,3 +8,4 @@ cargo test
 cargo verus verify -p netwatch-verified
 cargo kani
 ./scripts/check-specs.sh
+(cd web && npx tsc --noEmit && npx vitest run && npx eslint .)

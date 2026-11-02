@@ -19,7 +19,8 @@ RestartSec=5
 
 # Exactly the capabilities ADR-0007 allows. Every one is optional: without it, the
 # sources that need it are disabled and the daemon says so, rather than failing.
-#   CAP_NET_RAW:              gateway ARP/NDP probes (AF_PACKET)
+#   CAP_NET_RAW:              reserved for gateway ARP/NDP probes (AF_PACKET), which
+#                             aren't built yet; nothing uses it today
 #   CAP_SYSLOG:               /dev/kmsg (kernel.dmesg_restrict=1)
 #   CAP_BPF, CAP_PERFMON:     the drop-reason eBPF program
 AmbientCapabilities=CAP_NET_RAW CAP_SYSLOG CAP_BPF CAP_PERFMON

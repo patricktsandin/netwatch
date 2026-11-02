@@ -12,7 +12,7 @@ use netwatch_probing::trace::TraceKind;
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Role, WallTime};
 
-use super::analysis::{LinkLoad, LossPattern, PeriodStats, TimelineRow, outage_beyond_gateway};
+use super::analysis::{LinkLoad, LossPattern, Outages, PeriodStats, TimelineRow, outage_time};
 use super::{Episode, PathStats, Place, format_duration, utc};
 
 /// One episode, with everything measured about it.
@@ -561,7 +561,8 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         })
         .count();
     let all: Vec<Episode> = report.episodes.iter().map(|r| r.episode.clone()).collect();
-    let (total, longest) = outage_beyond_gateway(&all, report.from, report.until);
+    let (total, longest) = outage_time(&all, Outages::BeyondGateway, report.from, report.until);
+    let (stranded, _) = outage_time(&all, Outages::NoWayOut, report.from, report.until);
     blocks.push(Block::Heading("Summary".to_owned()));
     blocks.push(Block::Facts(vec![
         (
@@ -588,6 +589,13 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
                 format_duration(longest)
             ),
         ),
+        (
+            "Time without a way out".to_owned(),
+            format!(
+                "{} (no route at all from this host, so nothing could be sent)",
+                format_duration(stranded)
+            ),
+        ),
     ]));
     let targets: Vec<&PathStats> = report
         .summary
@@ -596,7 +604,7 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         .collect();
     if !targets.is_empty() {
         blocks.push(Block::Table {
-            head: strings(["Target", "Probes", "Availability", "Median", "p95"]),
+            head: strings(["Target", "Path", "Probes", "Availability", "Median", "p95"]),
             rows: targets
                 .iter()
                 .map(|s| {
@@ -608,6 +616,7 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
                     (
                         vec![
                             label(&s.role),
+                            s.identity.clone().unwrap_or_else(|| "–".to_owned()),
                             s.sent.to_string(),
                             availability,
                             ms(s.median_ms),
@@ -617,8 +626,13 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
                     )
                 })
                 .collect(),
-            numeric: 1,
+            numeric: 2,
         });
+        blocks.push(Block::Para(
+            "Availability is the share of probes answered, on each path separately. Time \
+             without a way out isn't in it: no probe could be sent then."
+                .to_owned(),
+        ));
     }
 
     blocks.push(Block::Heading("Connection".to_owned()));

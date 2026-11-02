@@ -26,6 +26,13 @@ pub struct Config {
     pub targets: Vec<Target>,
     /// Whether router names include Team Cymru's origin AS (ADR-0040).
     pub asn_lookups: bool,
+    /// What `dns = "system"` resolved to, if any target uses it: the outer `None`
+    /// if none does. The daemon restarts when the system's resolver changes, so
+    /// that the target follows it (ADR-0055).
+    pub system_resolver: Option<Option<IpAddr>>,
+    /// Why each target left out of this run was left out: a `system` DNS target
+    /// while the host has no upstream resolver, such as at an offline boot.
+    pub left_out: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,9 +104,17 @@ pub fn load() -> anyhow::Result<Config> {
 }
 
 pub fn parse(text: &str) -> anyhow::Result<Config> {
+    parse_with(text, system_resolver)
+}
+
+/// [`parse`], with `resolver` giving the system's upstream resolver, read only if a
+/// target asks for it.
+fn parse_with(text: &str, resolver: impl Fn() -> Option<IpAddr>) -> anyhow::Result<Config> {
     let raw: RawConfig = toml::from_str(text)?;
     let mut seen = BTreeSet::new();
     let mut targets = Vec::new();
+    let mut system_used = None;
+    let mut left_out = Vec::new();
     for t in raw.targets {
         if !seen.insert(t.id) {
             bail!(
@@ -110,9 +125,17 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
         let system = t.dns.as_deref() == Some("system");
         let probe = match (t.icmp, t.dns, t.https) {
             (Some(address), None, None) => TargetProbe::Echo(address),
-            (None, Some(server), None) if server == "system" => TargetProbe::Dns(
-                system_resolver().context("no upstream resolver found for dns = \"system\"")?,
-            ),
+            (None, Some(server), None) if server == "system" => {
+                let found = *system_used.get_or_insert_with(&resolver);
+                let Some(server) = found else {
+                    left_out.push(format!(
+                        "target {}: no upstream resolver for dns = \"system\" yet",
+                        t.id
+                    ));
+                    continue;
+                };
+                TargetProbe::Dns(server)
+            }
             (None, Some(server), None) => TargetProbe::Dns(server.parse().with_context(|| {
                 format!("dns = {server:?} is neither an address nor \"system\"")
             })?),
@@ -147,6 +170,8 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
         database: raw.database,
         targets,
         asn_lookups: raw.asn_lookups.unwrap_or(true),
+        system_resolver: system_used,
+        left_out,
     })
 }
 
@@ -232,6 +257,18 @@ mod tests {
     fn an_empty_expected_body_expects_only_the_status() {
         let target = https("https://example.com/", Some(204), Some(String::new())).unwrap();
         assert_eq!(target.expected, Expected::Status(204));
+    }
+
+    #[test]
+    fn a_system_dns_target_without_a_resolver_is_left_out_not_fatal() {
+        let text = "listen = \"127.0.0.1:1\"\ndatabase = \"x\"\n[[target]]\nid = 1\nicmp = \"1.1.1.1\"\n[[target]]\nid = 2\ndns = \"system\"\n";
+        let offline = parse_with(text, || None).unwrap();
+        assert_eq!(offline.targets.len(), 1);
+        assert_eq!(offline.system_resolver, Some(None));
+        assert_eq!(offline.left_out.len(), 1);
+        let online = parse_with(text, || "192.0.2.53".parse().ok()).unwrap();
+        assert_eq!(online.targets.len(), 2);
+        assert_eq!(online.system_resolver, Some("192.0.2.53".parse().ok()));
     }
 
     #[test]

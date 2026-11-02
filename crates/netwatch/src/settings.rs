@@ -211,11 +211,11 @@ fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::File::open(directory)?.sync_all()
 }
 
-/// Restarts the daemon with its new configuration (ADR-0035), after the response
-/// that triggered it has been sent: flushes the writer, then re-executes this
+/// Restarts the daemon with its new configuration (ADR-0035), or for the system's
+/// new resolver (ADR-0055), shortly, so that a response that triggered it is sent: flushes the writer, then re-executes this
 /// binary. Ambient capabilities survive `execve`, and every descriptor is
 /// close-on-exec, so the new process starts clean.
-fn restart_soon(writes: mpsc::Sender<persist::Write>) {
+pub(crate) fn restart_soon(writes: mpsc::Sender<persist::Write>) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let (done, flushed) = tokio::sync::oneshot::channel();

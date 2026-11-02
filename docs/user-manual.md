@@ -115,12 +115,19 @@ from its last 12 probes:
 | failing | Half or more were lost. |
 | rate-limited | A router lost probes, but everything beyond it on the path is fine. Routers often give low priority to answering probes about themselves. That is not a fault, and netwatch doesn't raise an incident for it. |
 | unknown | Nothing recent to judge by (just started, or the radio is off). |
-| disabled | A source netwatch can't use on this machine. The row says why. |
 
-When this machine has no way out at all, such as a pulled cable with no other
-connection, nothing can be sent, so nothing is graphed: the rows show a gap. The
-local interface and every target and hop are failing for as long as it lasts, and
-the incident names the local interface as the cause.
+A source netwatch can't use on this machine, such as the kernel log without its
+capability, isn't a status: the kernel row lists it as `disabled: …`, with why.
+
+When this machine has no way out at all for more than 5 s, such as a pulled cable
+with no other connection, nothing can be sent, so nothing is graphed: the rows show
+a gap. The local interface and every target and hop are failing for as long as it
+lasts, the incident names the local interface as the cause, and the report states
+the time as "time without a way out".
+
+The `system` DNS target follows this machine's resolver: when it changes, such as on
+another network, netwatch restarts itself to probe the new one. If there is none
+when netwatch starts, the target waits, listed as disabled on the kernel row.
 
 When the way out changes, such as a failover from Ethernet to Wi-Fi, every hop row
 starts again with the routers on the new path.
