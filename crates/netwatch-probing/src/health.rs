@@ -51,6 +51,22 @@ pub fn grade(recent: &[bool], fresh: bool) -> Health {
     }
 }
 
+/// The grades while this host has no egress path at all (ADR-0053): nothing can be
+/// sent, so the local interface and every target and hop are failing, whatever
+/// their stale samples say. The kernel and the radios, which aren't on the path, keep
+/// their grades.
+pub fn without_egress(grades: &BTreeMap<Role, Health>) -> BTreeMap<Role, Health> {
+    let mut graded: BTreeMap<Role, Health> = grades
+        .iter()
+        .map(|(role, &health)| match role {
+            Role::Target(_) | Role::Hop { .. } => (role.clone(), Health::Failing),
+            _ => (role.clone(), health),
+        })
+        .collect();
+    graded.insert(Role::LocalInterface, Health::Failing);
+    graded
+}
+
 /// Applies ADR-0004 across every path: a degraded or failing hop with a healthy role
 /// further along the same path (a later hop toward the same target, or the target
 /// itself) is `RateLimited`, never alarmed on. Every other grade is unchanged.

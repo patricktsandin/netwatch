@@ -256,7 +256,7 @@ mod incidents {
     }
 
     #[test]
-    fn an_incident_left_open_by_a_stopped_daemon_closes_at_its_roles_last_sample() {
+    fn an_incident_left_open_by_a_stopped_daemon_closes_at_the_last_thing_known() {
         let mut store = Store::open(&fresh("incident-left-open")).unwrap();
         store
             .write_samples(&[sample(400, Measurement::Lost(Loss::TimedOut))])
@@ -268,16 +268,32 @@ mod incidents {
         store
             .write_incident(&incident(Role::Nic, 350, None))
             .unwrap();
-        assert_eq!(store.close_incidents_left_open().unwrap(), 2);
+        store
+            .write_incident(&incident(Role::Kernel, 360, None))
+            .unwrap();
+        // The NIC has readings, not samples; the kernel neither. The newest reading
+        // of any role is the last moment the run was alive.
+        let reading = |role: Role, at| netwatch_history::Reading {
+            role,
+            epoch: epoch(3),
+            at: WallTime::from_unix_micros(at),
+            gauge: netwatch_shared::Gauge::RxThroughput,
+            value: 1.0,
+        };
+        store
+            .write_readings(&[reading(Role::Nic, 500), reading(Role::Wifi, 700)])
+            .unwrap();
+        assert_eq!(store.close_incidents_left_open().unwrap(), 3);
         let found = store
             .incidents(
                 WallTime::from_unix_micros(0),
                 WallTime::from_unix_micros(1000),
             )
             .unwrap();
-        assert_eq!(found[0].ended, Some(WallTime::from_unix_micros(400)));
-        // A role without samples since it opened closes where it started.
-        assert_eq!(found[1].ended, Some(WallTime::from_unix_micros(350)));
+        let ended = |role: &Role| found.iter().find(|i| &i.role == role).and_then(|i| i.ended);
+        assert_eq!(ended(&target), Some(WallTime::from_unix_micros(400)));
+        assert_eq!(ended(&Role::Nic), Some(WallTime::from_unix_micros(500)));
+        assert_eq!(ended(&Role::Kernel), Some(WallTime::from_unix_micros(700)));
     }
 }
 

@@ -5,11 +5,10 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use netwatch_history::{Histogram, Loss, Measurement, Reading, Rollup, Sample};
+use netwatch_history::{Loss, Measurement, Reading, Rollup, Sample};
 use netwatch_probing::incident::Severity;
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Gauge, IdentityEpoch, Role, WallTime};
-use netwatch_verified::Summary;
 
 use super::{Episode, Place, utc};
 
@@ -46,7 +45,8 @@ pub fn outage_beyond_gateway(episodes: &[Episode], from: WallTime, until: WallTi
     (total, longest)
 }
 
-/// Probes, loss, and RTT percentiles over one period.
+/// Probes and loss over one period, across every target. Counts add up across
+/// targets and epochs; RTT percentiles don't (ADR-0003), so there are none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeriodStats {
     /// The period's start.
@@ -55,10 +55,6 @@ pub struct PeriodStats {
     pub sent: u64,
     /// Of those, lost.
     pub lost: u64,
-    /// Median RTT of the answered ones.
-    pub median_ms: Option<f64>,
-    /// 95th-percentile RTT of the answered ones.
-    pub p95_ms: Option<f64>,
 }
 
 impl PeriodStats {
@@ -72,27 +68,21 @@ impl PeriodStats {
     }
 }
 
-/// Merges rollups into periods of `period_us`, oldest first, across every role given.
+/// Counts rollups into periods of `period_us`, oldest first, across every role given.
 pub fn by_period(rollups: &[&Rollup], period_us: i64) -> Vec<PeriodStats> {
-    let mut periods: BTreeMap<i64, (Summary, Histogram)> = BTreeMap::new();
+    let mut periods: BTreeMap<i64, (u64, u64)> = BTreeMap::new();
     for r in rollups {
         let start = r.start.as_unix_micros().div_euclid(period_us) * period_us;
-        let (summary, histogram) = periods
-            .entry(start)
-            .or_insert_with(|| (Summary::empty(), Histogram::default()));
-        *summary = summary
-            .merge(&r.summary)
-            .expect("u64 sample counts cannot be exhausted");
-        histogram.merge(&r.histogram);
+        let (sent, lost) = periods.entry(start).or_default();
+        *sent += r.summary.count;
+        *lost += r.summary.lost;
     }
     periods
         .into_iter()
-        .map(|(start, (summary, histogram))| PeriodStats {
+        .map(|(start, (sent, lost))| PeriodStats {
             start: WallTime::from_unix_micros(start),
-            sent: summary.count,
-            lost: summary.lost,
-            median_ms: histogram.quantile_us(0.5).map(|us| us as f64 / 1000.0),
-            p95_ms: histogram.quantile_us(0.95).map(|us| us as f64 / 1000.0),
+            sent,
+            lost,
         })
         .collect()
 }

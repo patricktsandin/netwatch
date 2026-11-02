@@ -58,7 +58,7 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
         let until = WallTime::from_unix_micros(
             (from.as_unix_micros() + hour).min(minutes_done.as_unix_micros()),
         );
-        let samples = store.samples_between(from, until)?;
+        let samples = store.samples_between(from, until, None)?;
         store.write_rollups(&history::roll_up(&samples, Tier::Minute))?;
         let readings = store.readings_between(from, until)?;
         store.write_reading_rollups(&history::roll_up_readings(&readings, Tier::Minute))?;
@@ -71,7 +71,7 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
         .unwrap_or(Tier::Hour.start_of(first_minute));
     while from < hours_done {
         let until = WallTime::from_unix_micros(from.as_unix_micros() + hour);
-        let minutes = store.rollups_between(Tier::Minute, from, until)?;
+        let minutes = store.rollups_between(Tier::Minute, from, until, None)?;
         store.write_rollups(&history::coarsen(&minutes, Tier::Hour))?;
         let minutes = store.reading_rollups_between(Tier::Minute, from, until)?;
         store.write_reading_rollups(&history::coarsen_readings(&minutes, Tier::Hour))?;

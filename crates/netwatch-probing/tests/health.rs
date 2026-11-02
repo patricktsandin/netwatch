@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 
 use netwatch_probing::Health;
-use netwatch_probing::health::{along_paths, grade};
+use netwatch_probing::health::{along_paths, grade, without_egress};
 use netwatch_shared::{HopTtl, Role, TargetId};
 
 fn hop(target: u32, ttl: u8) -> Role {
@@ -68,4 +68,22 @@ fn worse_prefers_the_more_alarming_grade() {
     assert_eq!(Health::Healthy.worse(Health::Degraded), Health::Degraded);
     assert_eq!(Health::Unknown.worse(Health::Healthy), Health::Healthy);
     assert_eq!(Health::Failing.worse(Health::RateLimited), Health::Failing);
+}
+
+#[test]
+fn without_an_egress_path_the_whole_path_is_failing() {
+    // Stale, so unknown from the samples alone: the daemon knows better (ADR-0053).
+    let grades = BTreeMap::from([
+        (Role::Kernel, Health::Healthy),
+        (Role::Target(TargetId::new(1)), Health::Unknown),
+        (hop(1, 2), Health::Unknown),
+        (Role::Wifi, Health::Healthy),
+    ]);
+    let graded = without_egress(&grades);
+    assert_eq!(graded[&Role::LocalInterface], Health::Failing);
+    assert_eq!(graded[&Role::Target(TargetId::new(1))], Health::Failing);
+    assert_eq!(graded[&hop(1, 2)], Health::Failing);
+    // The host itself, and radios off the path, are what they were.
+    assert_eq!(graded[&Role::Kernel], Health::Healthy);
+    assert_eq!(graded[&Role::Wifi], Health::Healthy);
 }

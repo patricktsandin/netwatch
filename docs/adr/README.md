@@ -58,3 +58,5 @@ to "Superseded".
 | [0050](0050-every-request-is-checked-for-its-site.md) | Every request is checked for its site | Accepted |
 | [0051](0051-a-radio-that-is-gone-ends-its-epoch.md) | A radio that is gone ends its epoch | Accepted |
 | [0052](0052-https-failures-say-where-they-failed.md) | HTTPS failures say where they failed, over either family | Accepted |
+| [0053](0053-no-way-out-is-an-outage.md) | No way out is an outage | Accepted |
+| [0054](0054-a-new-way-out-is-a-new-path.md) | A new way out is a new path | Accepted |

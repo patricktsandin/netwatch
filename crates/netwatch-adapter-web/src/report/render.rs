@@ -22,8 +22,9 @@ pub struct EpisodeReport {
     pub episode: Episode,
     /// Every role on the affected paths, measured during it.
     pub path: Vec<PathStats>,
-    /// Each path role's median RTT in the hour before it started.
-    pub before: BTreeMap<Role, f64>,
+    /// Each path role's median RTT in the hour before it started, by role and
+    /// identity: a baseline is only for the same router (ADR-0003).
+    pub before: BTreeMap<(Role, Option<String>), f64>,
     /// Why probes failed during it, by role. Empty once raw samples have expired.
     pub reasons: BTreeMap<Role, BTreeMap<String, u64>>,
     /// Its timeline, in steps of `step_us`.
@@ -185,7 +186,7 @@ fn strings<const N: usize>(cells: [&str; N]) -> Vec<String> {
 
 fn stats_table(
     stats: &[PathStats],
-    before: Option<&BTreeMap<Role, f64>>,
+    before: Option<&BTreeMap<(Role, Option<String>), f64>>,
     names: &BTreeMap<String, String>,
     label: Label<'_>,
 ) -> Block {
@@ -219,7 +220,9 @@ fn stats_table(
                     ms(s.p95_ms),
                 ]);
                 if let Some(before) = before {
-                    row.push(ms(before.get(&s.role).copied()));
+                    row.push(ms(before
+                        .get(&(s.role.clone(), s.identity.clone()))
+                        .copied()));
                 }
                 (row, s.lost > 0)
             })
@@ -644,7 +647,7 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
             report.period.to_lowercase()
         )));
         blocks.push(Block::Table {
-            head: strings([report.period, "Probes", "Loss", "Median", "p95"]),
+            head: strings([report.period, "Probes", "Loss"]),
             rows: report
                 .periods
                 .iter()
@@ -654,8 +657,6 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
                             short(p.start),
                             p.sent.to_string(),
                             format!("{:.2}%", p.loss_percent()),
-                            ms(p.median_ms),
-                            ms(p.p95_ms),
                         ],
                         p.lost > 0,
                     )

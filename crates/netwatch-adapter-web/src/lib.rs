@@ -262,12 +262,7 @@ async fn samples(
     State(state): State<AppState>,
     Query(query): Query<SamplesQuery>,
 ) -> Result<Json<Vec<SamplePoint>>, (StatusCode, String)> {
-    let role = Role::from_key(&query.role).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("unknown role {:?}", query.role),
-        )
-    })?;
+    let role = parse_role(&query.role)?;
     let since = WallTime::from_unix_micros(query.since_us);
     let samples = read(&state, move |store| store.samples(&role, since)).await?;
     Ok(Json(samples.iter().map(SamplePoint::from).collect()))
@@ -277,17 +272,8 @@ async fn rollups(
     State(state): State<AppState>,
     Query(query): Query<RollupsQuery>,
 ) -> Result<Json<Vec<RollupPoint>>, (StatusCode, String)> {
-    let role = Role::from_key(&query.role).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("unknown role {:?}", query.role),
-        )
-    })?;
-    let tier = match query.tier.as_str() {
-        "minute" => netwatch_history::Tier::Minute,
-        "hour" => netwatch_history::Tier::Hour,
-        other => return Err((StatusCode::BAD_REQUEST, format!("unknown tier {other:?}"))),
-    };
+    let role = parse_role(&query.role)?;
+    let tier = parse_tier(&query.tier)?;
     let since = WallTime::from_unix_micros(query.since_us);
     let rollups = read(&state, move |store| store.rollups(&role, tier, since)).await?;
     Ok(Json(rollups.iter().map(RollupPoint::from).collect()))
@@ -388,6 +374,7 @@ fn history_between(
     from: WallTime,
     until: WallTime,
     now: WallTime,
+    only: Option<&[Role]>,
 ) -> Result<Vec<netwatch_history::Rollup>, netwatch_adapter_sqlite::StoreError> {
     use netwatch_adapter_sqlite::{MINUTE_RETENTION_DAYS, RAW_RETENTION_DAYS};
     use netwatch_history::{Tier, roll_up};
@@ -396,7 +383,10 @@ fn history_between(
     if from.as_unix_micros() >= raw_since
         && until.as_unix_micros() - from.as_unix_micros() <= RAW_EVIDENCE_LIMIT_US
     {
-        return Ok(roll_up(&store.samples_between(from, until)?, Tier::Minute));
+        return Ok(roll_up(
+            &store.samples_between(from, until, only)?,
+            Tier::Minute,
+        ));
     }
     let tier = if from.as_unix_micros() >= now.as_unix_micros() - MINUTE_RETENTION_DAYS * day {
         Tier::Minute
@@ -404,9 +394,9 @@ fn history_between(
         Tier::Hour
     };
     let rolled = store.rollup_progress(tier)?.unwrap_or(from).min(until);
-    let mut rollups = store.rollups_between(tier, from, rolled)?;
+    let mut rollups = store.rollups_between(tier, from, rolled, only)?;
     rollups.extend(roll_up(
-        &store.samples_between(rolled.max(from), until)?,
+        &store.samples_between(rolled.max(from), until, only)?,
         tier,
     ));
     Ok(rollups)
@@ -620,21 +610,14 @@ async fn build_report(
             let start = episode.started.max(from);
             let end = episode.ended.unwrap_or(until).min(until);
             let on_path = report::roles_on_paths(&episode.affected, &known);
-            let on = |r: &netwatch_history::Rollup| on_path.contains(&r.role);
-            let evidence: Vec<_> = history_between(store, start, end, now)?
-                .into_iter()
-                .filter(on)
-                .collect();
+            let evidence = history_between(store, start, end, now, Some(&on_path))?;
             // The hour before the episode itself began, which may be before the span.
             let before_from =
                 WallTime::from_unix_micros(episode.started.as_unix_micros() - HOUR_US);
-            let before: Vec<_> = history_between(store, before_from, episode.started, now)?
-                .into_iter()
-                .filter(on)
-                .collect();
+            let before = history_between(store, before_from, episode.started, now, Some(&on_path))?;
             let before = report::path_stats(&before, &identities)
                 .into_iter()
-                .filter_map(|s| Some((s.role, s.median_ms?)))
+                .filter_map(|s| Some(((s.role, s.identity), s.median_ms?)))
                 .collect();
             let raw = start.as_unix_micros() >= raw_since;
             let step_us = if end.as_unix_micros() - start.as_unix_micros() <= MINUTE_STEPS_UP_TO_US
@@ -648,11 +631,7 @@ async fn build_report(
             ));
             let (reasons, timeline, patterns, load) = if raw {
                 let load = analysis::link_load(&store.readings_between(start, raw_end)?);
-                let samples: Vec<_> = store
-                    .samples_between(start, raw_end)?
-                    .into_iter()
-                    .filter(|s| on_path.contains(&s.role))
-                    .collect();
+                let samples = store.samples_between(start, raw_end, Some(&on_path))?;
                 let mut targets: Vec<Role> = episode
                     .affected
                     .iter()
@@ -714,7 +693,7 @@ async fn build_report(
         for role in known.iter().filter(|r| matches!(r, Role::Target(_))) {
             normal_paths.extend(store.latest_trace(role, TraceKind::Routine, until)?);
         }
-        let history = history_between(store, from, until, now)?;
+        let history = history_between(store, from, until, now, None)?;
         let summary = report::path_stats(&history, &identities);
         let targets: Vec<&netwatch_history::Rollup> = history
             .iter()
@@ -828,15 +807,11 @@ async fn report_csv(
             let start = e.started.max(from).as_unix_micros() - CSV_MARGIN_US;
             let end = (end + CSV_MARGIN_US).min(start + RAW_EVIDENCE_LIMIT_US);
             let on_path = report::roles_on_paths(&e.affected, &known);
-            samples.extend(
-                store
-                    .samples_between(
-                        WallTime::from_unix_micros(start),
-                        WallTime::from_unix_micros(end),
-                    )?
-                    .into_iter()
-                    .filter(|s| on_path.contains(&s.role)),
-            );
+            samples.extend(store.samples_between(
+                WallTime::from_unix_micros(start),
+                WallTime::from_unix_micros(end),
+                Some(&on_path),
+            )?);
         }
         // Overlapping windows read some samples twice.
         samples.sort_by(|a, b| (a.at, &a.role).cmp(&(b.at, &b.role)));

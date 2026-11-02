@@ -190,10 +190,25 @@ fn writable(path: &Path) -> bool {
     ok
 }
 
+/// Replaces the file at `path` with `text`, so that a crash leaves either the old
+/// file or the new one, never an empty one: the new text is synced before the rename,
+/// and the rename before returning. The new file keeps the old one's mode. Its owner
+/// becomes netwatch, which can't give a file away (no `CAP_CHOWN`, ADR-0007).
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
     let temporary = path.with_extension("toml.new");
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)
+    let mut file = std::fs::File::create(&temporary)?;
+    file.write_all(text.as_bytes())?;
+    if let Ok(old) = std::fs::metadata(path) {
+        file.set_permissions(old.permissions())?;
+    }
+    file.sync_all()?;
+    std::fs::rename(&temporary, path)?;
+    let directory = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::File::open(directory)?.sync_all()
 }
 
 /// Restarts the daemon with its new configuration (ADR-0035), after the response
@@ -291,5 +306,20 @@ dns = "system"
         assert!(edit_targets(FILE, &[spec(None, "https", "https://example.com/")], 30).is_err());
         assert!(edit_targets(FILE, &[spec(Some(99), "icmp", "1.1.1.1")], 30).is_err());
         assert!(edit_targets(FILE, &[spec(None, "ftp", "x")], 30).is_err());
+    }
+
+    #[test]
+    fn a_saved_file_replaces_the_old_one_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("netwatch-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("netwatch.toml");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+        write_atomically(&path, "new").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o664);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

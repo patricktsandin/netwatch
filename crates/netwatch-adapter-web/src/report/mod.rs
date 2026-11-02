@@ -170,12 +170,16 @@ pub fn roles_on_paths(affected: &[Role], known: &[Role]) -> Vec<Role> {
     on
 }
 
-/// What one role measured over a stretch of time.
+/// What one role measured over a stretch of time, in one of its epochs: aggregates
+/// never span epochs (ADR-0003), so a hop whose router changed has a row for each.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathStats {
     /// Whose measurements.
     pub role: Role,
-    /// The identity it measured most: for a hop, the router's address.
+    /// The epoch they were measured in.
+    pub epoch: IdentityEpoch,
+    /// The epoch's identity: for a hop, the router's address; for a target, the
+    /// egress it was reached by (its pin, ADR-0020), as `via …`.
     pub identity: Option<String>,
     /// Probes resolved.
     pub sent: u64,
@@ -198,54 +202,42 @@ impl PathStats {
     }
 }
 
-/// Merges rollups (of any tier) into one [`PathStats`] per role, in path order.
-/// `identities` names each epoch's identity.
+/// Merges rollups (of any tier) into one [`PathStats`] per role and epoch, in path
+/// order, and each role's epochs in the order they began. `identities` names each
+/// epoch's identity.
 pub fn path_stats(
     rollups: &[Rollup],
     identities: &BTreeMap<IdentityEpoch, String>,
 ) -> Vec<PathStats> {
-    struct Acc {
-        summary: Summary,
-        histogram: Histogram,
-        by_epoch: BTreeMap<IdentityEpoch, u64>,
-    }
-    let mut roles: BTreeMap<Role, Acc> = BTreeMap::new();
+    let mut merged: BTreeMap<(Role, IdentityEpoch), (Summary, Histogram)> = BTreeMap::new();
     for r in rollups {
-        let acc = roles.entry(r.role.clone()).or_insert_with(|| Acc {
-            summary: Summary::empty(),
-            histogram: Histogram::default(),
-            by_epoch: BTreeMap::new(),
-        });
-        acc.summary = acc
-            .summary
+        let (summary, histogram) = merged
+            .entry((r.role.clone(), r.epoch))
+            .or_insert_with(|| (Summary::empty(), Histogram::default()));
+        *summary = summary
             .merge(&r.summary)
             .expect("u64 sample counts cannot be exhausted");
-        acc.histogram.merge(&r.histogram);
-        *acc.by_epoch.entry(r.epoch).or_default() += r.summary.count;
+        histogram.merge(&r.histogram);
     }
-    let mut stats: Vec<PathStats> = roles
+    let mut stats: Vec<PathStats> = merged
         .into_iter()
-        .map(|(role, acc)| {
-            let most = acc
-                .by_epoch
-                .iter()
-                .max_by_key(|&(_, &count)| count)
-                .map(|(epoch, _)| *epoch);
-            // A target's epoch is its pin's (ADR-0020): the interface it left by, which
-            // says nothing about the target, so targets show none.
-            let identity = most
-                .filter(|_| !matches!(role, Role::Target(_)))
-                .and_then(|e| identities.get(&e).cloned());
+        .map(|((role, epoch), (summary, histogram))| {
+            let identity = identities.get(&epoch).map(|identity| match role {
+                Role::Target(_) => format!("via {identity}"),
+                _ => identity.clone(),
+            });
             PathStats {
                 role,
+                epoch,
                 identity,
-                sent: acc.summary.count,
-                lost: acc.summary.lost,
-                median_ms: acc.histogram.quantile_us(0.5).map(|us| us as f64 / 1000.0),
-                p95_ms: acc.histogram.quantile_us(0.95).map(|us| us as f64 / 1000.0),
+                sent: summary.count,
+                lost: summary.lost,
+                median_ms: histogram.quantile_us(0.5).map(|us| us as f64 / 1000.0),
+                p95_ms: histogram.quantile_us(0.95).map(|us| us as f64 / 1000.0),
             }
         })
         .collect();
+    // Stable, so each role's epochs stay in the order they were allocated.
     stats.sort_by_key(|s| path_order(&s.role));
     stats
 }

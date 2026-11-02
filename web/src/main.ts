@@ -338,6 +338,11 @@ async function backfill(from: Micros): Promise<void> {
   const started = view;
   const tier = RANGES[range].tier;
   const stale = (): boolean => view !== started;
+  // Where each row's data ends now, before anything is awaited: live messages merged
+  // while this backfill waits would otherwise move the start past what was missed.
+  const since = new Map(
+    [...rows].map(([key, row]) => [key, { points: latest(row.points), readings: row.readings.at(-1)?.at }]),
+  );
   const [roles, events, recorded] = await Promise.all([
     fetchJson("/api/roles").then(parseRoles),
     fetchJson(`/api/events?since_us=${String(from)}`).then(parseMarkers),
@@ -380,8 +385,8 @@ async function backfill(from: Micros): Promise<void> {
       .map(async (key) => {
         const row = addRow(key);
         if (tier === null) {
-          const pointsSince = latest(row.points) ?? from;
-          const readingsSince = row.readings.at(-1)?.at ?? from;
+          const pointsSince = since.get(key)?.points ?? from;
+          const readingsSince = since.get(key)?.readings ?? from;
           const [fetched, readings] = await Promise.all([
             fetchJson(`/api/samples?role=${encodeURIComponent(key)}&since_us=${String(pointsSince)}`).then(parsePoints),
             fetchJson(`/api/readings?role=${encodeURIComponent(key)}&since_us=${String(readingsSince)}`).then(

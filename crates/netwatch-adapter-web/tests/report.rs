@@ -111,7 +111,7 @@ fn the_roles_on_a_path_run_from_the_host_out_to_the_target() {
 }
 
 #[test]
-fn path_stats_count_sent_and_lost_with_median_rtt_and_the_identity_most_measured() {
+fn path_stats_count_sent_and_lost_with_median_rtt_for_each_epoch_apart() {
     let epoch = |n| IdentityEpoch::new(NonZeroU64::new(n).unwrap());
     let sample = |at, e, m| Sample {
         role: role("hop:1:2"),
@@ -134,12 +134,17 @@ fn path_stats_count_sent_and_lost_with_median_rtt_and_the_identity_most_measured
         (epoch(8), "100.65.192.9".to_owned()),
     ]);
     let stats = path_stats(&rollups, &identities);
-    assert_eq!(stats.len(), 1);
-    let hop = &stats[0];
-    assert_eq!((hop.sent, hop.lost), (4, 1));
-    assert_eq!(hop.identity.as_deref(), Some("100.65.192.1"));
-    let median = hop.median_ms.unwrap();
+    // Two routers at hop 2 are two rows: no median spans them (ADR-0003).
+    assert_eq!(stats.len(), 2);
+    let (first, second) = (&stats[0], &stats[1]);
+    assert_eq!((first.sent, first.lost), (3, 1));
+    assert_eq!(first.identity.as_deref(), Some("100.65.192.1"));
+    let median = first.median_ms.unwrap();
     assert!((9.0..11.0).contains(&median), "{median}");
+    assert_eq!((second.sent, second.lost), (1, 0));
+    assert_eq!(second.identity.as_deref(), Some("100.65.192.9"));
+    let median = second.median_ms.unwrap();
+    assert!((27.0..33.0).contains(&median), "{median}");
 }
 
 #[test]

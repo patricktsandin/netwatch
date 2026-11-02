@@ -280,11 +280,13 @@ impl Store {
         Ok(samples + minutes + readings + reading_minutes)
     }
 
-    /// Every sample, of every role, with `from <= at < until`.
+    /// Every sample with `from <= at < until`, of every role, or of `only` those
+    /// roles, which are then the only ones read.
     pub fn samples_between(
         &self,
         from: WallTime,
         until: WallTime,
+        only: Option<&[Role]>,
     ) -> Result<Vec<Sample>, StoreError> {
         let mut query = self
             .connection
@@ -296,7 +298,8 @@ impl Store {
             )?
             .collect::<Result<_, _>>()?;
         let mut samples = Vec::new();
-        for role in keys.iter().filter_map(|k| Role::from_key(k)) {
+        let wanted = |role: &Role| only.is_none_or(|only| only.contains(role));
+        for role in keys.iter().filter_map(|k| Role::from_key(k)).filter(wanted) {
             for stored in self.samples_in(&role, from, until)? {
                 samples.push(Sample {
                     role: role.clone(),
@@ -411,12 +414,14 @@ impl Store {
         Ok(rollups)
     }
 
-    /// Every rollup of `tier` with `from <= start < until`, of every role.
+    /// Every rollup of `tier` with `from <= start < until`, of every role, or of
+    /// `only` those roles.
     pub fn rollups_between(
         &self,
         tier: Tier,
         from: WallTime,
         until: WallTime,
+        only: Option<&[Role]>,
     ) -> Result<Vec<Rollup>, StoreError> {
         let mut query = self.connection.prepare_cached(
             "SELECT DISTINCT role FROM rollups WHERE tier = ?1 AND start_us >= ?2 AND start_us < ?3",
@@ -432,7 +437,8 @@ impl Store {
             )?
             .collect::<Result<_, _>>()?;
         let mut all = Vec::new();
-        for role in keys.iter().filter_map(|k| Role::from_key(k)) {
+        let wanted = |role: &Role| only.is_none_or(|only| only.contains(role));
+        for role in keys.iter().filter_map(|k| Role::from_key(k)).filter(wanted) {
             all.extend(self.rollups_in(&role, tier, from, until)?);
         }
         Ok(all)
@@ -649,15 +655,20 @@ impl Store {
         Ok(incidents)
     }
 
-    /// Closes every incident an earlier run left open, at its role's last sample
-    /// since it opened (or at its start, if there is none). That's the last moment
-    /// anything was known about it.
+    /// Closes every incident an earlier run left open, at the last moment anything
+    /// was known about it: its role's last sample or reading since it opened, or,
+    /// for a role with neither (one graded from a layer report, such as the kernel),
+    /// the newest reading of any role, when the run was last alive. Never before its
+    /// start.
     pub fn close_incidents_left_open(&mut self) -> Result<usize, StoreError> {
         Ok(self.connection.execute(
-            "UPDATE incidents SET ended_us = COALESCE(
+            "UPDATE incidents SET ended_us = MAX(started_us, COALESCE(
                  (SELECT MAX(at_us) FROM samples
                   WHERE samples.role = incidents.role AND samples.at_us >= incidents.started_us),
-                 started_us)
+                 (SELECT MAX(at_us) FROM readings
+                  WHERE readings.role = incidents.role AND readings.at_us >= incidents.started_us),
+                 (SELECT MAX(at_us) FROM readings),
+                 started_us))
              WHERE ended_us IS NULL",
             [],
         )?)

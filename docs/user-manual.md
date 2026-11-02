@@ -117,6 +117,14 @@ from its last 12 probes:
 | unknown | Nothing recent to judge by (just started, or the radio is off). |
 | disabled | A source netwatch can't use on this machine. The row says why. |
 
+When this machine has no way out at all, such as a pulled cable with no other
+connection, nothing can be sent, so nothing is graphed: the rows show a gap. The
+local interface and every target and hop are failing for as long as it lasts, and
+the incident names the local interface as the cause.
+
+When the way out changes, such as a failover from Ethernet to Wi-Fi, every hop row
+starts again with the routers on the new path.
+
 ## Incidents and markers
 
 **Incident bands** are shaded stretches behind a graph: amber for a degradation, red
@@ -211,7 +219,9 @@ It is written for an ISP's network operations center (NOC):
 
 ![One episode in a report](images/report-episode.png)
 
-- **By hour:** loss and latency for every hour, and every event.
+- **By hour:** loss across all targets for every hour, and every event. Latency is
+  in the per-target tables: a median across different targets would describe none
+  of them.
 - **Method:** how netwatch measured, so the NOC can trust the numbers.
 
 To send it, use **Copy as text** and paste the text into an email, or **Print or

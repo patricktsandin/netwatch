@@ -532,17 +532,21 @@ async fn main() -> anyhow::Result<()> {
                 for output in topology.observe(observation) {
                     handle(output, clock.wall_now(), &observations_tx, &recorder);
                 }
-                // Targets are pinned to the egress interface: the tunnel if there
-                // is one, otherwise the NIC (ADR-0020, ADR-0022).
-                let egress = topology
-                    .binding(&Role::Tunnel)
-                    .or_else(|| topology.binding(&Role::Nic))
-                    .cloned();
-                pin_tx.send_if_modified(|current| {
+                let egress = egress_pin(&topology).cloned();
+                let changed = pin_tx.send_if_modified(|current| {
                     let changed = *current != egress;
                     *current = egress;
                     changed
                 });
+                // The hops are on another path now (ADR-0054).
+                if changed {
+                    let hops: Vec<Role> = topology.bindings().map(|(role, _)| role.clone()).filter(|role| matches!(role, Role::Hop { .. })).collect();
+                    for role in hops {
+                        for output in topology.observe(Observation::ProbeVanished { role }) {
+                            handle(output, clock.wall_now(), &observations_tx, &recorder);
+                        }
+                    }
+                }
             }
             Some(resolution) = resolutions.recv() => {
                 // A shared stream's copies are one measurement: one time for all of
@@ -724,6 +728,14 @@ fn handle(
     }
 }
 
+/// The binding probes are pinned to: the tunnel if there is one, otherwise the NIC
+/// (ADR-0020, ADR-0022).
+fn egress_pin(topology: &Topology) -> Option<&netwatch_topology::Binding> {
+    topology
+        .binding(&Role::Tunnel)
+        .or_else(|| topology.binding(&Role::Nic))
+}
+
 /// A shared hop stream's resolutions, copied to the hop role of every target it
 /// serves (ADR-0026, ADR-0043). Each role then gets its own epoch and sample.
 fn fan_out(
@@ -752,7 +764,9 @@ fn fan_out(
 /// (ADR-0020, ADR-0025):
 /// - a target's sample carries its pin's epoch: the egress path it traveled
 /// - a hop's identity is whoever answered, so Topology learns about it first, and
-///   the sample carries the hop's resulting epoch
+///   the sample carries the hop's resulting epoch. Only an answer identifies a hop:
+///   an error, such as the gateway saying the hop is unreachable, comes from some
+///   other router, and is a loss at the hop it was sent to
 ///
 /// A hop that has never answered has no identity to attribute a loss to, so that
 /// loss isn't recorded as a sample. The sample is stamped `at`.
@@ -763,8 +777,12 @@ fn attribute(
     mut emit: impl FnMut(Output),
 ) -> Option<Sample> {
     let epoch = match resolution.role {
+        // It measured a path whose hops' epochs have ended (ADR-0054).
+        Role::Hop { .. } if egress_pin(topology) != Some(&resolution.pin) => return None,
         Role::Hop { .. } => {
-            if let Some(responder) = resolution.responder {
+            if let (Some(responder), Measurement::RoundTrip(_)) =
+                (resolution.responder, &resolution.measurement)
+            {
                 for output in topology.observe(Observation::ProbeIdentified {
                     role: resolution.role.clone(),
                     identity: Identity::Address(responder),
@@ -900,6 +918,12 @@ fn publish_current(
         grades.insert(role.clone(), probes.worse(layer));
     }
     let grades = health::along_paths(&grades);
+    // With no way out, nothing is measured, and the path is down (ADR-0053).
+    let grades = if egress_pin(topology).is_some() {
+        grades
+    } else {
+        health::without_egress(&grades)
+    };
     let statuses: BTreeMap<String, String> = grades
         .iter()
         .map(|(role, &health)| (role.key(), status_text(health)))
@@ -1101,5 +1125,83 @@ fn log_event(event: &TopologyEvent) {
         TopologyEvent::Resynchronized { generation } => {
             tracing::info!(generation = generation.get(), "topology resynchronized");
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015).
+mod tests {
+    use super::*;
+    use netwatch_history::Loss;
+
+    /// A view whose NIC is `name`, and the pin it gives.
+    fn egress(topology: &mut Topology, index: u32, name: &[u8]) -> netwatch_topology::Binding {
+        topology.observe(Observation::IdentityObserved {
+            role: Role::Nic,
+            identity: Identity::Interface {
+                index: InterfaceIndex::new(std::num::NonZeroU32::new(index).unwrap()),
+                name: InterfaceName::parse(name).unwrap(),
+            },
+        });
+        topology.binding(&Role::Nic).cloned().unwrap()
+    }
+
+    fn hop_resolution(
+        pin: &netwatch_topology::Binding,
+        responder: &str,
+        measurement: Measurement,
+    ) -> probe::Resolution {
+        probe::Resolution {
+            role: Role::Hop {
+                target: TargetId::new(1),
+                ttl: netwatch_shared::HopTtl::new(std::num::NonZeroU8::new(2).unwrap()),
+            },
+            pin: pin.clone(),
+            responder: Some(responder.parse().unwrap()),
+            measurement,
+        }
+    }
+
+    fn rtt() -> Measurement {
+        Measurement::RoundTrip(Time::new::<second>(0.01))
+    }
+
+    #[test]
+    fn only_an_answer_identifies_a_hop() {
+        // The gateway saying hop 2 is unreachable is not hop 2 answering.
+        let mut topology = Topology::new();
+        let pin = egress(&mut topology, 2, b"eth0");
+        let at = WallTime::from_unix_micros(1);
+        let unreachable =
+            || hop_resolution(&pin, "192.168.1.1", Measurement::Lost(Loss::Unreachable(0)));
+        assert!(attribute(unreachable(), &mut topology, at, drop).is_none());
+
+        let answered = hop_resolution(&pin, "203.0.113.1", rtt());
+        let answered = attribute(answered, &mut topology, at, drop).unwrap();
+        let lost = attribute(unreachable(), &mut topology, at, drop).unwrap();
+        assert_eq!(
+            lost.epoch, answered.epoch,
+            "the loss is the hop's, not a new router's"
+        );
+        assert_eq!(
+            topology.binding(&lost.role).map(|b| b.identity.clone()),
+            Some(Identity::Address("203.0.113.1".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn a_hop_measured_through_an_earlier_egress_is_dropped() {
+        // A stream retired by a failover still resolves what it sent (ADR-0054).
+        let mut topology = Topology::new();
+        let old = egress(&mut topology, 2, b"eth0");
+        egress(&mut topology, 3, b"wlan0");
+        let at = WallTime::from_unix_micros(1);
+        let late = hop_resolution(&old, "192.168.1.1", rtt());
+        assert!(attribute(late, &mut topology, at, drop).is_none());
+        assert!(
+            topology
+                .bindings()
+                .all(|(role, _)| !matches!(role, Role::Hop { .. }))
+        );
     }
 }
