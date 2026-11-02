@@ -563,6 +563,20 @@ fn the_identities_before_a_start_are_each_roles_latest() {
 }
 
 #[test]
+fn a_role_whose_latest_epoch_ended_had_no_identity_before_a_start() {
+    let mut store = Store::open(&fresh("last-identities-ended")).unwrap();
+    started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+    ended(&mut store, 1, Role::Nic, 20);
+    started(&mut store, 2, Role::Kernel, eth(b"lo", 1), 10, false);
+    let last = store.last_identities().unwrap();
+    assert_eq!(last.get("nic"), None);
+    assert_eq!(
+        last.get("kernel").map(String::as_str),
+        Some("lo (ifindex 1)")
+    );
+}
+
+#[test]
 fn the_public_address_before_a_start_is_the_last_one_noted() {
     let mut store = Store::open(&fresh("last-public")).unwrap();
     assert_eq!(store.last_public_address().unwrap(), None);

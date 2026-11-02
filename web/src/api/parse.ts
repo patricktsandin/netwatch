@@ -481,18 +481,18 @@ function parseMapNode(value: unknown): MapNode {
 export function parseMap(value: unknown): NetworkMap {
   const m = record<{ nodes: unknown; edges: unknown }>(value, "map");
   const nodes = array(m.nodes, "map.nodes").map(parseMapNode);
-  const depths = new Map(nodes.map((n) => [n.id, n.depth]));
-  if (depths.size !== nodes.length) throw new ParseError("map.nodes: duplicate id");
+  const byId = new Map<string, MapNode>(nodes.map((n) => [n.id, n]));
+  if (byId.size !== nodes.length) throw new ParseError("map.nodes: duplicate id");
   const edges = array(m.edges, "map.edges").map((value): MapEdge => {
     const e = record<MapEdgeView>(value, "map edge");
     const end = (id: unknown, what: string): MapNodeId => {
-      const found = nodes.find((n) => n.id === id);
+      const found = typeof id === "string" ? byId.get(id) : undefined;
       if (found === undefined) throw new ParseError(`${what}: no such node ${JSON.stringify(id)}`);
       return found.id;
     };
     const from = end(e.from, "map edge.from");
     const to = end(e.to, "map edge.to");
-    if ((depths.get(from) ?? 0) >= (depths.get(to) ?? 0)) throw new ParseError("map edge: must go deeper");
+    if ((byId.get(from)?.depth ?? 0) >= (byId.get(to)?.depth ?? 0)) throw new ParseError("map edge: must go deeper");
     return {
       from,
       to,

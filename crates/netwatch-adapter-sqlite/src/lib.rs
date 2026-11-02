@@ -653,13 +653,16 @@ impl Store {
     }
 
     /// Each role's identity in its latest epoch, by role key, as events describe it:
-    /// what the role was before the daemon started (ADR-0044).
+    /// what the role was before the daemon started (ADR-0044). A role whose latest
+    /// epoch ended before the stop had no identity then, so it is left out: the same
+    /// identity coming back after the start is a change.
     pub fn last_identities(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let mut query = self.connection.prepare_cached(
             "SELECT role, identity FROM epochs e
-             WHERE epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)",
+             WHERE ended_us IS NULL
+               AND epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)",
         )?;
         let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)

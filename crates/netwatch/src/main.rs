@@ -240,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
     // ADR-0043): separate streams would trip routers' ICMP rate limits and show loss
     // that isn't there.
     let hop_streams = sharing::plan(&hopped_targets(&config));
+    current_tx.send_modify(|c| c.rows = shared_rows(&hop_streams, &BTreeMap::new()));
     for stream in &hop_streams {
         tokio::spawn(probe::run_role(
             stream.role(),
@@ -824,29 +825,7 @@ fn publish_current(
         })
         .collect();
     let map = network_map(&grades, topology, names, traces, &bindings);
-    // A stream that serves several hop roles is one row, with their worst status
-    // (ADR-0045).
-    let rows: Vec<RowView> = hop_streams
-        .iter()
-        .filter(|stream| stream.serves.len() > 1)
-        .filter_map(|stream| {
-            Some(RowView {
-                key: stream.role().key(),
-                members: stream
-                    .serves
-                    .iter()
-                    .map(|&target| {
-                        Role::Hop {
-                            target,
-                            ttl: stream.ttl,
-                        }
-                        .key()
-                    })
-                    .collect(),
-                status: status_text(sharing::row_health(stream, &grades)?),
-            })
-        })
-        .collect();
+    let rows = shared_rows(hop_streams, &grades);
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
         rows: rows
@@ -871,6 +850,35 @@ fn publish_current(
             .collect();
     });
     grades
+}
+
+/// The rows several hop roles share, one per stream that serves more than one, with
+/// the worst of their statuses (ADR-0045). They come from the plan, not the grades:
+/// a row none of whose members is graded yet is still one row, `unknown`, so a UI that
+/// loads right after a start draws one row per stream.
+fn shared_rows(
+    hop_streams: &[sharing::HopStream],
+    grades: &BTreeMap<Role, Health>,
+) -> Vec<RowView> {
+    hop_streams
+        .iter()
+        .filter(|stream| stream.serves.len() > 1)
+        .map(|stream| RowView {
+            key: stream.role().key(),
+            members: stream
+                .serves
+                .iter()
+                .map(|&target| {
+                    Role::Hop {
+                        target,
+                        ttl: stream.ttl,
+                    }
+                    .key()
+                })
+                .collect(),
+            status: status_text(sharing::row_health(stream, grades).unwrap_or(Health::Unknown)),
+        })
+        .collect()
 }
 
 /// The network map (ADR-0042), from the grades, the hops' responding addresses, and

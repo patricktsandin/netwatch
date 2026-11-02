@@ -654,13 +654,18 @@ impl MapView {
         names: &BTreeMap<IpAddr, String>,
         traced: &BTreeMap<TargetId, WallTime>,
     ) -> Self {
-        let through = |place: &Place| -> BTreeSet<TargetId> {
-            map.edges
-                .iter()
-                .filter(|e| &e.from == place || &e.to == place)
-                .flat_map(|e| e.targets.iter().copied())
-                .collect()
-        };
+        // The targets whose paths go through each place, in one pass over the edges.
+        let mut targets_through: BTreeMap<&Place, BTreeSet<TargetId>> = BTreeMap::new();
+        for edge in &map.edges {
+            for end in [&edge.from, &edge.to] {
+                targets_through
+                    .entry(end)
+                    .or_default()
+                    .extend(edge.targets.iter().copied());
+            }
+        }
+        let none = BTreeSet::new();
+        let through = |place: &Place| targets_through.get(place).unwrap_or(&none);
         // A target's path has one place per TTL, so two silent places at one TTL never
         // share a target, and the first target through one names it uniquely.
         let ids: BTreeMap<&Place, String> = map
@@ -732,7 +737,7 @@ impl MapView {
                             })
                         })
                         .collect(),
-                    targets: target_keys(&through(&node.place)),
+                    targets: target_keys(through(&node.place)),
                 }
             })
             .collect();
