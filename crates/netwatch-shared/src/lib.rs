@@ -19,6 +19,7 @@
 //! them. Keep it small, and move things into it only after two contexts have
 //! genuinely needed the same concept.
 
+pub mod address;
 mod gauge;
 mod identity;
 mod role;

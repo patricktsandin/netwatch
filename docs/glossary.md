@@ -90,7 +90,8 @@ words are defined elsewhere in this file.
     `Desynchronized`, and `Resynchronized`.
 - **Resumed epoch**: a role's first *identity epoch* after the daemon starts, when its
   *identity* is the one it had before the stop. It is a new epoch, but not a change,
-  so no *event marker* shows it (ADR-0044).
+  so no *event marker* shows it. Only an epoch that starts within a minute of the
+  start can resume one (ADR-0044, ADR-0046).
 
 ## Probing
 

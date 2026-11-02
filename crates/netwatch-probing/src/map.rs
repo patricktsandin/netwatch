@@ -60,6 +60,36 @@ pub struct Sighting {
     pub median: Option<Time>,
 }
 
+/// A node's position along the paths (ADR-0042): kernel 0, NIC 1, tunnel 2, local
+/// interface 3, a hop at TTL n 3 + n. Every edge goes to a greater depth, which is what
+/// keeps the map acyclic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Depth(u16);
+
+impl Depth {
+    const KERNEL: Depth = Depth(0);
+    const NIC: Depth = Depth(1);
+    const TUNNEL: Depth = Depth(2);
+    const LOCAL_INTERFACE: Depth = Depth(3);
+    /// Radios sit beside the NIC.
+    const RADIO: Depth = Depth(1);
+
+    /// A hop's depth: one past the local interface's at TTL 1.
+    fn of(ttl: HopTtl) -> Depth {
+        Depth(3 + u16::from(ttl.get().get()))
+    }
+
+    /// The next depth along a path.
+    fn next(self) -> Depth {
+        Depth(self.0.saturating_add(1))
+    }
+
+    /// The number, for the wire.
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
 /// One node of the map.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapNode {
@@ -68,7 +98,7 @@ pub struct MapNode {
     /// Its position along the path: kernel 0, NIC 1, tunnel 2, local interface 3, a
     /// hop at TTL n 3 + n. Radios are 1. A target is where its trace reached it, or
     /// else in the bottom row.
-    pub depth: u16,
+    pub depth: Depth,
     /// The roles merged into it, each with its own status.
     pub roles: BTreeMap<Role, Health>,
     /// The worst status among `roles`. `None` when no role is merged into it: the
@@ -114,26 +144,20 @@ pub struct NetworkMap {
     pub edges: Vec<MapEdge>,
 }
 
-/// A target's latest trace, and the address it was sent toward.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LatestTrace {
-    /// The target's address. Where it answers, the trace reached the target.
-    pub destination: IpAddr,
-    /// What the trace found.
-    pub trace: PathTrace,
-}
-
-/// Builds the map from every role's status, each hop's responding address, and each
-/// target's latest trace.
+/// Builds the map from every role's status, each hop's responding address, each
+/// target's address, and each target's latest trace.
 ///
 /// Each graded target's path runs from the host's layers through its hops in TTL
 /// order, then through its trace beyond the last of them, and ends at the target.
 /// Consecutive positions on a path are joined by an edge from every node at one to
-/// every node at the next.
+/// every node at the next. Where a hop or a trace hop is answered by the target's
+/// own address, the path has reached the target there: a nearby target, such as a
+/// resolver on the LAN, is that close, and its hop roles beyond merge into it.
 pub fn build(
     statuses: &BTreeMap<Role, Health>,
     hops: &BTreeMap<Role, IpAddr>,
-    traces: &BTreeMap<TargetId, LatestTrace>,
+    destinations: &BTreeMap<TargetId, IpAddr>,
+    traces: &BTreeMap<TargetId, &PathTrace>,
 ) -> NetworkMap {
     let mut map = Builder {
         statuses,
@@ -150,9 +174,13 @@ pub fn build(
 
     // The host's layers. The kernel is always there, as the root every path starts
     // from.
-    let kernel = map.node(Place::Role(Role::Kernel), 0);
+    let kernel = map.node(Place::Role(Role::Kernel), Depth::KERNEL);
     let mut trunk = kernel.clone();
-    for (role, depth) in [(Role::Nic, 1), (Role::Tunnel, 2), (Role::LocalInterface, 3)] {
+    for (role, depth) in [
+        (Role::Nic, Depth::NIC),
+        (Role::Tunnel, Depth::TUNNEL),
+        (Role::LocalInterface, Depth::LOCAL_INTERFACE),
+    ] {
         if statuses.contains_key(&role) {
             let place = map.node(Place::Role(role), depth);
             map.step(
@@ -166,7 +194,7 @@ pub fn build(
     }
     for radio in [Role::Wifi, Role::Cellular] {
         if statuses.contains_key(&radio) {
-            let place = map.node(Place::Role(radio), 1);
+            let place = map.node(Place::Role(radio), Depth::RADIO);
             map.step(
                 std::slice::from_ref(&kernel),
                 &[place],
@@ -175,7 +203,7 @@ pub fn build(
             );
         }
     }
-    let trunk_depth = map.nodes.get(&trunk).map_or(0, |n| n.depth);
+    let trunk_depth = map.nodes.get(&trunk).map_or(Depth::KERNEL, |n| n.depth);
 
     // Targets whose distance is unknown wait until every other node is in, so that
     // they can join the bottom row.
@@ -195,17 +223,26 @@ pub fn build(
             })
             .collect();
         own_hops.sort();
+        let destination = destinations.get(&target).copied();
+        // Where the path reached the target, and what a trace saw there.
+        let mut reached: Option<(HopTtl, Option<Sighting>)> = None;
+        let mut at_target: Vec<&Role> = Vec::new();
         for (ttl, role) in own_hops {
-            let place = match hops.get(role) {
-                Some(&address) => Place::Router { address, ttl },
+            let answered = hops.get(role).copied();
+            if reached.is_some() || (answered.is_some() && answered == destination) {
+                reached = reached.or(Some((ttl, None)));
+                at_target.push(role);
+                continue;
+            }
+            let place = match answered {
+                Some(address) => Place::Router { address, ttl },
                 None => Place::Role(role.clone()),
             };
             map.advance(&mut path, vec![place], ttl, &only, Some(role));
         }
 
-        let mut reached = None;
-        if let Some(latest) = traces.get(&target) {
-            for hop in &latest.trace.hops {
+        if let (None, Some(trace)) = (&reached, traces.get(&target)) {
+            for hop in &trace.hops {
                 if hop.ttl.get().get() <= path.ttl {
                     continue;
                 }
@@ -215,8 +252,8 @@ pub fn build(
                     answered: hop.answered,
                     median: hop.median,
                 };
-                if hop.responders.contains(&latest.destination) {
-                    reached = Some((hop.ttl, sighting));
+                if destination.is_some_and(|d| hop.responders.contains(&d)) {
+                    reached = Some((hop.ttl, Some(sighting)));
                     break;
                 }
                 let places: Vec<Place> = if hop.responders.is_empty() {
@@ -236,7 +273,7 @@ pub fn build(
                 }
             }
             if reached.is_none()
-                && let Some(ttl) = latest.trace.silent_from
+                && let Some(ttl) = trace.silent_from
                 && ttl.get().get() > path.ttl
             {
                 let silent = path.silent(ttl);
@@ -244,12 +281,12 @@ pub fn build(
             }
         }
 
-        // The target sits where its trace reached it.
+        // The target sits where its path reached it.
         let Some((ttl, sighting)) = reached else {
             unplaced.push((target, path));
             continue;
         };
-        let place = map.node(Place::Role(Role::Target(target)), depth_of(ttl));
+        let place = map.node(Place::Role(Role::Target(target)), Depth::of(ttl));
         let gap = ttl.get().get() != path.ttl + 1;
         map.step(
             &path.at,
@@ -257,7 +294,12 @@ pub fn build(
             Link::Path { gap },
             &only,
         );
-        map.sight(&place, sighting);
+        for role in at_target {
+            map.merge(&place, role);
+        }
+        if let Some(sighting) = sighting {
+            map.sight(&place, sighting);
+        }
     }
 
     // A target no trace reached is an unknown distance past what leads to it, so it
@@ -268,12 +310,12 @@ pub fn build(
         .values()
         .map(|n| match n.place {
             Place::Role(Role::Target(_)) => n.depth,
-            _ => n.depth + 1,
+            _ => n.depth.next(),
         })
         .max()
-        .unwrap_or(0);
+        .unwrap_or(Depth::KERNEL);
     for (target, path) in unplaced {
-        let depth = bottom.max(path.depth + 1);
+        let depth = bottom.max(path.depth.next());
         let place = map.node(Place::Role(Role::Target(target)), depth);
         map.step(
             &path.at,
@@ -283,11 +325,6 @@ pub fn build(
         );
     }
     map.finish()
-}
-
-/// A hop's depth: one past the local interface's at TTL 1.
-fn depth_of(ttl: HopTtl) -> u16 {
-    3 + u16::from(ttl.get().get())
 }
 
 /// How an edge was found, before its kind can be told: whether a path edge's ends
@@ -302,7 +339,7 @@ enum Link {
 struct Path {
     at: Vec<Place>,
     ttl: u8,
-    depth: u16,
+    depth: Depth,
 }
 
 impl Path {
@@ -322,7 +359,7 @@ struct Builder<'a> {
 
 impl Builder<'_> {
     /// The node at `place`, made if new, with its role merged in if it is graded.
-    fn node(&mut self, place: Place, depth: u16) -> Place {
+    fn node(&mut self, place: Place, depth: Depth) -> Place {
         let role = match &place {
             Place::Role(role) => Some(role.clone()),
             Place::Router { .. } | Place::Silent { .. } => None,
@@ -362,7 +399,7 @@ impl Builder<'_> {
         targets: &BTreeSet<TargetId>,
         role: Option<&Role>,
     ) {
-        let depth = depth_of(ttl);
+        let depth = Depth::of(ttl);
         for place in &places {
             self.node(place.clone(), depth);
             if let Some(role) = role {

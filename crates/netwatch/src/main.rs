@@ -107,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         current: current_tx.subscribe(),
         clock,
         before_start: std::sync::Mutex::new(identities_before),
+        started: clock.now(),
     };
     recorder.note(
         "started",
@@ -120,20 +121,31 @@ async fn main() -> anyhow::Result<()> {
             writes: writes.clone(),
         });
     // Flushing history also deletes the traces the network map draws (ADR-0038), so
-    // the main loop is told to forget its own copies.
-    let history_flushed = std::sync::Arc::new(tokio::sync::Notify::new());
+    // the main loop is told to forget its own copies: those it sent the writer before
+    // the flush. A generation, taken under the same lock as the send of the flush or
+    // of a trace, says which side of the flush each trace's write is on.
+    let history_generation = std::sync::Arc::new(std::sync::Mutex::new(0_u64));
+    let (history_flushed_tx, mut history_flushed) = mpsc::unbounded_channel::<u64>();
     let flush_history: netwatch_adapter_web::FlushHistory = {
         let writes = writes.clone();
-        let history_flushed = history_flushed.clone();
+        let history_generation = history_generation.clone();
         std::sync::Arc::new(move || {
             let (done, written) = tokio::sync::oneshot::channel();
             let (tell, result) = tokio::sync::oneshot::channel();
-            let _ = writes.send(persist::Write::FlushHistory(done));
-            let history_flushed = history_flushed.clone();
+            // Only a counter is guarded, so a poisoned lock still holds a valid one.
+            let generation = {
+                let mut generation = history_generation
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *generation += 1;
+                let _ = writes.send(persist::Write::FlushHistory(done));
+                *generation
+            };
+            let history_flushed = history_flushed_tx.clone();
             tokio::spawn(async move {
                 if let Ok(outcome) = written.await {
                     if outcome.is_ok() {
-                        history_flushed.notify_one();
+                        let _ = history_flushed.send(generation);
                     }
                     let _ = tell.send(outcome);
                 }
@@ -240,6 +252,8 @@ async fn main() -> anyhow::Result<()> {
     // ADR-0043): separate streams would trip routers' ICMP rate limits and show loss
     // that isn't there.
     let hop_streams = sharing::plan(&hopped_targets(&config));
+    // Where each target with hops is, for the map to see where a path reaches it.
+    let destinations: BTreeMap<TargetId, IpAddr> = hopped_targets(&config).into_iter().collect();
     current_tx.send_modify(|c| c.rows = shared_rows(&hop_streams, &BTreeMap::new()));
     for stream in &hop_streams {
         tokio::spawn(probe::run_role(
@@ -331,6 +345,8 @@ async fn main() -> anyhow::Result<()> {
         clock.now().after(Time::new::<second>(30.0)),
     );
     // Each target's latest trace, for the network map (ADR-0042).
+    // Which flush generation each one's write was sent in.
+    let mut trace_generations: BTreeMap<TargetId, u64> = BTreeMap::new();
     let mut latest_traces = persist::latest_traces(&config.database, traceable.keys().copied())
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "cannot read the latest path traces");
@@ -467,7 +483,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, now, &live, &current_tx);
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, now, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     if let Some(request) = traces.incident(&incident, clock.now()) {
@@ -517,15 +533,19 @@ async fn main() -> anyhow::Result<()> {
             Some(finished) = traced.recv() => {
                 if let Some(trace) = finished.trace {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
+                    let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    trace_generations.insert(finished.target, *generation);
                     latest_traces.insert(finished.target, trace.clone());
                     let _ = writes.send(persist::Write::Trace(trace));
+                    drop(generation);
                 }
                 if let Some(request) = traces.finished(finished.target, clock.now()) {
                     start_trace(request);
                 }
             }
-            () = history_flushed.notified() => {
-                latest_traces.clear();
+            Some(flushed) = history_flushed.recv() => {
+                // Traces written before the flush are gone; any written after it stay.
+                latest_traces.retain(|target, _| trace_generations.get(target).is_some_and(|&g| g >= flushed));
             }
             Some(reason) = disabled_rx.recv() => {
                 disabled.insert(reason);
@@ -705,7 +725,14 @@ struct Recorder {
     clock: Clock,
     /// Each role's identity before this start, by role key, until its first epoch.
     before_start: std::sync::Mutex<BTreeMap<String, String>>,
+    /// When this run started.
+    started: netwatch_shared::Instant,
 }
+
+/// How long after a start a role's first epoch can still resume one from before it
+/// (ADR-0046). Binding every role takes seconds; an identity that comes back later
+/// came back after an outage, which is a change.
+const RESUME_WITHIN_S: f64 = 60.0;
 
 impl Recorder {
     fn show(&self, stored: netwatch_adapter_sqlite::StoredEvent) {
@@ -715,8 +742,9 @@ impl Recorder {
         });
     }
 
-    /// Records a topology event. A role's first epoch this run with the identity it
-    /// had before the start resumes it, and isn't a change (ADR-0044).
+    /// Records a topology event. A role's first epoch this run, soon after the start,
+    /// with the identity it had before the start resumes it, and isn't a change
+    /// (ADR-0044, ADR-0046).
     fn topology(&self, event: TopologyEvent) {
         let at = self.clock.wall_now();
         let resumed = match &event {
@@ -727,7 +755,9 @@ impl Recorder {
                     .ok()
                     .and_then(|mut before| before.remove(&role.key()));
                 let identity = netwatch_adapter_sqlite::describe(&event, at, false).detail;
-                before.is_some() && before == identity
+                let soon =
+                    self.clock.now().since(self.started) <= Time::new::<second>(RESUME_WITHIN_S);
+                soon && before.is_some() && before == identity
             }
             _ => false,
         };
@@ -782,6 +812,7 @@ fn publish_current(
     names: &HashMap<IpAddr, String>,
     traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
     hop_streams: &[sharing::HopStream],
+    destinations: &BTreeMap<TargetId, IpAddr>,
     now: WallTime,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
@@ -824,7 +855,7 @@ fn publish_current(
             )
         })
         .collect();
-    let map = network_map(&grades, topology, names, traces, &bindings);
+    let map = network_map(&grades, topology, names, traces, destinations, &bindings);
     let rows = shared_rows(hop_streams, &grades);
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
@@ -889,6 +920,7 @@ fn network_map(
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
     traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
+    destinations: &BTreeMap<TargetId, IpAddr>,
     bindings: &BTreeMap<String, BindingView>,
 ) -> netwatch_adapter_web::MapView {
     let hops: BTreeMap<Role, IpAddr> = topology
@@ -898,26 +930,19 @@ fn network_map(
             _ => None,
         })
         .collect();
-    let latest: BTreeMap<TargetId, netwatch_probing::map::LatestTrace> = traces
+    let latest: BTreeMap<TargetId, &netwatch_probing::trace::PathTrace> = traces
         .iter()
-        .map(|(&target, stored)| {
-            (
-                target,
-                netwatch_probing::map::LatestTrace {
-                    destination: stored.destination,
-                    trace: stored.trace.clone(),
-                },
-            )
-        })
+        .map(|(&target, stored)| (target, &stored.trace))
         .collect();
-    let mut known: BTreeMap<IpAddr, String> = traces
-        .values()
-        .flat_map(|t| t.names.iter().map(|(a, n)| (*a, n.clone())))
-        .collect();
-    known.extend(names.iter().map(|(a, n)| (*a, n.clone())));
+    let name = |address: IpAddr| {
+        names
+            .get(&address)
+            .or_else(|| traces.values().find_map(|t| t.names.get(&address)))
+            .cloned()
+    };
     let traced = traces.iter().map(|(&t, stored)| (t, stored.at)).collect();
-    let map = netwatch_probing::map::build(grades, &hops, &latest);
-    netwatch_adapter_web::MapView::new(&map, bindings, &known, &traced)
+    let map = netwatch_probing::map::build(grades, &hops, destinations, &latest);
+    netwatch_adapter_web::MapView::new(&map, bindings, &name, &traced)
 }
 
 /// Publishes a layer's report, and returns its grade for [`publish_current`].

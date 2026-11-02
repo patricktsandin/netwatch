@@ -7,12 +7,30 @@ use std::net::IpAddr;
 use std::num::NonZeroU8;
 
 use netwatch_probing::Health;
-use netwatch_probing::map::{EdgeKind, LatestTrace, MapEdge, MapNode, NetworkMap, Place, build};
+use netwatch_probing::map::{self, EdgeKind, MapEdge, MapNode, NetworkMap, Place};
 use netwatch_probing::trace::{PathTrace, TraceHop};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{HopTtl, Role, TargetId};
 use proptest::prelude::*;
+
+/// A target's latest trace, and the address it was sent toward.
+#[derive(Debug)]
+struct LatestTrace {
+    destination: IpAddr,
+    trace: PathTrace,
+}
+
+/// The map, with each traced target's address taken from its trace.
+fn build(
+    statuses: &BTreeMap<Role, Health>,
+    hops: &BTreeMap<Role, IpAddr>,
+    traces: &BTreeMap<TargetId, LatestTrace>,
+) -> NetworkMap {
+    let destinations = traces.iter().map(|(&t, l)| (t, l.destination)).collect();
+    let borrowed = traces.iter().map(|(&t, l)| (t, &l.trace)).collect();
+    map::build(statuses, hops, &destinations, &borrowed)
+}
 
 fn ttl(n: u8) -> HopTtl {
     HopTtl::new(NonZeroU8::new(n).unwrap())
@@ -96,9 +114,9 @@ fn the_hosts_layers_form_a_probed_trunk_in_path_order() {
     let kernel = Place::Role(Role::Kernel);
     let nic = Place::Role(Role::Nic);
     let local = Place::Role(Role::LocalInterface);
-    assert_eq!(node(&map, &kernel).depth, 0);
-    assert_eq!(node(&map, &nic).depth, 1);
-    assert_eq!(node(&map, &local).depth, 3);
+    assert_eq!(node(&map, &kernel).depth.get(), 0);
+    assert_eq!(node(&map, &nic).depth.get(), 1);
+    assert_eq!(node(&map, &local).depth.get(), 3);
     assert_eq!(edge(&map, &kernel, &nic).kind, EdgeKind::Probed);
     assert_eq!(edge(&map, &nic, &local).kind, EdgeKind::Probed);
     assert_eq!(map.edges.len(), 2, "no tunnel is graded, so none is drawn");
@@ -112,7 +130,7 @@ fn a_tunnel_sits_between_the_nic_and_the_local_interface() {
         &BTreeMap::new(),
     );
     let tunnel = Place::Role(Role::Tunnel);
-    assert_eq!(node(&map, &tunnel).depth, 2);
+    assert_eq!(node(&map, &tunnel).depth.get(), 2);
     edge(&map, &Place::Role(Role::Nic), &tunnel);
     edge(&map, &tunnel, &Place::Role(Role::LocalInterface));
 }
@@ -132,7 +150,7 @@ fn hops_with_the_same_address_and_ttl_are_one_router_node_shared_by_both_paths()
     let map = build(&all, &hops, &BTreeMap::new());
     let gateway = router("192.168.1.1", 1);
     let shared = node(&map, &gateway);
-    assert_eq!(shared.depth, 4);
+    assert_eq!(shared.depth.get(), 4);
     assert_eq!(
         shared.roles.keys().cloned().collect::<Vec<_>>(),
         vec![hop(1, 1), hop(2, 1)]
@@ -167,8 +185,8 @@ fn a_router_nodes_status_is_the_worst_of_its_roles_and_it_lists_each() {
 fn a_hop_with_no_responding_address_is_a_node_of_its_own() {
     let all = statuses(&[(hop(1, 1), Health::Unknown), (hop(2, 1), Health::Unknown)]);
     let map = build(&all, &BTreeMap::new(), &BTreeMap::new());
-    assert_eq!(node(&map, &Place::Role(hop(1, 1))).depth, 4);
-    assert_eq!(node(&map, &Place::Role(hop(2, 1))).depth, 4);
+    assert_eq!(node(&map, &Place::Role(hop(1, 1))).depth.get(), 4);
+    assert_eq!(node(&map, &Place::Role(hop(2, 1))).depth.get(), 4);
 }
 
 #[test]
@@ -186,7 +204,7 @@ fn a_target_without_a_trace_is_one_step_past_its_last_hop_by_an_unmeasured_edge(
     ]);
     let map = build(&all, &hops, &BTreeMap::new());
     let t = node(&map, &Place::Role(target(1)));
-    assert_eq!(t.depth, 7);
+    assert_eq!(t.depth.get(), 7);
     assert_eq!(t.health, Some(Health::Failing));
     assert_eq!(
         edge(&map, &router("10.0.0.1", 2), &router("10.0.0.2", 3)).kind,
@@ -212,7 +230,7 @@ fn a_target_with_no_hops_or_trace_hangs_off_the_local_interface_by_an_unmeasured
     );
     assert_eq!(into.kind, EdgeKind::Unmeasured);
     assert_eq!(into.targets, targets(&[21]));
-    assert_eq!(node(&map, &Place::Role(target(21))).depth, 4);
+    assert_eq!(node(&map, &Place::Role(target(21))).depth.get(), 4);
     assert_eq!(
         edge(&map, &Place::Role(Role::Kernel), &Place::Role(Role::Nic)).targets,
         targets(&[21]),
@@ -232,8 +250,8 @@ fn a_target_of_unknown_distance_sits_in_the_bottom_row_beside_the_deepest_reache
         ),
     )]);
     let map = build(&all, &BTreeMap::new(), &traces);
-    assert_eq!(node(&map, &Place::Role(target(1))).depth, 8);
-    assert_eq!(node(&map, &Place::Role(target(21))).depth, 8);
+    assert_eq!(node(&map, &Place::Role(target(1))).depth.get(), 8);
+    assert_eq!(node(&map, &Place::Role(target(21))).depth.get(), 8);
 }
 
 #[test]
@@ -259,7 +277,7 @@ fn the_latest_trace_extends_the_path_and_the_target_sits_where_the_trace_reached
     )]);
     let map = build(&all, &hops, &traces);
     let beyond = node(&map, &router("10.9.0.1", 4));
-    assert_eq!(beyond.depth, 7);
+    assert_eq!(beyond.depth.get(), 7);
     assert_eq!(beyond.health, None, "only a trace has seen it");
     assert_eq!(beyond.sightings.len(), 1);
     assert_eq!(beyond.sightings[0].target, TargetId::new(1));
@@ -269,7 +287,7 @@ fn the_latest_trace_extends_the_path_and_the_target_sits_where_the_trace_reached
         EdgeKind::Traced
     );
     let t = node(&map, &Place::Role(target(1)));
-    assert_eq!(t.depth, 8);
+    assert_eq!(t.depth.get(), 8);
     assert_eq!(t.health, Some(Health::Healthy));
     assert_eq!(
         edge(&map, &router("10.9.0.1", 4), &Place::Role(target(1))).kind,
@@ -345,7 +363,7 @@ fn a_ttl_nobody_answered_is_one_silent_node_for_every_path_that_reaches_it_from_
         ttl: ttl(5),
     };
     let shared = node(&map, &silent("10.9.0.1"));
-    assert_eq!(shared.depth, 8);
+    assert_eq!(shared.depth.get(), 8);
     assert_eq!(shared.health, None);
     assert_eq!(shared.sightings.len(), 2);
     assert_eq!(
@@ -388,7 +406,7 @@ fn a_trace_that_went_silent_ends_in_a_silent_node_then_an_unmeasured_edge_to_the
         edge(&map, &silent, &Place::Role(target(1))).kind,
         EdgeKind::Unmeasured
     );
-    assert_eq!(node(&map, &Place::Role(target(1))).depth, 9);
+    assert_eq!(node(&map, &Place::Role(target(1))).depth.get(), 9);
 }
 
 #[test]
@@ -403,7 +421,7 @@ fn radios_hang_off_the_kernel_by_off_path_edges_that_no_target_takes() {
     );
     for radio in [Role::Wifi, Role::Cellular] {
         let place = Place::Role(radio);
-        assert_eq!(node(&map, &place).depth, 1);
+        assert_eq!(node(&map, &place).depth.get(), 1);
         let off = edge(&map, &Place::Role(Role::Kernel), &place);
         assert_eq!(off.kind, EdgeKind::OffPath);
         assert!(off.targets.is_empty());
@@ -532,7 +550,7 @@ proptest! {
     #[test]
     fn every_edge_goes_deeper_so_the_map_is_acyclic((all, hops, traces) in inputs()) {
         let map = build(&all, &hops, &traces);
-        let depth: BTreeMap<&Place, u16> = map.nodes.iter().map(|n| (&n.place, n.depth)).collect();
+        let depth: BTreeMap<&Place, u16> = map.nodes.iter().map(|n| (&n.place, n.depth.get())).collect();
         prop_assert_eq!(depth.len(), map.nodes.len(), "a place is one node");
         for e in &map.edges {
             let (from, to) = (depth.get(&e.from), depth.get(&e.to));
@@ -573,4 +591,45 @@ proptest! {
             prop_assert!(seen.contains(&goal), "{:?} is reachable in {:#?}", role, map);
         }
     }
+}
+
+#[test]
+fn a_target_that_answers_its_own_hop_probes_is_reached_there_with_its_hops_merged_in() {
+    // The system resolver is the gateway: hop 1 is the target itself, and so are the
+    // answers at TTL 2 and 3.
+    let all = statuses(&[
+        (hop(14, 1), Health::Healthy),
+        (hop(14, 2), Health::Healthy),
+        (hop(14, 3), Health::Degraded),
+        (target(14), Health::Healthy),
+    ]);
+    let gateway = ip("192.168.1.1");
+    let hops = BTreeMap::from([
+        (hop(14, 1), gateway),
+        (hop(14, 2), gateway),
+        (hop(14, 3), gateway),
+    ]);
+    let destinations = BTreeMap::from([(TargetId::new(14), gateway)]);
+    let map = map::build(&all, &hops, &destinations, &BTreeMap::new());
+    let t = node(&map, &Place::Role(target(14)));
+    assert_eq!(t.depth.get(), 4);
+    assert_eq!(
+        t.roles.keys().cloned().collect::<Vec<_>>(),
+        vec![hop(14, 1), hop(14, 2), hop(14, 3), target(14)]
+    );
+    assert_eq!(t.health, Some(Health::Degraded));
+    assert!(
+        !map.nodes
+            .iter()
+            .any(|n| matches!(n.place, Place::Router { .. }))
+    );
+    assert_eq!(
+        edge(
+            &map,
+            &Place::Role(Role::LocalInterface),
+            &Place::Role(target(14))
+        )
+        .kind,
+        EdgeKind::Probed
+    );
 }

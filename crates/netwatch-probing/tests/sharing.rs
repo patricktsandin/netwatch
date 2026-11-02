@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use netwatch_probing::sharing::{HOP_TTLS, HopStream, plan};
+use netwatch_shared::address::is_public;
 use netwatch_shared::{HopTtl, TargetId};
 use proptest::prelude::*;
 
@@ -67,13 +68,25 @@ fn no_targets_need_no_streams() {
     assert!(plan(&[]).is_empty());
 }
 
-const POOL: [&str; 5] = [
+const POOL: [&str; 7] = [
     "1.1.1.1",
     "8.8.8.8",
     "9.9.9.9",
     "2606:4700:4700::1111",
     "2620:fe::fe",
+    "192.168.1.53",
+    "fd00::53",
 ];
+
+#[test]
+fn hop_1_is_probed_toward_a_public_address_so_a_lan_resolver_doesnt_answer_it() {
+    let streams = plan(&[(t(1), ip("192.168.1.53")), (t(2), ip("8.8.8.8"))]);
+    let first = at(&streams, HOP_TTLS[0]);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].owner, t(2));
+    assert_eq!(first[0].destination, ip("8.8.8.8"));
+    assert_eq!(first[0].serves, vec![t(2), t(1)]);
+}
 
 proptest! {
     #[test]
@@ -93,10 +106,13 @@ proptest! {
                 }
             }
         }
+        let public = |id: &TargetId| targets.iter().any(|(t, a)| t == id && is_public(*a));
         for s in &streams {
             prop_assert_eq!(Some(&s.owner), s.serves.first());
-            let sorted: BTreeSet<TargetId> = s.serves.iter().copied().collect();
-            prop_assert_eq!(sorted.into_iter().collect::<Vec<_>>(), s.serves.clone());
+            let distinct: BTreeSet<TargetId> = s.serves.iter().copied().collect();
+            prop_assert_eq!(distinct.len(), s.serves.len());
+            let best = s.serves.iter().filter(|t| public(t)).min().or_else(|| s.serves.iter().min());
+            prop_assert_eq!(Some(&s.owner), best, "the lowest public target owns it");
             let owner_address = targets.iter().find(|(id, _)| *id == s.owner).map(|(_, a)| *a);
             prop_assert_eq!(owner_address, Some(s.destination));
         }

@@ -500,7 +500,7 @@ fn connection(
     let mut shared: Vec<(u8, std::net::IpAddr)> = hops
         .iter()
         .copied()
-        .filter(|&(_, a)| netwatch_host_health::facts::is_shared(a))
+        .filter(|&(_, a)| netwatch_shared::address::is_shared(a))
         .collect();
     shared.sort_unstable();
     shared.dedup();

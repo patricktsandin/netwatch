@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 
 use netwatch_adapter_sqlite::StoredTrace;
-use netwatch_host_health::facts::is_public;
+use netwatch_shared::address::is_public;
 
 use netwatch_history::{Histogram, Rollup};
 use netwatch_probing::incident::{Incident, Severity};

@@ -10,12 +10,16 @@
 //! # Invariants
 //!
 //! - Every target's hop at every TTL in [`HOP_TTLS`] is served by exactly one stream.
-//! - A stream's owner is the lowest target it serves.
+//! - A stream's owner is the lowest target it serves whose address is public, or
+//!   the lowest if none is. Hop 1's probes go toward the owner's address, and one
+//!   on the LAN, such as a local resolver, would answer them itself instead of the
+//!   gateway (ADR-0046).
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU8;
 
+use netwatch_shared::address::is_public;
 use netwatch_shared::{HopTtl, Role, TargetId};
 
 use crate::Health;
@@ -36,7 +40,8 @@ pub struct HopStream {
     pub destination: IpAddr,
     /// The target whose hop role the stream runs as.
     pub owner: TargetId,
-    /// Every target whose hop at `ttl` it serves, the owner first, ascending.
+    /// Every target whose hop at `ttl` it serves, the owner first: those with public
+    /// addresses ascending, then the rest ascending.
     pub serves: Vec<TargetId>,
 }
 
@@ -70,7 +75,7 @@ pub fn row_health(stream: &HopStream, grades: &BTreeMap<Role, Health>) -> Option
 /// address its hops are probed toward. Streams come in TTL order, then by owner.
 pub fn plan(targets: &[(TargetId, IpAddr)]) -> Vec<HopStream> {
     let mut sorted = targets.to_vec();
-    sorted.sort();
+    sorted.sort_by_key(|&(target, address)| (!is_public(address), target));
     HOP_TTLS
         .iter()
         .flat_map(|&ttl| {

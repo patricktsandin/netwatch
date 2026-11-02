@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use netwatch_adapter_sockets::lookup::{self, RecordType};
-use netwatch_host_health::facts::{RouterName, is_public, parse_as_name, parse_origin};
+use netwatch_host_health::facts::{RouterName, parse_as_name, parse_origin};
+use netwatch_shared::address::is_public;
 
 /// How long a name is kept, and how long a lookup that found nothing is.
 const KEEP: Duration = Duration::from_secs(3600);

@@ -646,12 +646,12 @@ pub struct MapEdgeView {
 
 impl MapView {
     /// The map in words the UI can draw. `bindings` gives the layers' identities,
-    /// `names` the router names known for addresses, and `traced` when each target's
+    /// `names` looks up an address's router name, and `traced` says when each target's
     /// latest trace ran.
     pub fn new(
         map: &NetworkMap,
         bindings: &BTreeMap<String, BindingView>,
-        names: &BTreeMap<IpAddr, String>,
+        names: &dyn Fn(IpAddr) -> Option<String>,
         traced: &BTreeMap<TargetId, WallTime>,
     ) -> Self {
         // The targets whose paths go through each place, in one pass over the edges.
@@ -704,14 +704,14 @@ impl MapView {
                         "router",
                         Some(ttl.get().get()),
                         Some(address.to_string()),
-                        names.get(address).cloned(),
+                        names(*address),
                     ),
                     Place::Silent { ttl, .. } => ("silent", Some(ttl.get().get()), None, None),
                 };
                 MapNodeView {
                     id: id(&node.place),
                     kind: kind.to_owned(),
-                    depth: node.depth,
+                    depth: node.depth.get(),
                     ttl,
                     identity,
                     name,
