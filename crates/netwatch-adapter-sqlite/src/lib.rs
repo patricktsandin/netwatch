@@ -36,6 +36,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0007-traces.sql"),
     include_str!("../migrations/0008-resumed-epochs.sql"),
     include_str!("../migrations/0009-resumed-only-at-a-start.sql"),
+    include_str!("../migrations/0010-epochs-by-role.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).

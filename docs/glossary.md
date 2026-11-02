@@ -128,6 +128,9 @@ words are defined elsewhere in this file.
   across *targets*. Hop 1 is shared by every target of an address family (ADR-0026),
   and hops 2–3 by every target with the same destination address (ADR-0043). Each
   target's *hop* keeps its own *role*.
+- **Stream owner**: the *target* whose *hop* *role* a shared *probe stream* runs as,
+  and toward whose address it probes: the lowest target with a public address, or the
+  lowest if none has one (ADR-0046). A shared *row* draws the owner's samples.
 - **Cadence**: the fixed interval at which a *probe stream* sends, measured from the
   schedule, never from the last reply.
 - **Timer lateness**: how far after its scheduled *instant* a *probe* was actually sent.
@@ -241,6 +244,8 @@ words are defined elsewhere in this file.
 - **Map edge**: a step between consecutive positions on one or more *targets*' paths.
   It is *probed*, *traced*, *unmeasured* (hops between its ends are unknown), or
   *off-path* (a *radio role*'s).
+- **Sighting**: what one *target*'s latest *path trace* found at a *map node*: the
+  probes it sent at that TTL, how many were answered, and the median answer.
 - **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
 - **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
   at that time.

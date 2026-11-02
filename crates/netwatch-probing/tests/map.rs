@@ -29,7 +29,7 @@ fn build(
 ) -> NetworkMap {
     let destinations = traces.iter().map(|(&t, l)| (t, l.destination)).collect();
     let borrowed = traces.iter().map(|(&t, l)| (t, &l.trace)).collect();
-    map::build(statuses, hops, &destinations, &borrowed)
+    map::build(statuses, hops, &BTreeMap::new(), &destinations, &borrowed)
 }
 
 fn ttl(n: u8) -> HopTtl {
@@ -616,7 +616,13 @@ fn a_target_that_answers_its_own_hop_probes_follows_that_router_with_its_later_h
         (TargetId::new(14), gateway),
         (TargetId::new(1), ip("1.1.1.1")),
     ]);
-    let map = map::build(&all, &hops, &destinations, &BTreeMap::new());
+    let map = map::build(
+        &all,
+        &hops,
+        &BTreeMap::new(),
+        &destinations,
+        &BTreeMap::new(),
+    );
     let router_node = node(&map, &router("192.168.1.1", 1));
     assert_eq!(
         router_node.roles.keys().cloned().collect::<Vec<_>>(),
@@ -641,4 +647,23 @@ fn a_target_that_answers_its_own_hop_probes_follows_that_router_with_its_later_h
         edge(&map, &router("192.168.1.1", 1), &Place::Role(target(14))).kind,
         EdgeKind::Probed
     );
+}
+
+#[test]
+fn copies_of_a_shared_hop_with_no_responding_address_are_one_node() {
+    let all = statuses(&[(hop(1, 1), Health::Failing), (hop(2, 1), Health::Failing)]);
+    let shared = BTreeMap::from([(hop(1, 1), hop(1, 1)), (hop(2, 1), hop(1, 1))]);
+    let map = map::build(
+        &all,
+        &BTreeMap::new(),
+        &shared,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
+    let one = node(&map, &Place::Role(hop(1, 1)));
+    assert_eq!(
+        one.roles.keys().cloned().collect::<Vec<_>>(),
+        vec![hop(1, 1), hop(2, 1)]
+    );
+    assert!(!map.nodes.iter().any(|n| n.place == Place::Role(hop(2, 1))));
 }

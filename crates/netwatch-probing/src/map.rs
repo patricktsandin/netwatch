@@ -154,9 +154,13 @@ pub struct NetworkMap {
 /// the target is at that TTL. Where a hop is, the target follows that hop's router,
 /// which other paths may pass through too, and its hop roles beyond merge into the
 /// target: a nearby target, such as a resolver on the LAN, is that close.
+///
+/// `shared` maps each hop role a shared stream serves to the role the stream runs as
+/// (ADR-0045): copies of one stream with no responding address yet are one node.
 pub fn build(
     statuses: &BTreeMap<Role, Health>,
     hops: &BTreeMap<Role, IpAddr>,
+    shared: &BTreeMap<Role, Role>,
     destinations: &BTreeMap<TargetId, IpAddr>,
     traces: &BTreeMap<TargetId, &PathTrace>,
 ) -> NetworkMap {
@@ -238,7 +242,7 @@ pub fn build(
             let answered = hops.get(role).copied();
             let place = match answered {
                 Some(address) => Place::Router { address, ttl },
-                None => Place::Role(role.clone()),
+                None => Place::Role(shared.get(role).unwrap_or(role).clone()),
             };
             // The router there is the target's address, and other paths may share it,
             // so it stays one router node, and the target follows it.

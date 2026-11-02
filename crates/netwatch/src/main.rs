@@ -344,11 +344,17 @@ async fn main() -> anyhow::Result<()> {
     // Each target's latest trace, for the network map (ADR-0042), and the flush
     // generation each one's write was sent in.
     let mut trace_generations: BTreeMap<TargetId, u64> = BTreeMap::new();
-    let mut latest_traces =
-        persist::latest_traces(&config.database, &destinations).unwrap_or_else(|error| {
-            tracing::warn!(%error, "cannot read the latest path traces");
-            BTreeMap::new()
-        });
+    let mut latest_traces = {
+        let (database, destinations) = (config.database.clone(), destinations.clone());
+        tokio::task::spawn_blocking(move || persist::latest_traces(&database, &destinations))
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|read| read)
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "cannot read the latest path traces");
+                BTreeMap::new()
+            })
+    };
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
     let tracer = trace::Tracer::new(pin.clone(), names.clone(), clock, traced_tx);
     let start_trace = |request: TraceRequest| {
@@ -483,7 +489,11 @@ async fn main() -> anyhow::Result<()> {
                 let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, now, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
-                    if let Some(request) = traces.incident(&incident, clock.now()) {
+                    // A member's copy of a shared hop has the owner's incidents too, and
+                    // its trace would sweep the same path toward the same address, so
+                    // only the owner's incidents ask for one (ADR-0043).
+                    let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
+                    if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
                         start_trace(request);
                     }
                     recorder.incident(incident);
@@ -860,7 +870,15 @@ fn publish_current(
             )
         })
         .collect();
-    let map = network_map(&grades, topology, names, traces, destinations, &bindings);
+    let map = network_map(
+        &grades,
+        topology,
+        names,
+        traces,
+        destinations,
+        hop_streams,
+        &bindings,
+    );
     let rows = shared_rows(hop_streams, &grades);
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
@@ -926,6 +944,7 @@ fn network_map(
     names: &HashMap<IpAddr, String>,
     traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
     destinations: &BTreeMap<TargetId, IpAddr>,
+    hop_streams: &[sharing::HopStream],
     bindings: &BTreeMap<String, BindingView>,
 ) -> netwatch_adapter_web::MapView {
     let hops: BTreeMap<Role, IpAddr> = topology
@@ -946,7 +965,21 @@ fn network_map(
             .cloned()
     };
     let traced = traces.iter().map(|(&t, stored)| (t, stored.at)).collect();
-    let map = netwatch_probing::map::build(grades, &hops, destinations, &latest);
+    let shared: BTreeMap<Role, Role> = hop_streams
+        .iter()
+        .flat_map(|stream| {
+            stream.serves.iter().map(move |&target| {
+                (
+                    Role::Hop {
+                        target,
+                        ttl: stream.ttl,
+                    },
+                    stream.role(),
+                )
+            })
+        })
+        .collect();
+    let map = netwatch_probing::map::build(grades, &hops, &shared, destinations, &latest);
     netwatch_adapter_web::MapView::new(&map, bindings, &name, &traced)
 }
 

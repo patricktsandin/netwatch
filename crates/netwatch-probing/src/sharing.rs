@@ -55,6 +55,16 @@ impl HopStream {
     }
 }
 
+/// The stream that serves `role`, if it is a hop that one does.
+pub fn stream_of<'a>(streams: &'a [HopStream], role: &Role) -> Option<&'a HopStream> {
+    match role {
+        Role::Hop { target, ttl } => streams
+            .iter()
+            .find(|s| s.ttl == *ttl && s.serves.contains(target)),
+        _ => None,
+    }
+}
+
 /// A shared stream's row status (ADR-0045): the worst status among the hop roles it
 /// serves that are graded, or `None` if none is.
 pub fn row_health(stream: &HopStream, grades: &BTreeMap<Role, Health>) -> Option<Health> {
