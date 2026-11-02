@@ -221,6 +221,22 @@ fn a_target_with_no_hops_or_trace_hangs_off_the_local_interface_by_an_unmeasured
 }
 
 #[test]
+fn a_target_of_unknown_distance_sits_in_the_bottom_row_beside_the_deepest_reached_target() {
+    let all = statuses(&[(target(1), Health::Healthy), (target(21), Health::Healthy)]);
+    let traces = BTreeMap::from([(
+        TargetId::new(1),
+        latest(
+            "1.1.1.1",
+            vec![trace_hop(4, &["10.9.0.1"]), trace_hop(5, &["1.1.1.1"])],
+            None,
+        ),
+    )]);
+    let map = build(&all, &BTreeMap::new(), &traces);
+    assert_eq!(node(&map, &Place::Role(target(1))).depth, 8);
+    assert_eq!(node(&map, &Place::Role(target(21))).depth, 8);
+}
+
+#[test]
 fn the_latest_trace_extends_the_path_and_the_target_sits_where_the_trace_reached_it() {
     let all = statuses(&[
         (hop(1, 1), Health::Healthy),

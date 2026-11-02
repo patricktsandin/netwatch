@@ -66,7 +66,8 @@ pub struct MapNode {
     /// Where it is.
     pub place: Place,
     /// Its position along the path: kernel 0, NIC 1, tunnel 2, local interface 3, a
-    /// hop at TTL n 3 + n. Radios are 1. A target is one past whatever leads to it.
+    /// hop at TTL n 3 + n. Radios are 1. A target is where its trace reached it, or
+    /// else in the bottom row.
     pub depth: u16,
     /// The roles merged into it, each with its own status.
     pub roles: BTreeMap<Role, Health>,
@@ -176,6 +177,9 @@ pub fn build(
     }
     let trunk_depth = map.nodes.get(&trunk).map_or(0, |n| n.depth);
 
+    // Targets whose distance is unknown wait until every other node is in, so that
+    // they can join the bottom row.
+    let mut unplaced = Vec::new();
     for &target in &targets {
         let only = BTreeSet::from([target]);
         let mut path = Path {
@@ -240,22 +244,43 @@ pub fn build(
             }
         }
 
-        // The target sits where its trace reached it, or else one step past what
-        // leads to it, across hops nobody has measured.
-        let (depth, gap) = match &reached {
-            Some((ttl, _)) => (depth_of(*ttl), ttl.get().get() != path.ttl + 1),
-            None => (path.depth + 1, true),
+        // The target sits where its trace reached it.
+        let Some((ttl, sighting)) = reached else {
+            unplaced.push((target, path));
+            continue;
         };
-        let place = map.node(Place::Role(Role::Target(target)), depth);
+        let place = map.node(Place::Role(Role::Target(target)), depth_of(ttl));
+        let gap = ttl.get().get() != path.ttl + 1;
         map.step(
             &path.at,
             std::slice::from_ref(&place),
             Link::Path { gap },
             &only,
         );
-        if let Some((_, sighting)) = reached {
-            map.sight(&place, sighting);
-        }
+        map.sight(&place, sighting);
+    }
+
+    // A target no trace reached is an unknown distance past what leads to it, so it
+    // goes in the bottom row: beside the deepest target placed, or below every other
+    // node, and always past its own path.
+    let bottom = map
+        .nodes
+        .values()
+        .map(|n| match n.place {
+            Place::Role(Role::Target(_)) => n.depth,
+            _ => n.depth + 1,
+        })
+        .max()
+        .unwrap_or(0);
+    for (target, path) in unplaced {
+        let depth = bottom.max(path.depth + 1);
+        let place = map.node(Place::Role(Role::Target(target)), depth);
+        map.step(
+            &path.at,
+            std::slice::from_ref(&place),
+            Link::Path { gap: true },
+            &BTreeSet::from([target]),
+        );
     }
     map.finish()
 }

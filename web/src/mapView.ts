@@ -84,7 +84,7 @@ export function renderMap(
     container.replaceChildren(empty);
     return;
   }
-  const { width, height, positions } = layout(map);
+  const { width, height, positions, routes } = layout(map);
   const root = svg("svg", {
     width,
     height,
@@ -93,16 +93,27 @@ export function renderMap(
     "aria-label": "Network map",
   });
 
-  const edges = map.edges.map((e) => {
+  const edges = map.edges.map((e, i) => {
     const [a, b] = [positions.get(e.from), positions.get(e.to)];
     if (a === undefined || b === undefined) return null;
-    const [x1, y1] = [a.x + NODE_WIDTH / 2, a.y + NODE_HEIGHT];
-    const [x2, y2] = [b.x + NODE_WIDTH / 2, b.y];
-    const bend = Math.max(20, (y2 - y1) / 2);
-    const path = svg("path", {
-      d: `M ${String(x1)} ${String(y1)} C ${String(x1)} ${String(y1 + bend)}, ${String(x2)} ${String(y2 - bend)}, ${String(x2)} ${String(y2)}`,
-      class: `map-edge ${e.kind}`,
-    });
+    // From the bottom of one node to the top of the other, straight down through
+    // each row the edge crosses, and curving across the gaps between rows.
+    const points = [
+      { x: a.x + NODE_WIDTH / 2, y: a.y + NODE_HEIGHT },
+      ...(routes[i] ?? []).flatMap((p) => [
+        { x: p.x, y: p.y - NODE_HEIGHT / 2 },
+        { x: p.x, y: p.y + NODE_HEIGHT / 2 },
+      ]),
+      { x: b.x + NODE_WIDTH / 2, y: b.y },
+    ];
+    let d = "";
+    for (let k = 0; k + 1 < points.length; k += 2) {
+      const [p, q] = [points[k], points[k + 1]];
+      if (p === undefined || q === undefined) continue;
+      const bend = (q.y - p.y) / 2;
+      d += `${k === 0 ? "M" : "L"} ${String(p.x)} ${String(p.y)} C ${String(p.x)} ${String(p.y + bend)}, ${String(q.x)} ${String(q.y - bend)}, ${String(q.x)} ${String(q.y)} `;
+    }
+    const path = svg("path", { d: d.trim(), class: `map-edge ${e.kind}` });
     path.append(
       svg("title", {}, `${e.kind}${e.targets.length > 0 ? `: ${e.targets.map(words.role).join(", ")}` : ""}`),
     );

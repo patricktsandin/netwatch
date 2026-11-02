@@ -74,6 +74,27 @@ describe("layout", () => {
     );
   });
 
+  it("routes an edge through every row between its ends, clear of the nodes there", () => {
+    fc.assert(
+      fc.property(dag, (map) => {
+        const { positions, routes } = layout(map);
+        const rows = [...new Set(map.nodes.map((n) => n.depth))].sort((a, b) => a - b);
+        map.edges.forEach((e, i) => {
+          const [from, to] = [map.nodes.find((n) => n.id === e.from), map.nodes.find((n) => n.id === e.to)];
+          if (from === undefined || to === undefined) return;
+          const route = routes[i] ?? [];
+          expect(route.length).toBe(rows.indexOf(to.depth) - rows.indexOf(from.depth) - 1);
+          for (const point of route) {
+            for (const p of positions.values()) {
+              const inRow = point.y > p.y && point.y < p.y + NODE_HEIGHT;
+              if (inRow) expect(point.x < p.x || point.x > p.x + NODE_WIDTH).toBe(true);
+            }
+          }
+        });
+      }),
+    );
+  });
+
   it("is the same every time for the same map", () => {
     fc.assert(
       fc.property(dag, (map) => {

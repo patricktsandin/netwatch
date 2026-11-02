@@ -46,8 +46,9 @@ UI lays it out and draws it, and decides nothing (ADR-0030).
   same way. A TTL where several addresses answered (load balancing) gets one node
   per address. A TTL where nobody answered gets a *silent* node. Paths that reach a
   silent TTL from the same nodes share it, because nothing tells them apart there.
-- **Targets:** one node each, at the TTL where its trace reached it. Without a
-  trace that reached it, a target sits one step past the last hop known.
+- **Targets:** one node each, at the TTL where its trace reached it. A target no
+  trace reached is an unknown distance away, so it goes in the bottom row: beside
+  the deepest target that was reached, or below every other node.
 
 **Edges** join consecutive positions on each target's path. Every node at one
 position joins every node at the next. Each edge lists the targets whose paths use

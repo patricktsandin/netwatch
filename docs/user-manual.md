@@ -144,6 +144,7 @@ directly.
   which runs every 6 hours and whenever a problem starts beyond your router. Hover
   for when it ran, how many probes were answered, and the median time.
 - **"no reply"** marks a distance at which the trace got no answer.
+- **Targets are at the bottom**, or at the distance a trace found them.
 - **Lines:**
 
   | Line | Meaning |
