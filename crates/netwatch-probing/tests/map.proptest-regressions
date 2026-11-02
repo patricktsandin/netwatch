@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1e0b45280b6c8c7f25b35b24bc10583f7710ebe77325a37a7d7ae89d76e8a596 # shrinks to (all, hops, traces) = ({Kernel: Healthy, Nic: Healthy, LocalInterface: Healthy}, {}, {})
+cc e16afb4da5c61854f1a3f29158cbfcde76bbbe7c16b75bbe0379a836415eb742 # shrinks to (all, hops, traces) = ({Kernel: Healthy, Nic: Healthy, LocalInterface: Healthy, Target(TargetId(1)): Unknown}, {}, {})
