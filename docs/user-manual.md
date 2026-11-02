@@ -49,7 +49,7 @@ Wi-Fi to cable, say), the chip changes and the graphs mark the moment.
 | Reset zoom | Appears after you zoom; returns to the selected range. |
 | Report | Writes an incident report for your ISP ([below](#reporting-a-problem-to-your-isp)). |
 | Settings | Changes the targets, and can delete all history. |
-| Auto · Light · Dark | The color theme. Auto follows your system. This browser remembers it. |
+| Auto · Light · Dark | The color theme. Auto follows your system. This browser remembers it, and reports use it too; they have the same switch. |
 
 **The rows** run top to bottom in the order your traffic travels, the way `mtr` or
 `traceroute` lists a path:

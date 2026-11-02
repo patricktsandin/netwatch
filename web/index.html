@@ -20,19 +20,21 @@
         <button role="tab" data-tab="map" aria-selected="false">Map</button>
       </div>
       <div id="identities"></div>
-      <div id="ranges" role="group" aria-label="Time range">
-        <button data-range="hour" aria-pressed="true">1 h</button>
-        <button data-range="day" aria-pressed="false">24 h</button>
-        <button data-range="month" aria-pressed="false">30 d</button>
+      <div id="controls">
+        <div id="ranges" role="group" aria-label="Time range">
+          <button data-range="hour" aria-pressed="true">1 h</button>
+          <button data-range="day" aria-pressed="false">24 h</button>
+          <button data-range="month" aria-pressed="false">30 d</button>
+        </div>
+        <button id="reset-zoom" hidden>Reset zoom</button>
+        <button id="open-report">Report</button>
+        <button id="open-settings">Settings</button>
+        <select id="theme" aria-label="Theme">
+          <option value="auto">Auto</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
       </div>
-      <button id="reset-zoom" hidden>Reset zoom</button>
-      <button id="open-report">Report</button>
-      <button id="open-settings">Settings</button>
-      <select id="theme" aria-label="Theme">
-        <option value="auto">Auto</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      </select>
     </header>
     <dialog id="settings-dialog" class="wide"></dialog>
     <dialog id="report-dialog">

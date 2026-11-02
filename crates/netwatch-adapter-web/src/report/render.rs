@@ -903,15 +903,23 @@ th.n, td.n { text-align: right; }
 tr.lossy td { background: var(--lossy); }
 .scroll { overflow-x: auto; }
 pre { white-space: pre; overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
-button { font: inherit; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+button, select { font: inherit; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--text); cursor: pointer; }
-@media print { button, details { display: none; } body { max-width: none; } }
+@media print { button, select, details { display: none; } body { max-width: none; } }
 ";
 
 /// The theme the UI's switch saved (same origin, so same storage), applied before
 /// the first paint.
 const THEME: &str = "<script>try { const t = localStorage.getItem('netwatch-theme'); \
 if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>";
+
+/// The same theme switch as the UI's, sharing its saved choice.
+const THEME_SWITCH: &str = "const theme = document.getElementById('theme'); \
+theme.value = document.documentElement.dataset.theme || 'auto'; \
+theme.onchange = () => { \
+if (theme.value === 'auto') delete document.documentElement.dataset.theme; \
+else document.documentElement.dataset.theme = theme.value; \
+try { localStorage.setItem('netwatch-theme', theme.value); } catch (e) {} };";
 
 /// The report as a self-contained HTML page: printable (or saved as PDF from the
 /// browser), with the plain text alongside for copying into an email.
@@ -924,14 +932,17 @@ pub fn html(report: &Report, label: Label<'_>) -> String {
          <title>Incident report</title><style>{STYLE}</style>{THEME}</head><body>\
          <h1>Network incident report</h1>\
          <p><button id=\"copy\">Copy as text</button> \
-         <button onclick=\"print()\">Print or save as PDF</button></p>"
+         <button onclick=\"print()\">Print or save as PDF</button> \
+         <select id=\"theme\" aria-label=\"Theme\"><option value=\"auto\">Auto</option>\
+         <option value=\"light\">Light</option><option value=\"dark\">Dark</option></select></p>"
     );
     html_blocks(&mut out, &compose(report, label));
     let _ = write!(
         out,
         "<details><summary>Plain text</summary><pre id=\"text\">{}</pre></details>\
          <script>document.getElementById('copy').onclick = () => \
-         navigator.clipboard.writeText(document.getElementById('text').textContent);</script>\
+         navigator.clipboard.writeText(document.getElementById('text').textContent);\
+         {THEME_SWITCH}</script>\
          </body></html>",
         escape(&text(report, label))
     );
