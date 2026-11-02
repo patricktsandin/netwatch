@@ -154,7 +154,10 @@ words are defined elsewhere in this file.
 - **Path trace**: a one-off TTL sweep toward a *target*'s address, beyond the *hops*
   measured continuously, recording who answered at each TTL (ADR-0040). A *routine
   trace* runs at startup and every 6 h; an *episode trace* runs when an *incident*
-  opens on the target or on one of its hops beyond hop 1.
+  opens on the target or on one of its hops beyond hop 1. Each records its *trace
+  path*.
+- **Trace path**: the path a *path trace* ran on: the egress interface and the local
+  address. The network map draws only traces of the current one (ADR-0056).
 - **Trace schedule**: decides when each *target* is traced: routine traces, episode
   traces at most once per cooldown, and never two at once (`specs/traces.qnt`).
 - **Router name**: what a *responding address* is called: its PTR name, and its *origin
@@ -220,7 +223,8 @@ words are defined elsewhere in this file.
   current values. A *probe stream* shared by several *hops* (*stream sharing*) is one
   row, whose status is the worst of theirs (ADR-0045).
 - **Status**: a *row*'s current condition: `Healthy`, `Degraded`, `Failing`, `Unknown`, or
-  `Disabled`.
+  `RateLimited`. `Failing` needs at least three outcomes of the role's newest epoch
+  (ADR-0056).
 - **Time axis**: the single shared horizontal axis that every *row* uses. Zoom and pan
   are synchronized across rows.
 - **Event marker**: a vertical line on the *time axis* for a *topology event* or another

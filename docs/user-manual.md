@@ -112,7 +112,7 @@ from its last 12 probes:
 |---|---|
 | healthy | Every recent probe was answered. |
 | degraded | Some recent probes were lost. |
-| failing | Half or more were lost. |
+| failing | Half or more were lost, of at least three. |
 | rate-limited | A router lost probes, but everything beyond it on the path is fine. Routers often give low priority to answering probes about themselves. That is not a fault, and netwatch doesn't raise an incident for it. |
 | unknown | Nothing recent to judge by (just started, or the radio is off). |
 

@@ -6,40 +6,51 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use netwatch_history::{Loss, Measurement, Reading, Rollup, Sample};
-use netwatch_probing::incident::Severity;
+use netwatch_probing::incident::{Incident, Severity};
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Gauge, IdentityEpoch, Role, WallTime};
 
 use super::{Episode, Place, utc};
 
-/// Which outages a report adds up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outages {
-    /// Outages beyond the gateway: the ISP's network or further.
-    BeyondGateway,
-    /// Outages caused by the local interface: no way out at all (ADR-0053). No
-    /// probe could be sent, so no availability figure includes this time.
-    NoWayOut,
+/// Total and longest outage time beyond the gateway within `from..until`, with
+/// overlapping episodes counted once. Open episodes end at `until`.
+pub fn outage_beyond_gateway(episodes: &[Episode], from: WallTime, until: WallTime) -> (i64, i64) {
+    union(
+        episodes
+            .iter()
+            .filter(|e| e.place == Place::BeyondGateway && e.severity == Severity::Outage)
+            .map(|e| (e.started, e.ended)),
+        from,
+        until,
+    )
 }
 
-/// Total and longest time of `which` outages within `from..until`, with
-/// overlapping episodes counted once. Open episodes end at `until`.
-pub fn outage_time(
-    episodes: &[Episode],
-    which: Outages,
+/// The time within `from..until` that this host had no way out (ADR-0053): the
+/// local interface's own outages, whatever episode they are in. No probe could be
+/// sent then, so no availability figure includes it.
+pub fn time_without_a_way_out(incidents: &[Incident], from: WallTime, until: WallTime) -> i64 {
+    union(
+        incidents
+            .iter()
+            .filter(|i| i.role == Role::LocalInterface && i.severity == Severity::Outage)
+            .map(|i| (i.started, i.ended)),
+        from,
+        until,
+    )
+    .0
+}
+
+/// The total and longest time covered by `spans` within `from..until`, overlaps
+/// counted once. An open span (`None`) ends at `until`.
+fn union(
+    spans: impl Iterator<Item = (WallTime, Option<WallTime>)>,
     from: WallTime,
     until: WallTime,
 ) -> (i64, i64) {
-    let counts = |e: &Episode| match which {
-        Outages::BeyondGateway => e.place == Place::BeyondGateway,
-        Outages::NoWayOut => e.cause == Role::LocalInterface,
-    };
-    let mut spans: Vec<(i64, i64)> = episodes
-        .iter()
-        .filter(|e| e.severity == Severity::Outage && counts(e))
-        .map(|e| {
-            let end = e.ended.unwrap_or(until).min(until);
-            (e.started.max(from).as_unix_micros(), end.as_unix_micros())
+    let mut spans: Vec<(i64, i64)> = spans
+        .map(|(started, ended)| {
+            let end = ended.unwrap_or(until).min(until);
+            (started.max(from).as_unix_micros(), end.as_unix_micros())
         })
         .filter(|(start, end)| start < end)
         .collect();
@@ -382,31 +393,37 @@ mod tests {
             episode(400, Some(900), Place::BeyondGateway, Severity::Degradation),
             episode(950, None, Place::BeyondGateway, Severity::Outage),
         ];
-        let beyond = Outages::BeyondGateway;
         assert_eq!(
-            outage_time(&episodes, beyond, s(0), s(1000)),
+            outage_beyond_gateway(&episodes, s(0), s(1000)),
             (150_000_000, 90_000_000)
         );
         // Clipped to the span: only what falls inside it counts.
         assert_eq!(
-            outage_time(&episodes, beyond, s(45), s(205)),
+            outage_beyond_gateway(&episodes, s(45), s(205)),
             (50_000_000, 45_000_000)
         );
     }
 
     #[test]
-    fn time_without_a_way_out_is_the_outages_the_local_interface_caused() {
-        let no_way_out = Episode {
-            cause: Role::LocalInterface,
-            ..episode(100, Some(400), Place::HostOrLan, Severity::Outage)
+    fn time_without_a_way_out_is_the_local_interfaces_own_outages() {
+        // Its episode's cause may be another role, such as a degraded kernel that
+        // was already open (ADR-0034): only its own outage counts.
+        let incident = |role: Role, start: i64, end: i64, severity| Incident {
+            role,
+            started: s(start),
+            ended: Some(s(end)),
+            severity,
+            cause: Some(Role::Kernel),
         };
-        let episodes = [
-            no_way_out,
-            episode(500, Some(600), Place::HostOrLan, Severity::Outage),
+        let incidents = [
+            incident(Role::Kernel, 0, 900, Severity::Degradation),
+            incident(Role::LocalInterface, 100, 400, Severity::Outage),
+            incident(Role::LocalInterface, 300, 500, Severity::Outage),
+            incident(role("target:1"), 100, 900, Severity::Outage),
         ];
         assert_eq!(
-            outage_time(&episodes, Outages::NoWayOut, s(0), s(1000)),
-            (300_000_000, 300_000_000)
+            time_without_a_way_out(&incidents, s(0), s(1000)),
+            400_000_000
         );
     }
 

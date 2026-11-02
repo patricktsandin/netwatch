@@ -598,123 +598,134 @@ async fn build_report(
     } else {
         ("Day", DAY_US)
     };
-    let (episodes, summary, periods, events, normal_paths) = read(state, move |store| {
-        use netwatch_probing::trace::TraceKind;
-        let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
-        let identities = store.epoch_identities(
-            WallTime::from_unix_micros(from.as_unix_micros() - HOUR_US),
-            until,
-        )?;
-        let mut episodes = Vec::new();
-        for episode in report::episodes(&store.incidents(from, until)?) {
-            let start = episode.started.max(from);
-            let end = episode.ended.unwrap_or(until).min(until);
-            let on_path = report::roles_on_paths(&episode.affected, &known);
-            let evidence = history_between(store, start, end, now, Some(&on_path))?;
-            // The hour before the episode itself began, which may be before the span.
-            let before_from =
-                WallTime::from_unix_micros(episode.started.as_unix_micros() - HOUR_US);
-            let before = history_between(store, before_from, episode.started, now, Some(&on_path))?;
-            let before = report::path_stats(&before, &identities)
-                .into_iter()
-                .filter_map(|s| Some(((s.role, s.identity), s.median_ms?)))
-                .collect();
-            let raw = start.as_unix_micros() >= raw_since;
-            let step_us = if end.as_unix_micros() - start.as_unix_micros() <= MINUTE_STEPS_UP_TO_US
-            {
-                60_000_000
-            } else {
-                600_000_000
-            };
-            let raw_end = end.min(WallTime::from_unix_micros(
-                start.as_unix_micros() + RAW_EVIDENCE_LIMIT_US,
-            ));
-            let (reasons, timeline, patterns, load) = if raw {
-                let load = analysis::link_load(&store.readings_between(start, raw_end)?);
-                let samples = store.samples_between(start, raw_end, Some(&on_path))?;
-                let mut targets: Vec<Role> = episode
+    let (episodes, summary, without_a_way_out_us, periods, events, normal_paths) =
+        read(state, move |store| {
+            use netwatch_probing::trace::TraceKind;
+            let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
+            let identities = store.epoch_identities(
+                WallTime::from_unix_micros(from.as_unix_micros() - HOUR_US),
+                until,
+            )?;
+            let mut episodes = Vec::new();
+            let incidents = store.incidents(from, until)?;
+            let without_a_way_out_us = analysis::time_without_a_way_out(&incidents, from, until);
+            for episode in report::episodes(&incidents) {
+                let start = episode.started.max(from);
+                let end = episode.ended.unwrap_or(until).min(until);
+                let on_path = report::roles_on_paths(&episode.affected, &known);
+                let evidence = history_between(store, start, end, now, Some(&on_path))?;
+                // The hour before the episode itself began, which may be before the span.
+                let before_from =
+                    WallTime::from_unix_micros(episode.started.as_unix_micros() - HOUR_US);
+                let before =
+                    history_between(store, before_from, episode.started, now, Some(&on_path))?;
+                let before = report::path_stats(&before, &identities)
+                    .into_iter()
+                    .filter_map(|s| Some(((s.role, s.identity), s.median_ms?)))
+                    .collect();
+                let raw = start.as_unix_micros() >= raw_since;
+                let step_us =
+                    if end.as_unix_micros() - start.as_unix_micros() <= MINUTE_STEPS_UP_TO_US {
+                        60_000_000
+                    } else {
+                        600_000_000
+                    };
+                let raw_end = end.min(WallTime::from_unix_micros(
+                    start.as_unix_micros() + RAW_EVIDENCE_LIMIT_US,
+                ));
+                let (reasons, timeline, patterns, load) = if raw {
+                    let load = analysis::link_load(&store.readings_between(start, raw_end)?);
+                    let samples = store.samples_between(start, raw_end, Some(&on_path))?;
+                    let mut targets: Vec<Role> = episode
+                        .affected
+                        .iter()
+                        .filter(|r| matches!(r, Role::Target(_)))
+                        .cloned()
+                        .collect();
+                    if targets.is_empty() {
+                        targets.clone_from(&episode.affected);
+                    }
+                    (
+                        analysis::loss_reasons(&samples),
+                        analysis::timeline(&samples, &episode.cause, &targets, start, step_us),
+                        analysis::loss_patterns(&samples),
+                        load,
+                    )
+                } else {
+                    (BTreeMap::new(), Vec::new(), BTreeMap::new(), None)
+                };
+                // The traces of every target whose path the episode touched (ADR-0040):
+                // the episode traces that ran during it, and the routine trace before it.
+                let traced: Vec<Role> = episode
                     .affected
                     .iter()
-                    .filter(|r| matches!(r, Role::Target(_)))
-                    .cloned()
+                    .filter_map(|r| match r {
+                        Role::Target(t) | Role::Hop { target: t, .. } => Some(Role::Target(*t)),
+                        _ => None,
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
                     .collect();
-                if targets.is_empty() {
-                    targets.clone_from(&episode.affected);
+                let traces: Vec<_> = store
+                    .traces(episode.started, end.max(episode.started))?
+                    .into_iter()
+                    .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
+                    .collect();
+                let mut baselines = BTreeMap::new();
+                for role in &traced {
+                    if let Some(trace) =
+                        store.latest_trace(role, TraceKind::Routine, episode.started)?
+                    {
+                        baselines.insert(role.clone(), trace);
+                    }
                 }
-                (
-                    analysis::loss_reasons(&samples),
-                    analysis::timeline(&samples, &episode.cause, &targets, start, step_us),
-                    analysis::loss_patterns(&samples),
+                episodes.push(report::render::EpisodeReport {
+                    path: report::path_stats(&evidence, &identities),
+                    episode,
+                    before,
+                    reasons,
+                    timeline,
+                    step_us,
+                    raw,
+                    patterns,
                     load,
-                )
-            } else {
-                (BTreeMap::new(), Vec::new(), BTreeMap::new(), None)
-            };
-            // The traces of every target whose path the episode touched (ADR-0040):
-            // the episode traces that ran during it, and the routine trace before it.
-            let traced: Vec<Role> = episode
-                .affected
-                .iter()
-                .filter_map(|r| match r {
-                    Role::Target(t) | Role::Hop { target: t, .. } => Some(Role::Target(*t)),
-                    _ => None,
-                })
-                .collect::<std::collections::BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            let traces: Vec<_> = store
-                .traces(episode.started, end.max(episode.started))?
-                .into_iter()
-                .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
-                .collect();
-            let mut baselines = BTreeMap::new();
-            for role in &traced {
-                if let Some(trace) =
-                    store.latest_trace(role, TraceKind::Routine, episode.started)?
-                {
-                    baselines.insert(role.clone(), trace);
-                }
+                    traces,
+                    baselines,
+                });
             }
-            episodes.push(report::render::EpisodeReport {
-                path: report::path_stats(&evidence, &identities),
-                episode,
-                before,
-                reasons,
-                timeline,
-                step_us,
-                raw,
-                patterns,
-                load,
-                traces,
-                baselines,
-            });
-        }
-        let mut normal_paths = Vec::new();
-        for role in known.iter().filter(|r| matches!(r, Role::Target(_))) {
-            normal_paths.extend(store.latest_trace(role, TraceKind::Routine, until)?);
-        }
-        let history = history_between(store, from, until, now, None)?;
-        let summary = report::path_stats(&history, &identities);
-        let targets: Vec<&netwatch_history::Rollup> = history
-            .iter()
-            .filter(|r| matches!(r.role, Role::Target(_)))
-            .collect();
-        let periods = analysis::by_period(&targets, period_us);
-        let events: Vec<report::render::EventLine> = store
-            .events(from)?
-            .into_iter()
-            // A resumed epoch isn't a change (ADR-0044); the start says it all.
-            .filter(|e| e.at < until && e.kind != "epoch-resumed")
-            .map(|e| report::render::EventLine {
-                at: e.at,
-                kind: event_kind_text(&e.kind).to_owned(),
-                role: e.role.as_deref().and_then(Role::from_key),
-                detail: e.detail.unwrap_or_default(),
-            })
-            .collect();
-        Ok((episodes, summary, periods, events, normal_paths))
-    })
-    .await?;
+            let mut normal_paths = Vec::new();
+            for role in known.iter().filter(|r| matches!(r, Role::Target(_))) {
+                normal_paths.extend(store.latest_trace(role, TraceKind::Routine, until)?);
+            }
+            let history = history_between(store, from, until, now, None)?;
+            let summary = report::path_stats(&history, &identities);
+            let targets: Vec<&netwatch_history::Rollup> = history
+                .iter()
+                .filter(|r| matches!(r.role, Role::Target(_)))
+                .collect();
+            let periods = analysis::by_period(&targets, period_us);
+            let events: Vec<report::render::EventLine> = store
+                .events(from)?
+                .into_iter()
+                // A resumed epoch isn't a change (ADR-0044); the start says it all.
+                .filter(|e| e.at < until && e.kind != "epoch-resumed")
+                .map(|e| report::render::EventLine {
+                    at: e.at,
+                    kind: event_kind_text(&e.kind).to_owned(),
+                    role: e.role.as_deref().and_then(Role::from_key),
+                    detail: e.detail.unwrap_or_default(),
+                })
+                .collect();
+            Ok((
+                episodes,
+                summary,
+                without_a_way_out_us,
+                periods,
+                events,
+                normal_paths,
+            ))
+        })
+        .await?;
     let connection = connection(state, &normal_paths);
     let current = state.current.borrow().clone();
     let ticket = [
@@ -747,6 +758,7 @@ async fn build_report(
             method: METHOD.iter().map(|m| (*m).to_owned()).collect(),
             episodes,
             summary,
+            without_a_way_out_us,
             periods,
             period,
             events,

@@ -18,20 +18,19 @@ const KEEP_MISSING: Duration = Duration::from_secs(600);
 type Cache = HashMap<IpAddr, (Option<String>, Instant)>;
 
 /// Looks up router names, at most once per address per [`KEEP`]. Cheap to clone:
-/// clones share one cache.
+/// clones share one cache. Each lookup asks the system's resolver of the moment, so
+/// names follow it to another network, and appear once a host that booted offline
+/// has one.
 #[derive(Clone)]
 pub struct Names {
-    resolver: Option<IpAddr>,
     asn_lookups: bool,
     cache: Arc<Mutex<Cache>>,
 }
 
 impl Names {
-    /// Names from `resolver` (none: every name is missing), with origin ASes if
-    /// `asn_lookups`.
-    pub fn new(resolver: Option<IpAddr>, asn_lookups: bool) -> Self {
+    /// Names from the system's resolver, with origin ASes if `asn_lookups`.
+    pub fn new(asn_lookups: bool) -> Self {
         Self {
-            resolver,
             asn_lookups,
             cache: Arc::default(),
         }
@@ -67,7 +66,8 @@ impl Names {
     }
 
     async fn look_up(&self, address: IpAddr) -> RouterName {
-        let Some(server) = self.resolver else {
+        // Without a resolver the name is missing, and asked again after KEEP_MISSING.
+        let Some(server) = crate::config::system_resolver() else {
             return RouterName::default();
         };
         let first = |texts: Option<Vec<String>>| texts.and_then(|t| t.into_iter().next());

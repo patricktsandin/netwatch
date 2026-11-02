@@ -38,6 +38,7 @@ pub struct Finished {
 #[derive(Clone)]
 pub struct Tracer {
     pin: watch::Receiver<Option<Binding>>,
+    path: watch::Receiver<Option<String>>,
     names: Names,
     clock: Clock,
     done: mpsc::Sender<Finished>,
@@ -45,16 +46,19 @@ pub struct Tracer {
 }
 
 impl Tracer {
-    /// Traces over the egress `pin`, naming responders with `names`, and reporting
-    /// every finished trace to `done`.
+    /// Traces over the egress `pin`, recording the `path` current then on each
+    /// trace (ADR-0056), naming responders with `names`, and reporting every
+    /// finished trace to `done`.
     pub fn new(
         pin: watch::Receiver<Option<Binding>>,
+        path: watch::Receiver<Option<String>>,
         names: Names,
         clock: Clock,
         done: mpsc::Sender<Finished>,
     ) -> Self {
         Self {
             pin,
+            path,
             names,
             clock,
             done,
@@ -70,7 +74,8 @@ impl Tracer {
             let trace = match tracer.one_at_a_time.acquire().await {
                 Ok(_permit) => {
                     let pin = tracer.pin.borrow().clone();
-                    run(request, destination, pin, &tracer.names, tracer.clock).await
+                    let path = tracer.path.borrow().clone();
+                    run(request, destination, pin, path, &tracer.names, tracer.clock).await
                 }
                 Err(_closed) => None,
             };
@@ -89,6 +94,7 @@ async fn run(
     request: TraceRequest,
     destination: IpAddr,
     pin: Option<Binding>,
+    path: Option<String>,
     names: &Names,
     clock: Clock,
 ) -> Option<StoredTrace> {
@@ -125,6 +131,7 @@ async fn run(
         destination,
         trace,
         names: named,
+        path,
     })
 }
 
@@ -142,14 +149,16 @@ async fn sweep(socket: ProbeSocket, ttl: HopTtl, clock: Clock) -> Vec<TraceProbe
     };
     let mut probes: Vec<TraceProbe> = (0..ROUNDS).map(|_| unanswered()).collect();
     let mut sent = Vec::with_capacity(usize::from(ROUNDS));
-    let last_answer = start + ROUND_EVERY * u32::from(ROUNDS - 1) + TIMEOUT;
+    // The last round's answer may come until TIMEOUT after it was really sent,
+    // however late the runtime sent it.
+    let mut last_sent = start;
     let mut receiving = true;
     loop {
         let next = u16::try_from(sent.len()).unwrap_or(ROUNDS);
         let wake = if next < ROUNDS {
             start + ROUND_EVERY * u32::from(next)
         } else {
-            last_answer
+            last_sent + TIMEOUT
         };
         tokio::select! {
             () = tokio::time::sleep_until(wake) => {
@@ -157,6 +166,7 @@ async fn sweep(socket: ProbeSocket, ttl: HopTtl, clock: Clock) -> Vec<TraceProbe
                     break;
                 }
                 // A send that fails leaves its round unanswered.
+                last_sent = tokio::time::Instant::now();
                 let ok = socket.send(ProbeSequence::new(next), ProbeIndex::new(u64::from(next))).is_ok();
                 sent.push(ok.then(|| clock.now()));
             }

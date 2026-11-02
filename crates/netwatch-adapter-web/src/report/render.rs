@@ -12,7 +12,7 @@ use netwatch_probing::trace::TraceKind;
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Role, WallTime};
 
-use super::analysis::{LinkLoad, LossPattern, Outages, PeriodStats, TimelineRow, outage_time};
+use super::analysis::{LinkLoad, LossPattern, PeriodStats, TimelineRow, outage_beyond_gateway};
 use super::{Episode, PathStats, Place, format_duration, utc};
 
 /// One episode, with everything measured about it.
@@ -87,6 +87,8 @@ pub struct Report {
     pub episodes: Vec<EpisodeReport>,
     /// Every role's measurements over the whole span.
     pub summary: Vec<PathStats>,
+    /// How long this host had no way out in the span, in µs (ADR-0053).
+    pub without_a_way_out_us: i64,
     /// All targets together, by period.
     pub periods: Vec<PeriodStats>,
     /// `Hour` or `Day`.
@@ -561,8 +563,7 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         })
         .count();
     let all: Vec<Episode> = report.episodes.iter().map(|r| r.episode.clone()).collect();
-    let (total, longest) = outage_time(&all, Outages::BeyondGateway, report.from, report.until);
-    let (stranded, _) = outage_time(&all, Outages::NoWayOut, report.from, report.until);
+    let (total, longest) = outage_beyond_gateway(&all, report.from, report.until);
     blocks.push(Block::Heading("Summary".to_owned()));
     blocks.push(Block::Facts(vec![
         (
@@ -593,7 +594,7 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
             "Time without a way out".to_owned(),
             format!(
                 "{} (no route at all from this host, so nothing could be sent)",
-                format_duration(stranded)
+                format_duration(report.without_a_way_out_us)
             ),
         ),
     ]));
@@ -990,6 +991,7 @@ mod tests {
             method: vec![],
             episodes: vec![],
             summary: vec![],
+            without_a_way_out_us: 0,
             periods: vec![],
             period: "Hour",
             events: vec![],
@@ -1023,6 +1025,7 @@ mod tests {
                 silent_from: None,
             },
             names: BTreeMap::new(),
+            path: None,
         }
     }
 

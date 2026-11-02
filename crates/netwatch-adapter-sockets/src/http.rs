@@ -157,28 +157,38 @@ async fn fetch(
 ) -> Result<Fetched, Failure> {
     let at = |stage| move |error| (Some(stage), error);
     let start = Instant::now();
-    let address = tokio::net::lookup_host((host, 443))
+    let addresses: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 443))
         .await
         .map_err(at(ExchangeStage::Resolve))?
-        .find(|a| families == Families::Any || a.is_ipv4())
-        .ok_or_else(|| {
-            let none = io::Error::new(io::ErrorKind::NotFound, "no address to connect to");
-            (Some(ExchangeStage::Resolve), none)
-        })?;
+        .filter(|a| families == Families::Any || a.is_ipv4())
+        .collect();
     let resolved = Instant::now();
 
-    let local = |error| (None, error);
-    let socket = if address.is_ipv4() {
-        TcpSocket::new_v4()
-    } else {
-        TcpSocket::new_v6()
+    // In the resolver's order, the next address when one can't be connected to,
+    // such as an IPv6 address on an egress with no IPv6 route.
+    let mut failed = (
+        Some(ExchangeStage::Resolve),
+        io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
+    );
+    let mut connection = None;
+    for address in addresses {
+        let local = |error| (None, error);
+        let socket = if address.is_ipv4() {
+            TcpSocket::new_v4()
+        } else {
+            TcpSocket::new_v6()
+        }
+        .map_err(local)?;
+        socket.bind_device(Some(pin.as_bytes())).map_err(local)?;
+        match socket.connect(address).await {
+            Ok(tcp) => {
+                connection = Some(tcp);
+                break;
+            }
+            Err(error) => failed = (Some(ExchangeStage::Connect), error),
+        }
     }
-    .map_err(local)?;
-    socket.bind_device(Some(pin.as_bytes())).map_err(local)?;
-    let tcp = socket
-        .connect(address)
-        .await
-        .map_err(at(ExchangeStage::Connect))?;
+    let tcp = connection.ok_or(failed)?;
     let connected = Instant::now();
 
     let name = ServerName::try_from(host.to_owned())

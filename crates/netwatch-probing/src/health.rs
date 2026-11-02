@@ -1,9 +1,10 @@
 //! Grading a role from its recent outcomes, and reading loss along a path
 //! (ADR-0004, ADR-0030).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
-use netwatch_shared::Role;
+use netwatch_shared::uom::si::time::nanosecond;
+use netwatch_shared::{IdentityEpoch, Instant, Role};
 
 /// How a role is doing right now (glossary: *status*).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -25,6 +26,18 @@ pub enum Health {
 /// How many recent outcomes a grade looks at.
 pub const WINDOW: usize = 12;
 
+/// How many outcomes a grade needs before it can be failing (ADR-0056). One lost
+/// probe of one, such as the first on a new path, is degraded, not an outage.
+pub const FAILING_NEEDS: usize = 3;
+
+/// A role whose newest outcome is older than this many seconds is too stale to
+/// grade, so it is unknown.
+pub const STALE_AFTER_S: f64 = 30.0;
+
+/// How long there must have been no egress path before the path is graded down
+/// (ADR-0055).
+pub const NO_EGRESS_AFTER_S: f64 = 5.0;
+
 impl Health {
     /// The worse of two grades, for combining a role's probes with its layer
     /// report: failing, then degraded, then rate-limited, then healthy, then unknown.
@@ -44,10 +57,76 @@ pub fn grade(recent: &[bool], fresh: bool) -> Health {
     let lost = recent.iter().filter(|answered| !**answered).count();
     if lost == 0 {
         Health::Healthy
-    } else if lost * 2 < recent.len() {
+    } else if lost * 2 < recent.len() || recent.len() < FAILING_NEEDS {
         Health::Degraded
     } else {
         Health::Failing
+    }
+}
+
+/// A role's recent outcomes, from which it is graded: those of its newest epoch
+/// only, so that a grade never mixes two identities (ADR-0055). An outcome of an
+/// older epoch, such as a stream retired by a failover resolving a late probe, is
+/// left out: it measured a path that is no longer graded.
+#[derive(Debug, Clone, Default)]
+pub struct Outcomes {
+    epoch: Option<IdentityEpoch>,
+    recent: VecDeque<(Instant, bool)>,
+}
+
+impl Outcomes {
+    /// Adds an outcome (`answered` or not) of `epoch`, which arrived at `at`.
+    pub fn observe(&mut self, epoch: IdentityEpoch, at: Instant, answered: bool) {
+        match self.epoch {
+            Some(current) if epoch < current => return,
+            Some(current) if epoch == current => {}
+            _ => {
+                self.epoch = Some(epoch);
+                self.recent.clear();
+            }
+        }
+        self.recent.push_back((at, answered));
+        if self.recent.len() > WINDOW {
+            self.recent.pop_front();
+        }
+    }
+
+    /// The grade at `now`: [`grade`] of the window, unknown once it is stale.
+    pub fn grade(&self, now: Instant) -> Health {
+        let answered: Vec<bool> = self.recent.iter().map(|&(_, answered)| answered).collect();
+        let fresh = self
+            .recent
+            .back()
+            .is_some_and(|&(at, _)| seconds(now.since(at)) <= STALE_AFTER_S);
+        grade(&answered, fresh)
+    }
+}
+
+/// A duration in seconds, through whole nanoseconds, so that a bound such as 30 s
+/// compares exactly.
+fn seconds(duration: netwatch_shared::uom::si::f64::Time) -> f64 {
+    duration.get::<nanosecond>().round() / 1e9
+}
+
+/// Whether this host has had no way out for long enough to grade the path down
+/// (ADR-0053, ADR-0055). At a start, and between the observations of one change,
+/// there is briefly no egress path, and that is not an outage.
+#[derive(Debug, Clone, Default)]
+pub struct EgressWatch {
+    /// When the egress path went.
+    gone: Option<Instant>,
+}
+
+impl EgressWatch {
+    /// Observes at `now` whether there is an egress path. Returns whether there has
+    /// been none for at least [`NO_EGRESS_AFTER_S`].
+    pub fn observe(&mut self, egress: bool, now: Instant) -> bool {
+        if egress {
+            self.gone = None;
+            return false;
+        }
+        let since = *self.gone.get_or_insert(now);
+        seconds(now.since(since)) >= NO_EGRESS_AFTER_S
     }
 }
 

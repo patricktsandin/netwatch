@@ -27,6 +27,10 @@ pub struct StoredTrace {
     pub trace: PathTrace,
     /// Each responder's router name, in words, as it was when the trace ran.
     pub names: BTreeMap<IpAddr, String>,
+    /// The path it ran on: the egress interface and the local address, such as
+    /// `wlan0 from 192.168.1.20` (ADR-0056). `None` for traces from before it was
+    /// kept.
+    pub path: Option<String>,
 }
 
 fn kind_text(kind: TraceKind) -> &'static str {
@@ -50,8 +54,8 @@ impl Store {
     pub fn write_trace(&mut self, trace: &StoredTrace) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT INTO traces (role, at_us, kind, destination, reached, silent_from)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO traces (role, at_us, kind, destination, reached, silent_from, path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 trace.role.key(),
                 trace.at.as_unix_micros(),
@@ -59,6 +63,7 @@ impl Store {
                 trace.destination.to_string(),
                 trace.trace.reached,
                 trace.trace.silent_from.map(|t| t.get().get()),
+                trace.path,
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -135,8 +140,9 @@ impl Store {
 
     /// One trace by its row id. `None` if its row no longer parses.
     fn trace(&self, id: i64) -> Result<Option<StoredTrace>, StoreError> {
-        let (role, at, kind, destination, reached, silent_from) = self.connection.query_row(
-            "SELECT role, at_us, kind, destination, reached, silent_from FROM traces WHERE id = ?1",
+        let (role, at, kind, destination, reached, silent_from, path) = self.connection.query_row(
+            "SELECT role, at_us, kind, destination, reached, silent_from, path FROM traces
+             WHERE id = ?1",
             [id],
             |row| {
                 Ok((
@@ -146,6 +152,7 @@ impl Store {
                     row.get::<_, String>(3)?,
                     row.get::<_, bool>(4)?,
                     row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )?;
@@ -215,6 +222,7 @@ impl Store {
                 silent_from: silent_from.and_then(ttl),
             },
             names,
+            path,
         }))
     }
 }

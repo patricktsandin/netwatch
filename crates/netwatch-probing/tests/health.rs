@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 
 use netwatch_probing::Health;
-use netwatch_probing::health::{along_paths, grade, without_egress};
-use netwatch_shared::{HopTtl, Role, TargetId};
+use netwatch_probing::health::{EgressWatch, Outcomes, along_paths, grade, without_egress};
+use netwatch_shared::{HopTtl, IdentityEpoch, Instant, Role, TargetId};
 
 fn hop(target: u32, ttl: u8) -> Role {
     Role::Hop {
@@ -20,7 +20,59 @@ fn grades_recent_loss() {
     assert_eq!(grade(&[true, true], false), Health::Unknown);
     assert_eq!(grade(&[true, true], true), Health::Healthy);
     assert_eq!(grade(&[true, true, false], true), Health::Degraded);
-    assert_eq!(grade(&[true, false], true), Health::Failing);
+    assert_eq!(grade(&[true, false, false], true), Health::Failing);
+}
+
+#[test]
+fn too_few_outcomes_are_never_failing() {
+    // The first probe on a new path, lost: degraded, not an outage (ADR-0056).
+    assert_eq!(grade(&[false], true), Health::Degraded);
+    assert_eq!(grade(&[true, false], true), Health::Degraded);
+    assert_eq!(grade(&[false, false, false], true), Health::Failing);
+}
+
+fn epoch(n: u64) -> IdentityEpoch {
+    IdentityEpoch::new(std::num::NonZeroU64::new(n).unwrap_or(std::num::NonZeroU64::MIN))
+}
+
+fn at(s: u64) -> Instant {
+    Instant::from_nanos(s * 1_000_000_000)
+}
+
+#[test]
+fn outcomes_start_afresh_with_a_new_epoch_and_ignore_an_older_one() {
+    let mut outcomes = Outcomes::default();
+    for s in 0..5 {
+        outcomes.observe(epoch(1), at(s), false);
+    }
+    assert_eq!(outcomes.grade(at(5)), Health::Failing);
+    // A failover: the new path's first probe is answered...
+    outcomes.observe(epoch(2), at(6), true);
+    assert_eq!(outcomes.grade(at(6)), Health::Healthy);
+    // ...and the retired stream's last probe on the old path times out late.
+    outcomes.observe(epoch(1), at(7), false);
+    assert_eq!(outcomes.grade(at(7)), Health::Healthy);
+}
+
+#[test]
+fn outcomes_go_stale() {
+    let mut outcomes = Outcomes::default();
+    outcomes.observe(epoch(1), at(0), true);
+    assert_eq!(outcomes.grade(at(30)), Health::Healthy);
+    assert_eq!(outcomes.grade(at(31)), Health::Unknown);
+}
+
+#[test]
+fn no_way_out_counts_once_it_has_lasted() {
+    let mut watch = EgressWatch::default();
+    assert!(!watch.observe(true, at(0)));
+    // Gone at 1: not yet an outage, then one (ADR-0055).
+    assert!(!watch.observe(false, at(1)));
+    assert!(!watch.observe(false, at(5)));
+    assert!(watch.observe(false, at(6)));
+    // Back, then gone again: timed afresh.
+    assert!(!watch.observe(true, at(7)));
+    assert!(!watch.observe(false, at(8)));
 }
 
 #[test]

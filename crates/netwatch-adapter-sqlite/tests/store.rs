@@ -461,6 +461,7 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
             silent_from: Some(HopTtl::new(NonZeroU8::new(6).unwrap())),
         },
         names: [(router, "ae1.example.net · AS64500".to_owned())].into(),
+        path: Some("wlan0 from 192.0.2.20".to_owned()),
     };
     store.write_trace(&trace(10, TraceKind::Routine)).unwrap();
     store.write_trace(&trace(20, TraceKind::Episode)).unwrap();
@@ -620,6 +621,19 @@ fn the_public_address_before_a_start_is_the_last_one_noted() {
     );
 }
 
+/// Makes the database at `path` look like one at schema `version`, for a migration
+/// test: the version, and the columns later migrations added. The tables later
+/// migrations only rebuild come back the same.
+fn rewind_to(path: &std::path::Path, version: i64) {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection
+        .execute_batch("ALTER TABLE traces DROP COLUMN path;")
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", version)
+        .unwrap();
+}
+
 #[test]
 fn migration_8_marks_restarts_resumed_and_drops_repeated_public_addresses() {
     let path = fresh("migrate-to-8");
@@ -638,10 +652,7 @@ fn migration_8_marks_restarts_resumed_and_drops_repeated_public_addresses() {
         started(&mut store, 4, Role::Nic, eth(b"wlan0", 3), 50, false);
         public(&mut store, 51, "B");
         public(&mut store, 61, "C");
-        rusqlite::Connection::open(&path)
-            .unwrap()
-            .pragma_update(None, "user_version", 7)
-            .unwrap();
+        rewind_to(&path, 7);
     }
 
     let store = Store::open(&path).unwrap();
@@ -683,10 +694,7 @@ fn migration_9_makes_an_identity_back_long_after_a_start_a_change() {
             true,
         );
         started(&mut store, 4, Role::Nic, eth(b"eth0", 5), 220_000_000, true);
-        rusqlite::Connection::open(&path)
-            .unwrap()
-            .pragma_update(None, "user_version", 8)
-            .unwrap();
+        rewind_to(&path, 8);
     }
 
     let store = Store::open(&path).unwrap();

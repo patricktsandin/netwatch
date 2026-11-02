@@ -188,6 +188,7 @@ fn the_first_public_hop_comes_from_the_hops_or_else_from_a_trace_beyond_them() {
             silent_from: None,
         },
         names: Default::default(),
+        path: None,
     };
     assert_eq!(first_public_hop(&cgnat, &[]), None);
     assert_eq!(

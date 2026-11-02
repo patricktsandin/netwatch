@@ -34,7 +34,7 @@ use netwatch_shared::{
     Gauge, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
 };
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::clock::Clock;
@@ -313,15 +313,10 @@ async fn main() -> anyhow::Result<()> {
     let mut nic_watch: Option<(InterfaceIndex, CounterWatch, Throughput)> = None;
     let mut kernel_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     // Every role's recent outcomes, and the layers' latest reports, from which the
-    // daemon grades every role each second (ADR-0030).
-    // Each outcome is kept with when it arrived on the monotonic clock, which judges
-    // freshness: a step of the wall clock mustn't make every role stale (ADR-0004).
-    // The window holds one epoch's outcomes, so a grade never mixes identities.
-    let mut no_egress_since: Option<netwatch_shared::Instant> = None;
-    // The identity of the last egress pin, kept across times without one.
-    let mut last_egress: Option<Identity> = None;
-    let mut recent: HashMap<Role, VecDeque<(netwatch_shared::Instant, bool)>> = HashMap::new();
-    let mut recent_epoch: HashMap<Role, netwatch_shared::IdentityEpoch> = HashMap::new();
+    // daemon grades every role each second (ADR-0030). Outcomes are timed on the
+    // monotonic clock: a step of the wall clock mustn't make every role stale.
+    let mut egress_watch = health::EgressWatch::default();
+    let mut recent: HashMap<Role, health::Outcomes> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
     // identity, read every 5 minutes.
@@ -345,7 +340,7 @@ async fn main() -> anyhow::Result<()> {
     // Path traces (ADR-0040) of every target with a fixed address, with router names
     // for whoever answers them and for every hop. The first routine traces wait half
     // a minute, for the egress path and the hops to be known.
-    let names = names::Names::new(config::system_resolver(), config.asn_lookups);
+    let names = names::Names::new(config.asn_lookups);
     names::follow_hops(names.clone(), current_tx.subscribe());
     let mut traces = TraceSchedule::new(
         destinations.keys().copied(),
@@ -368,7 +363,9 @@ async fn main() -> anyhow::Result<()> {
             })
     };
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
-    let tracer = trace::Tracer::new(pin.clone(), names.clone(), clock, traced_tx);
+    // The path traces run on (ADR-0056): kept current from the topology below.
+    let (path_tx, path_rx) = watch::channel(None::<String>);
+    let tracer = trace::Tracer::new(pin.clone(), path_rx, names.clone(), clock, traced_tx);
     let start_trace = |request: TraceRequest| {
         if let Some(&destination) = destinations.get(&request.target) {
             tracing::info!(target = request.target.get(), kind = ?request.kind, "path trace");
@@ -539,15 +536,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                // No way out counts once it has lasted (ADR-0055): at a start, and
-                // between the observations of one change, there is briefly none.
-                let no_way_out = match egress_pin(&topology) {
-                    Some(_) => {
-                        no_egress_since = None;
-                        false
-                    }
-                    None => clock.now().since(*no_egress_since.get_or_insert(clock.now())).get::<second>() >= NO_EGRESS_AFTER_S,
-                };
+                // No way out counts once it has lasted (ADR-0055).
+                let no_way_out = egress_watch
+                    .observe(egress_pin(&topology).is_some(), clock.now());
                 let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), no_way_out, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
@@ -574,15 +565,12 @@ async fn main() -> anyhow::Result<()> {
                     *current = egress;
                     changed
                 });
-                // A different way out from the last one known, across any time with
-                // none, is a different path: the routers the traces found beyond the
-                // hops aren't on it, and the map stops drawing them until a trace
-                // runs on it (ADR-0055). The same interface coming back keeps them.
-                if let Some(now) = egress_pin(&topology).map(|b| b.identity.clone())
-                    && last_egress.replace(now.clone()).is_some_and(|before| before != now)
-                {
-                    latest_traces.clear();
-                }
+                let path = current_path(&topology);
+                path_tx.send_if_modified(|current| {
+                    let changed = *current != path;
+                    *current = path;
+                    changed
+                });
                 // The hops are on another path now (ADR-0054).
                 if changed {
                     let hops: Vec<Role> = topology.bindings().map(|(role, _)| role.clone()).filter(|role| matches!(role, Role::Hop { .. })).collect();
@@ -606,14 +594,7 @@ async fn main() -> anyhow::Result<()> {
                     log_sample(&sample);
                     let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
                     incidents.outcome(&sample.role, sample.at, answered);
-                    let outcomes = recent.entry(sample.role.clone()).or_default();
-                    if recent_epoch.insert(sample.role.clone(), sample.epoch) != Some(sample.epoch) {
-                        outcomes.clear();
-                    }
-                    outcomes.push_back((clock.now(), answered));
-                    if outcomes.len() > health::WINDOW {
-                        outcomes.pop_front();
-                    }
+                    recent.entry(sample.role.clone()).or_default().observe(sample.epoch, clock.now(), answered);
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
                 }
@@ -774,6 +755,21 @@ fn handle(
     }
 }
 
+/// The path this host's probes take out, as traces record it (ADR-0056): the egress
+/// interface and the local address, such as `wlan0 from 192.168.1.20`. Another
+/// network is another path, even on the same interface. `None` with no way out.
+fn current_path(topology: &Topology) -> Option<String> {
+    let interface = match &egress_pin(topology)?.identity {
+        Identity::Interface { name, .. } => name.to_string(),
+        Identity::Address(address) => address.to_string(),
+    };
+    let local = match topology.binding(&Role::LocalInterface).map(|b| &b.identity) {
+        Some(Identity::Address(address)) => address.to_string(),
+        _ => "an unknown address".to_owned(),
+    };
+    Some(format!("{interface} from {local}"))
+}
+
 /// The binding probes are pinned to: the tunnel if there is one, otherwise the NIC
 /// (ADR-0020, ADR-0022).
 fn egress_pin(topology: &Topology) -> Option<&netwatch_topology::Binding> {
@@ -926,7 +922,6 @@ impl Recorder {
     }
 }
 
-/// Publishes a layer's health report to the UI, and logs it when something got worse.
 /// Replaces a layer's last report with one that says why it has none now, so that
 /// nothing shows a report of something no longer measured (ADR-0030).
 fn publish_gone(
@@ -958,14 +953,6 @@ fn publish_gone(
 /// How often the system's resolver is read again, for `dns = "system"`.
 const RESOLVER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long there must have been no egress path before the path is graded down
-/// (ADR-0055).
-const NO_EGRESS_AFTER_S: f64 = 5.0;
-
-/// A role's outcomes older than this many seconds are too old to grade it by, so it
-/// is `Unknown`.
-const STALE_AFTER_S: f64 = 30.0;
-
 /// Grades every role from its recent outcomes, reads loss along each path, folds in
 /// the layer reports, and publishes the result together with every role's current
 /// binding, and the network map built from them (ADR-0042). This is the only place
@@ -973,7 +960,7 @@ const STALE_AFTER_S: f64 = 30.0;
 /// tracked.
 #[allow(clippy::too_many_arguments)] // Each is one of the daemon's views.
 fn publish_current(
-    recent: &HashMap<Role, VecDeque<(netwatch_shared::Instant, bool)>>,
+    recent: &HashMap<Role, health::Outcomes>,
     layers: &BTreeMap<Role, Health>,
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
@@ -987,13 +974,7 @@ fn publish_current(
 ) -> BTreeMap<Role, Health> {
     let mut grades: BTreeMap<Role, Health> = recent
         .iter()
-        .map(|(role, outcomes)| {
-            let answered: Vec<bool> = outcomes.iter().map(|&(_, answered)| answered).collect();
-            let fresh = outcomes
-                .back()
-                .is_some_and(|&(at, _)| now.since(at).get::<second>() <= STALE_AFTER_S);
-            (role.clone(), health::grade(&answered, fresh))
-        })
+        .map(|(role, outcomes)| (role.clone(), outcomes.grade(now)))
         .collect();
     for (role, &layer) in layers {
         let probes = grades.get(role).copied().unwrap_or(Health::Unknown);
@@ -1095,8 +1076,10 @@ fn shared_rows(
 }
 
 /// The network map (ADR-0042), from the grades, the hops' responding addresses, and
-/// each target's latest trace. Router names come from the lookups so far, and else
-/// from the trace that saw the router.
+/// each target's latest trace, if it ran on the current path (ADR-0056): another
+/// path's routers aren't on this one. A trace from before paths were recorded is
+/// taken to be on it. Router names come from the lookups so far, and else from the
+/// trace that saw the router.
 fn network_map(
     grades: &BTreeMap<Role, Health>,
     topology: &Topology,
@@ -1112,6 +1095,12 @@ fn network_map(
             (Role::Hop { .. }, Identity::Address(address)) => Some((role.clone(), *address)),
             _ => None,
         })
+        .collect();
+    let path = current_path(topology);
+    let traces: BTreeMap<TargetId, &netwatch_adapter_sqlite::StoredTrace> = traces
+        .iter()
+        .filter(|(_, stored)| stored.path.is_none() || stored.path == path)
+        .map(|(&target, stored)| (target, stored))
         .collect();
     let latest: BTreeMap<TargetId, &netwatch_probing::trace::PathTrace> = traces
         .iter()
@@ -1285,5 +1274,22 @@ mod tests {
                 .bindings()
                 .all(|(role, _)| !matches!(role, Role::Hop { .. }))
         );
+    }
+
+    #[test]
+    fn another_network_on_the_same_interface_is_another_path() {
+        let mut topology = Topology::new();
+        assert_eq!(current_path(&topology), None);
+        egress(&mut topology, 3, b"wlan0");
+        let mut local = |address: &str| {
+            topology.observe(Observation::IdentityObserved {
+                role: Role::LocalInterface,
+                identity: Identity::Address(address.parse().unwrap()),
+            });
+            current_path(&topology)
+        };
+        let home = local("192.168.1.20");
+        assert_eq!(home.as_deref(), Some("wlan0 from 192.168.1.20"));
+        assert_ne!(local("10.20.0.7"), home);
     }
 }
