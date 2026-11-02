@@ -237,8 +237,10 @@ module topology {
   // Ghost state, used only to state properties: every epoch ever allocated.
   var allocated: Epoch -> { role: Role, identity: Identity }
 
-  // Ghost state: the identity Probing last reported for PROBE_ROLE, if any.
+  // Ghost state: the identity Probing last reported for PROBE_ROLE, if any, and
+  // whether Probing has since reported it gone.
   var lastProbed: Set[Identity]
+  var probedGone: bool
 
   // Probing, reduced to what attribution needs.
   var inFlight: Set[Probe]
@@ -271,6 +273,7 @@ module topology {
     outputs' = [],
     allocated' = Map(),
     lastProbed' = Set(),
+    probedGone' = false,
     inFlight' = Set(),
     samples' = Set(),
     nextProbe' = 0,
@@ -294,6 +297,7 @@ module topology {
     samples' = samples,
     nextProbe' = nextProbe,
     lastProbed' = lastProbed,
+    probedGone' = probedGone,
   }
 
   action resyncIdle: bool = all {
@@ -419,6 +423,20 @@ module topology {
     worldChanges' = worldChanges + 1,
     aggregateSteps(bind(agg, PROBE_ROLE, identity)),
     lastProbed' = Set(identity),
+    probedGone' = false,
+    inFlight' = inFlight, samples' = samples, nextProbe' = nextProbe,
+    actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
+    resyncIdle,
+  }
+
+  /// Probing reports that PROBE_ROLE is gone, such as a radio that was unplugged
+  /// (ADR-0051). Its epoch ends at once, for the same reason as above.
+  action probeVanish: bool = all {
+    worldChanges < MAX_WORLD_CHANGES,
+    worldChanges' = worldChanges + 1,
+    aggregateSteps(end(agg, PROBE_ROLE)),
+    lastProbed' = Set(),
+    probedGone' = true,
     inFlight' = inFlight, samples' = samples, nextProbe' = nextProbe,
     actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
     resyncIdle,
@@ -435,6 +453,7 @@ module topology {
     nextProbe' = nextProbe + 1,
     samples' = samples,
     lastProbed' = lastProbed,
+    probedGone' = probedGone,
     actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
     resyncIdle, aggregateIdle,
   }
@@ -455,6 +474,7 @@ module topology {
     inFlight' = inFlight.exclude(Set(p)),
     nextProbe' = nextProbe,
     lastProbed' = lastProbed,
+    probedGone' = probedGone,
     actual' = actual, present' = present, pending' = pending, lossSignal' = lossSignal,
     resyncIdle, aggregateIdle,
   }
@@ -473,6 +493,7 @@ module topology {
       takeSnapshot,
       deliverSnapshot,
       probeIdentify(identity),
+      probeVanish,
       scheduleProbe(role),
       nondet p = inFlight.oneOf()
       sendProbe(p),
@@ -541,6 +562,11 @@ module topology {
       agg.bindings.keys().contains(PROBE_ROLE) and agg.bindings.get(PROBE_ROLE).identity == i
     )
 
+  /// A role Probing reported gone stays unbound until Probing identifies it
+  /// again, whatever the kernel-side protocol is doing (ADR-0051).
+  val probeRoleVanishesWithProbes: bool =
+    probedGone implies not(agg.bindings.keys().contains(PROBE_ROLE))
+
   /// While desynchronized, a resync for the current generation has always been
   /// requested.
   val desynchronizedImpliesResyncRequested: bool =
@@ -554,5 +580,6 @@ module topology {
     quiescentViewIsAccurate,
     desynchronizedImpliesResyncRequested,
     probeRoleFollowsProbes,
+    probeRoleVanishesWithProbes,
   }
 }

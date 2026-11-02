@@ -56,3 +56,5 @@ to "Superseded".
 | [0048](0048-a-shared-hop-is-one-thing.md) | A shared hop is one thing, for traces and the map too | Accepted |
 | [0049](0049-icmp-errors-answer-only-what-they-say.md) | ICMP errors answer only what they say | Accepted |
 | [0050](0050-every-request-is-checked-for-its-site.md) | Every request is checked for its site | Accepted |
+| [0051](0051-a-radio-that-is-gone-ends-its-epoch.md) | A radio that is gone ends its epoch | Accepted |
+| [0052](0052-https-failures-say-where-they-failed.md) | HTTPS failures say where they failed, over either family | Accepted |

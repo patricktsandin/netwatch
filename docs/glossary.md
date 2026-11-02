@@ -50,6 +50,10 @@ words are defined elsewhere in this file.
 - **Pin**: the *binding* a *probe* is tied to when it is scheduled. The probe travels
   only through the pinned identity, and its *sample* carries the pinned epoch
   (ADR-0020).
+- **Probe-identified role**: a *role* whose *identity* comes from its own source,
+  not from the kernel's route notifications: a *hop* (who answered) or a radio (the
+  device read). The source reports it identified (`ProbeIdentified`) or gone
+  (`ProbeVanished`, ADR-0051), and either takes effect at once.
 - **Notification**: a change message from the kernel (rtnetlink, nl80211, ModemManager),
   translated into an *observation*. Notifications arrive after the change has already
   taken effect.
@@ -119,7 +123,10 @@ words are defined elsewhere in this file.
   - `TimeExceeded`: the probe expired in transit. Only on a stream that doesn't limit
     its TTL; on a *hop probe*'s stream, time exceeded is the hop's answer (ADR-0049).
   - `Refused { code }`
-  - `SendFailed { cause }`
+  - `ExchangeFailed { stage }`: an HTTPS exchange failed beyond this host, while
+    resolving the name, connecting, in the TLS handshake, or in the request
+    (ADR-0052)
+  - `SendFailed { cause }`: this host couldn't send it
   - `UnexpectedResponse`
 
   These are never collapsed into a missing value.
