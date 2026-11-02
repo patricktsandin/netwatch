@@ -303,6 +303,11 @@ pub enum LiveMessage {
         /// Binding by role key.
         bindings: BTreeMap<String, BindingView>,
     },
+    /// The network map, whenever it changes (ADR-0042).
+    Map {
+        /// The map as it now stands.
+        map: MapView,
+    },
     /// A layer's latest health report.
     Layer {
         /// The layer's role key: `kernel` or `nic`.
@@ -532,4 +537,89 @@ pub struct HostView {
     /// The clock's estimated error, in µs.
     #[ts(type = "number | null")]
     pub clock_error_us: Option<i64>,
+}
+
+/// The network map (ADR-0042), as the Map tab draws it. Built by
+/// [`MapView::new`] from `netwatch_probing::map::build`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct MapView {
+    /// Every node, by depth.
+    pub nodes: Vec<MapNodeView>,
+    /// Every edge.
+    pub edges: Vec<MapEdgeView>,
+}
+
+/// One node of the network map (glossary: *map node*).
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct MapNodeView {
+    /// A stable key: the role's key for a node of its own (`nic`, `target:1`,
+    /// `hop:1:2`), `router:<address>:<ttl>`, or `silent:<target>:<ttl>`.
+    pub id: String,
+    /// `role`, `router`, or `silent`.
+    pub kind: String,
+    /// Its position along the path. Every edge goes to a greater depth.
+    #[ts(type = "number")]
+    pub depth: u16,
+    /// For a router or a silent hop, its TTL.
+    #[ts(type = "number | null")]
+    pub ttl: Option<u8>,
+    /// What it is, for people: an address or an interface.
+    pub identity: Option<String>,
+    /// For an address, its router name in words.
+    pub name: Option<String>,
+    /// The worst status of `roles`, as `status_text` spells it; `null` for a node seen
+    /// only by a trace.
+    pub status: Option<String>,
+    /// The roles merged into it, each with its own status.
+    pub roles: Vec<MapRoleView>,
+    /// What the latest traces found here.
+    pub sightings: Vec<SightingView>,
+    /// The keys of the targets whose paths go through it.
+    pub targets: Vec<String>,
+}
+
+/// A role merged into a map node.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct MapRoleView {
+    /// The role's key.
+    pub key: String,
+    /// Its own status.
+    pub status: String,
+}
+
+/// What one target's latest trace found at a map node.
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct SightingView {
+    /// The target's key.
+    pub target: String,
+    /// When the trace started, in µs since the Unix epoch.
+    #[ts(type = "number")]
+    pub at_us: i64,
+    /// Probes sent at this TTL.
+    #[ts(type = "number")]
+    pub sent: u32,
+    /// Of those, answered.
+    #[ts(type = "number")]
+    pub answered: u32,
+    /// The median answer, in µs.
+    #[ts(type = "number | null")]
+    pub median_us: Option<i64>,
+}
+
+/// One edge of the network map (glossary: *map edge*).
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[ts(export, export_to = "../../../web/src/api/generated/")]
+pub struct MapEdgeView {
+    /// The upstream node's id.
+    pub from: String,
+    /// The downstream node's id.
+    pub to: String,
+    /// `probed`, `traced`, `unmeasured`, or `off-path`.
+    pub kind: String,
+    /// The keys of the targets whose paths take it.
+    pub targets: Vec<String>,
 }

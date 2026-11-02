@@ -3,6 +3,7 @@ import type { BindingView } from "./BindingView";
 import type { EventPoint } from "./EventPoint";
 import type { IncidentView } from "./IncidentView";
 import type { LayerReportView } from "./LayerReportView";
+import type { MapView } from "./MapView";
 import type { ReadingPoint } from "./ReadingPoint";
 import type { SamplePoint } from "./SamplePoint";
 
@@ -41,7 +42,11 @@ statuses: { [key in string]: string }, } | { "type": "bindings",
 /**
  * Binding by role key.
  */
-bindings: { [key in string]: BindingView }, } | { "type": "layer", 
+bindings: { [key in string]: BindingView }, } | { "type": "map", 
+/**
+ * The map as it now stands.
+ */
+map: MapView, } | { "type": "layer", 
 /**
  * The layer's role key: `kernel` or `nic`.
  */

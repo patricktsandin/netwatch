@@ -1355,6 +1355,7 @@ dependencies = [
  "itf",
  "netwatch-shared",
  "netwatch-verified",
+ "proptest",
  "serde",
  "thiserror 2.0.21",
 ]

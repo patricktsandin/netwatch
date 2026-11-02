@@ -104,6 +104,51 @@ export interface Binding {
   readonly epoch: Epoch;
 }
 
+/** A network map node's stable key (ADR-0042): a role key, `router:<address>:<ttl>`,
+ *  or `silent:<target>:<ttl>`. */
+export type MapNodeId = Brand<string, "MapNodeId">;
+
+/** How a map edge's step is known (glossary: *map edge*). */
+export type EdgeKind = "probed" | "traced" | "unmeasured" | "off-path";
+
+/** What one target's latest trace found at a map node. */
+export interface Sighting {
+  readonly target: RoleKey;
+  readonly at: Micros;
+  readonly sent: number;
+  readonly answered: number;
+  readonly medianUs: number | null;
+}
+
+/** One node of the network map (glossary: *map node*). */
+export interface MapNode {
+  readonly id: MapNodeId;
+  readonly kind: "role" | "router" | "silent";
+  /** Its position along the path. Every edge goes to a greater depth. */
+  readonly depth: number;
+  readonly ttl: number | null;
+  readonly identity: string | null;
+  readonly name: string | null;
+  /** `null` for a node seen only by a trace. */
+  readonly status: Status | null;
+  readonly roles: readonly { readonly key: RoleKey; readonly status: Status }[];
+  readonly sightings: readonly Sighting[];
+  readonly targets: readonly RoleKey[];
+}
+
+export interface MapEdge {
+  readonly from: MapNodeId;
+  readonly to: MapNodeId;
+  readonly kind: EdgeKind;
+  readonly targets: readonly RoleKey[];
+}
+
+/** The network map, as the daemon built it (ADR-0042). */
+export interface NetworkMap {
+  readonly nodes: readonly MapNode[];
+  readonly edges: readonly MapEdge[];
+}
+
 export type Live =
   | { readonly type: "sample"; readonly role: RoleKey; readonly point: Point }
   | { readonly type: "event"; readonly marker: Marker }

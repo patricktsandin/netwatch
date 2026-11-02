@@ -32,6 +32,7 @@
 mod config;
 pub mod health;
 pub mod incident;
+pub mod map;
 mod stream;
 pub mod trace;
 
