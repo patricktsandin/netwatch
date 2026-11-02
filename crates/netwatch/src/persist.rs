@@ -19,6 +19,8 @@ pub enum Write {
     Note(netwatch_adapter_sqlite::StoredEvent),
     /// An incident that opened, changed, or closed (ADR-0031).
     Incident(netwatch_probing::incident::Incident),
+    /// A finished path trace (ADR-0040).
+    Trace(netwatch_adapter_sqlite::StoredTrace),
     /// Write everything received so far, then acknowledge. The API sends this before
     /// answering a backfill, so a backfill never misses a sample the live stream
     /// already sent (ADR-0029). The channel is FIFO, so "everything so far" includes
@@ -116,6 +118,11 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                     Ok(Write::Incident(incident)) => {
                         if let Err(error) = store.write_incident(&incident) {
                             tracing::error!(%error, "cannot record an incident");
+                        }
+                    }
+                    Ok(Write::Trace(trace)) => {
+                        if let Err(error) = store.write_trace(&trace) {
+                            tracing::error!(%error, "cannot record a path trace");
                         }
                     }
                     Ok(Write::FlushHistory(done)) => {

@@ -34,7 +34,8 @@ export type EventKind =
   | "clock-jump"
   | "config-drift"
   | "radio"
-  | "public-address";
+  | "public-address"
+  | "trace";
 
 /** One event, drawn as an event marker on the rows it concerns. */
 export interface Marker {
@@ -98,6 +99,8 @@ export type Status = "healthy" | "degraded" | "failing" | "unknown" | "rate-limi
 /** A role's current identity and epoch, from Topology. */
 export interface Binding {
   readonly identity: string;
+  /** For an address, its router name (ADR-0040), once the daemon has looked it up. */
+  readonly name: string | null;
   readonly epoch: Epoch;
 }
 

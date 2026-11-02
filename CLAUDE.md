@@ -33,10 +33,21 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
 - **Incidents** (ADR-0031, ADR-0034): every grading opens, escalates, and closes
   incidents, with a probable cause that began first. They are stored forever, and
   `specs/incidents.qnt` holds the tracker.
-- **Incident reports** (ADR-0033, ADR-0039): `/report`, `/report.txt`, and
-  `/report.csv`. They cover the host, clock, connection, public identity, and summary
-  with availability; episodes along cause links, with path evidence, baselines, loss
-  reasons, and timelines; loss and RTT by hour; events; and the method.
+- **Incident reports** (ADR-0033, ADR-0039, ADR-0040): `/report`, `/report.txt`, and
+  `/report.csv`. They cover:
+  - ticket details from the dialog (never stored)
+  - the host, clock, connection, first public hop, public identity, and a summary
+    with availability
+  - episodes along cause links, with path evidence and router names, baselines, loss
+    reasons, loss bursts and jitter, link load, path traces beside the routine trace,
+    and timelines
+  - loss and RTT by hour, normal paths, events, and the method
+- **Path traces** (ADR-0040): TTLs 4–30 toward every ICMP and DNS target, as a
+  routine trace every 6 h and an episode trace when an incident opens beyond hop 1
+  (10-minute cooldown), stored forever. `specs/traces.qnt` holds the schedule.
+- **Router names** (ADR-0040): PTR and Team Cymru origin AS for every hop and trace
+  responder, from the system resolver, cached for 1 h, shown in hop row titles.
+  `asn_lookups = false` turns off the Cymru queries.
 - **Host facts** (ADR-0039): the public identity from Cloudflare's trace every 5 min
   (in the header), and the NIC's link facts and carrier flaps.
 - **Settings** (ADR-0035): targets are editable in the UI. The daemon rewrites its
@@ -50,8 +61,8 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - Report and Settings dialogs. Settings can also flush all history (ADR-0038).
   - An Auto / Light / Dark theme switch, remembered per browser, which the report
     page follows too.
-- **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, and
-  `incidents.qnt`, all TLC-exhaustive and conformance-tested.
+- **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, `incidents.qnt`,
+  and `traces.qnt`, all TLC-exhaustive and conformance-tested.
 
 - **Radios** (ADR-0036): `wifi` and `cellular` roles, off the path, graded every 5 s
   from nl80211 and ModemManager, with gauges and attachment-change events.
@@ -67,6 +78,8 @@ Deliberately left unbuilt for now:
 - percentile bands on the rollup charts, and pan/zoom beyond the selected range
 - dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
 - kernel receive timestamps (`SO_TIMESTAMPING`)
+- path traces of HTTPS targets, large-packet (MTU) probes, and TCP retransmissions
+  in the report
 
 Two daemons on one host (say, the service and a dev build) share the gateway's ICMP
 rate limit, about one reply per second, so one of them sees hop 1 go silent.

@@ -30,6 +30,9 @@ pub struct RoleSummary {
 pub struct BindingView {
     /// The identity, for people: `eth0 (ifindex 5)`, `192.168.1.1`.
     pub identity: String,
+    /// For an address, its router name in words, once it has been looked up
+    /// (ADR-0040).
+    pub name: Option<String>,
     /// The epoch during which the role holds it.
     #[ts(type = "number")]
     pub epoch: u64,
@@ -522,6 +525,8 @@ pub struct HostView {
     pub public_address: Option<String>,
     /// The NIC's link facts, in words.
     pub link: Option<String>,
+    /// The NIC's negotiated speed, in Mb/s.
+    pub link_speed_mbps: Option<u32>,
     /// Whether the clock is NTP-synchronized.
     pub clock_synchronized: Option<bool>,
     /// The clock's estimated error, in µs.

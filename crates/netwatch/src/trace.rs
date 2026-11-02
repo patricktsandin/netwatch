@@ -1,0 +1,194 @@
+//! Running path traces (ADR-0040): the sweep's probes through the sockets adapter,
+//! then the router names of whoever answered. The trace schedule decides when.
+
+use std::net::IpAddr;
+use std::num::NonZeroU8;
+use std::sync::Arc;
+use std::time::Duration;
+
+use netwatch_adapter_sockets::ProbeSocket;
+use netwatch_adapter_sqlite::StoredTrace;
+use netwatch_probing::trace::{TraceProbe, TraceRequest, assemble};
+use netwatch_probing::{ProbeIndex, ProbeSequence, ReplyKind};
+use netwatch_shared::{HopTtl, Identity, Role, TargetId};
+use netwatch_topology::Binding;
+use tokio::sync::{Semaphore, mpsc, watch};
+
+use crate::clock::Clock;
+use crate::names::Names;
+
+/// The TTLs swept. Hops 1–3 have their own series (ADR-0025), and probing them
+/// again would share the gateway's ICMP rate limit with those (ADR-0026).
+const FIRST_TTL: u8 = 4;
+const LAST_TTL: u8 = 30;
+const ROUNDS: u16 = 3;
+const ROUND_EVERY: Duration = Duration::from_secs(1);
+const TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A trace that has finished: the stored result, or `None` if it couldn't run.
+#[derive(Debug)]
+pub struct Finished {
+    pub target: TargetId,
+    pub trace: Option<StoredTrace>,
+}
+
+/// Runs path traces, one at a time: probes of concurrent traces would delay one
+/// another's answers in this process and inflate their RTTs, and would reach the
+/// same routers in bursts that their ICMP rate limits drop.
+#[derive(Clone)]
+pub struct Tracer {
+    pin: watch::Receiver<Option<Binding>>,
+    names: Names,
+    clock: Clock,
+    done: mpsc::Sender<Finished>,
+    one_at_a_time: Arc<Semaphore>,
+}
+
+impl Tracer {
+    /// Traces over the egress `pin`, naming responders with `names`, and reporting
+    /// every finished trace to `done`.
+    pub fn new(
+        pin: watch::Receiver<Option<Binding>>,
+        names: Names,
+        clock: Clock,
+        done: mpsc::Sender<Finished>,
+    ) -> Self {
+        Self {
+            pin,
+            names,
+            clock,
+            done,
+            one_at_a_time: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// Runs `request` toward `destination` once the trace before it has finished,
+    /// over the pin current then, and reports to `done` whether or not it could run.
+    pub fn start(&self, request: TraceRequest, destination: IpAddr) {
+        let tracer = self.clone();
+        tokio::spawn(async move {
+            let trace = match tracer.one_at_a_time.acquire().await {
+                Ok(_permit) => {
+                    let pin = tracer.pin.borrow().clone();
+                    run(request, destination, pin, &tracer.names, tracer.clock).await
+                }
+                Err(_closed) => None,
+            };
+            let _ = tracer
+                .done
+                .send(Finished {
+                    target: request.target,
+                    trace,
+                })
+                .await;
+        });
+    }
+}
+
+async fn run(
+    request: TraceRequest,
+    destination: IpAddr,
+    pin: Option<Binding>,
+    names: &Names,
+    clock: Clock,
+) -> Option<StoredTrace> {
+    let Some(Identity::Interface { index, .. }) = pin.map(|b| b.identity) else {
+        return None;
+    };
+    let at = clock.wall_now();
+    let mut sweeps = Vec::new();
+    for raw in FIRST_TTL..=LAST_TTL {
+        let ttl = HopTtl::new(NonZeroU8::new(raw)?);
+        match ProbeSocket::open(destination, index.get(), Some(ttl)) {
+            Ok(socket) => sweeps.push(tokio::spawn(sweep(socket, ttl, clock))),
+            Err(error) => {
+                tracing::warn!(%error, %destination, "cannot open a path trace socket");
+                return None;
+            }
+        }
+    }
+    let mut probes = Vec::new();
+    for sweep in sweeps {
+        probes.extend(sweep.await.ok()?);
+    }
+    let trace = assemble(&probes);
+    let mut named = std::collections::BTreeMap::new();
+    for address in trace.hops.iter().flat_map(|h| h.responders.iter().copied()) {
+        if let Some(name) = names.name(address).await {
+            named.insert(address, name);
+        }
+    }
+    Some(StoredTrace {
+        role: Role::Target(request.target),
+        at,
+        kind: request.kind,
+        destination,
+        trace,
+        names: named,
+    })
+}
+
+/// Every round's probe at one TTL. Each round's probe has the round as its
+/// sequence number, so a late answer to an earlier round is never taken for this
+/// one's (ADR-0004).
+async fn sweep(socket: ProbeSocket, ttl: HopTtl, clock: Clock) -> Vec<TraceProbe> {
+    let start = tokio::time::Instant::now();
+    let mut probes = Vec::new();
+    for round in 0..ROUNDS {
+        tokio::time::sleep_until(start + ROUND_EVERY * u32::from(round)).await;
+        let sequence = ProbeSequence::new(round);
+        let sent = clock.now();
+        let mut probe = TraceProbe {
+            ttl,
+            responder: None,
+            rtt: None,
+            ends_path: false,
+        };
+        if socket
+            .send(sequence, ProbeIndex::new(u64::from(round)))
+            .is_ok()
+        {
+            let answer = tokio::time::timeout(TIMEOUT, async {
+                loop {
+                    match socket.recv().await {
+                        Ok(received) if received.reply.sequence == sequence => {
+                            return Some(received);
+                        }
+                        Ok(_) => {}
+                        Err(_) => return None,
+                    }
+                }
+            })
+            .await;
+            if let Ok(Some(received)) = answer {
+                probe.responder = received.responder;
+                probe.rtt = Some(clock.now().since(sent));
+                probe.ends_path = matches!(
+                    received.reply.kind,
+                    ReplyKind::Echo | ReplyKind::Unreachable(_)
+                );
+            }
+        }
+        probes.push(probe);
+    }
+    probes
+}
+
+/// A trace's event detail, for the target's row: `routine path trace: 11 hops to
+/// 1.1.1.1` or `episode path trace: no answer from hop 9 on`.
+pub fn summary(trace: &StoredTrace) -> String {
+    let kind = match trace.kind {
+        netwatch_probing::trace::TraceKind::Routine => "routine",
+        netwatch_probing::trace::TraceKind::Episode => "episode",
+    };
+    let end = match (
+        trace.trace.reached,
+        trace.trace.hops.last(),
+        trace.trace.silent_from,
+    ) {
+        (true, Some(last), _) => format!("{} hops to {}", last.ttl.get(), trace.destination),
+        (_, _, Some(from)) => format!("no answer from hop {} on", from.get()),
+        _ => format!("toward {}", trace.destination),
+    };
+    format!("{kind} path trace: {end}")
+}

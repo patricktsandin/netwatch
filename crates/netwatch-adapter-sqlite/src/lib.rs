@@ -9,6 +9,9 @@
 //! for 7 days, minute rollups for 90 days, and hour rollups indefinitely.
 
 mod readings;
+mod traces;
+
+pub use traces::StoredTrace;
 
 use std::path::Path;
 
@@ -30,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004-rollups.sql"),
     include_str!("../migrations/0005-incidents.sql"),
     include_str!("../migrations/0006-readings.sql"),
+    include_str!("../migrations/0007-traces.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -617,8 +621,8 @@ impl Store {
         Ok(identities)
     }
 
-    /// Deletes all history (ADR-0038): samples, readings, rollups, incidents, and
-    /// events, in one transaction. Open epochs and the highest epoch ever allocated
+    /// Deletes all history (ADR-0038): samples, readings, rollups, incidents, path
+    /// traces, and events, in one transaction. Open epochs and the highest epoch ever allocated
     /// are kept, so a restart's epochs never collide with ones still in use.
     pub fn flush_history(&mut self) -> Result<(), StoreError> {
         let transaction = self.connection.transaction()?;
@@ -628,6 +632,9 @@ impl Store {
              DELETE FROM rollups;
              DELETE FROM reading_rollups;
              DELETE FROM incidents;
+             DELETE FROM traces;
+             DELETE FROM trace_hops;
+             DELETE FROM trace_responders;
              DELETE FROM events;
              DELETE FROM epochs
              WHERE ended_us IS NOT NULL AND epoch < (SELECT MAX(epoch) FROM epochs);",

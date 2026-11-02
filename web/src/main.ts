@@ -291,8 +291,9 @@ function renderIdentities(): void {
   );
   for (const [key, row] of rows) {
     const binding = bindings.get(key);
+    const router = binding === undefined ? "" : [binding.identity, binding.name].filter((s) => s !== null).join(" · ");
     row.titleEl.textContent =
-      key.startsWith("hop") && binding !== undefined ? `${label(key, names)} · ${binding.identity}` : label(key, names);
+      key.startsWith("hop") && router !== "" ? `${label(key, names)} · ${router}` : label(key, names);
   }
 }
 
@@ -509,7 +510,36 @@ document.getElementById("open-settings")?.addEventListener("click", () => {
 });
 
 // The incident report (ADR-0033) is the daemon's page; the dialog only picks the span,
-// starting from what's on screen.
+// starting from what's on screen, and passes the ticket details along (ADR-0040). The
+// details that stay the same from ticket to ticket are remembered in this browser.
+const TICKET_FIELDS = ["account", "service_address", "contact", "ticket", "description"] as const;
+const REMEMBERED: readonly string[] = ["account", "service_address", "contact"];
+const TICKET_KEY = "netwatch-ticket";
+function ticketInput(field: string): HTMLInputElement | HTMLTextAreaElement | null {
+  const el = document.getElementById(`report-${field}`);
+  return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el : null;
+}
+function restoreTicket(): void {
+  let saved: unknown = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(TICKET_KEY) ?? "null");
+  } catch {
+    // Storage may be unavailable or hold something else; the fields just start empty.
+  }
+  if (typeof saved !== "object" || saved === null) return;
+  for (const [field, value] of Object.entries(saved)) {
+    const input = ticketInput(field);
+    if (input !== null && REMEMBERED.includes(field) && typeof value === "string") input.value = value;
+  }
+}
+function saveTicket(): void {
+  const kept = Object.fromEntries(REMEMBERED.map((f) => [f, ticketInput(f)?.value ?? ""]));
+  try {
+    localStorage.setItem(TICKET_KEY, JSON.stringify(kept));
+  } catch {
+    // Not remembering is fine.
+  }
+}
 function localInput(seconds: number): string {
   const d = new Date(seconds * 1000);
   const pad = (n: number): string => String(n).padStart(2, "0");
@@ -523,6 +553,7 @@ document.getElementById("open-report")?.addEventListener("click", () => {
   const until = document.getElementById("report-until");
   if (from instanceof HTMLInputElement) from.value = localInput(window.min);
   if (until instanceof HTMLInputElement) until.value = localInput(window.max);
+  restoreTicket();
   reportDialog.showModal();
 });
 reportDialog?.addEventListener("close", () => {
@@ -535,10 +566,17 @@ reportDialog?.addEventListener("close", () => {
   const micros = (input: HTMLInputElement): number => new Date(input.value).getTime() * 1000;
   // The viewer's offset, so the report can show local times beside UTC.
   const offset = -new Date().getTimezoneOffset();
-  open(
-    `${path}?from_us=${String(micros(from))}&until_us=${String(micros(until))}&offset_min=${String(offset)}`,
-    "_blank",
-  );
+  const query = new URLSearchParams({
+    from_us: String(micros(from)),
+    until_us: String(micros(until)),
+    offset_min: String(offset),
+  });
+  for (const field of TICKET_FIELDS) {
+    const value = ticketInput(field)?.value.trim() ?? "";
+    if (value !== "") query.set(field, value);
+  }
+  saveTicket();
+  open(`${path}?${query.toString()}`, "_blank");
 });
 
 for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {

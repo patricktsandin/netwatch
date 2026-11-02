@@ -5,11 +5,13 @@
 
 mod clock;
 mod config;
+mod names;
 mod persist;
 mod probe;
 mod public;
 mod radio;
 mod settings;
+mod trace;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::num::NonZeroU64;
@@ -23,6 +25,7 @@ use netwatch_history::{Measurement, Reading, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
+use netwatch_probing::trace::{TraceRequest, TraceSchedule};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -298,6 +301,33 @@ async fn main() -> anyhow::Result<()> {
     let mut attachments: HashMap<Role, Option<String>> = HashMap::new();
     // Each grading also opens, updates, and closes incidents (ADR-0031).
     let mut incidents = IncidentTracker::new(Time::new::<second>(10.0));
+    // Path traces (ADR-0040) of every target with a fixed address, with router names
+    // for whoever answers them and for every hop. The first routine traces wait half
+    // a minute, for the egress path and the hops to be known.
+    let names = names::Names::new(config::system_resolver(), config.asn_lookups);
+    names::follow_hops(names.clone(), current_tx.subscribe());
+    let traceable: HashMap<TargetId, IpAddr> = config
+        .targets
+        .iter()
+        .filter_map(|t| match t.probe {
+            TargetProbe::Echo(address) | TargetProbe::Dns(address) => Some((t.id, address)),
+            TargetProbe::Https(_) => None,
+        })
+        .collect();
+    let mut traces = TraceSchedule::new(
+        traceable.keys().copied(),
+        Time::new::<second>(600.0),
+        Time::new::<second>(6.0 * 3600.0),
+        clock.now().after(Time::new::<second>(30.0)),
+    );
+    let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
+    let tracer = trace::Tracer::new(pin.clone(), names.clone(), clock, traced_tx);
+    let start_trace = |request: TraceRequest| {
+        if let Some(&destination) = traceable.get(&request.target) {
+            tracing::info!(target = request.target.get(), kind = ?request.kind, "path trace");
+            tracer.start(request, destination);
+        }
+    };
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008).
     let mut last_clocks = (clock.wall_now(), clock.now());
     let mut last_sysctls = netwatch_adapter_procfs::sysctls();
@@ -409,7 +439,10 @@ async fn main() -> anyhow::Result<()> {
                             counters.insert("Link.CarrierChanges".to_owned(), changes);
                         }
                         let notes: Vec<String> = facts.iter().map(|f| f.summary()).filter(|s| !s.is_empty()).collect();
-                        current_tx.send_modify(|c| c.host.link = notes.first().cloned());
+                        current_tx.send_modify(|c| {
+                            c.host.link = notes.first().cloned();
+                            c.host.link_speed_mbps = facts.as_ref().and_then(|f| f.speed_mbps);
+                        });
                         let reading = netwatch_host_health::Reading { counters, ..Default::default() };
                         layer_health.insert(
                             Role::Nic,
@@ -418,10 +451,16 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, now, &live, &current_tx);
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), now, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
+                    if let Some(request) = traces.incident(&incident, clock.now()) {
+                        start_trace(request);
+                    }
                     recorder.incident(incident);
+                }
+                for request in traces.tick(clock.now()) {
+                    start_trace(request);
                 }
             }
             Some(observation) = observations.recv() => {
@@ -457,6 +496,15 @@ async fn main() -> anyhow::Result<()> {
                     }
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
+                }
+            }
+            Some(finished) = traced.recv() => {
+                if let Some(trace) = finished.trace {
+                    recorder.note("trace", trace.role.clone(), trace::summary(&trace));
+                    let _ = writes.send(persist::Write::Trace(trace));
+                }
+                if let Some(request) = traces.finished(finished.target, clock.now()) {
+                    start_trace(request);
                 }
             }
             Some(reason) = disabled_rx.recv() => {
@@ -682,6 +730,7 @@ fn publish_current(
     recent: &HashMap<Role, VecDeque<(WallTime, bool)>>,
     layers: &BTreeMap<Role, Health>,
     topology: &Topology,
+    names: &HashMap<IpAddr, String>,
     now: WallTime,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
@@ -708,14 +757,17 @@ fn publish_current(
     let bindings: BTreeMap<String, BindingView> = topology
         .bindings()
         .map(|(role, binding)| {
-            let identity = match &binding.identity {
-                Identity::Interface { index, name } => format!("{name} (ifindex {})", index.get()),
-                Identity::Address(address) => address.to_string(),
+            let (identity, name) = match &binding.identity {
+                Identity::Interface { index, name } => {
+                    (format!("{name} (ifindex {})", index.get()), None)
+                }
+                Identity::Address(address) => (address.to_string(), names.get(address).cloned()),
             };
             (
                 role.key(),
                 BindingView {
                     identity,
+                    name,
                     epoch: binding.epoch.get().get(),
                 },
             )
@@ -730,6 +782,10 @@ fn publish_current(
     current.send_modify(|c| {
         c.statuses = statuses;
         c.bindings = bindings;
+        c.names = names
+            .iter()
+            .map(|(address, name)| (address.to_string(), name.clone()))
+            .collect();
     });
     grades
 }

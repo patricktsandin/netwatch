@@ -1,4 +1,4 @@
-//! Writes a [`Report`] for people (ADR-0033, ADR-0039). [`compose`] decides what the
+//! Writes a [`Report`] for people (ADR-0033, ADR-0039, ADR-0040). [`compose`] decides what the
 //! report says, once, as a list of [`Block`]s; [`text`] lays them out in fixed-width
 //! columns for an email body, and [`html`] as a printable, self-contained page that
 //! carries the same text for copying.
@@ -6,10 +6,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use netwatch_adapter_sqlite::StoredTrace;
 use netwatch_probing::incident::Severity;
+use netwatch_probing::trace::TraceKind;
+use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Role, WallTime};
 
-use super::analysis::{PeriodStats, TimelineRow, outage_beyond_gateway};
+use super::analysis::{LinkLoad, LossPattern, PeriodStats, TimelineRow, outage_beyond_gateway};
 use super::{Episode, PathStats, Place, format_duration, utc};
 
 /// One episode, with everything measured about it.
@@ -29,6 +32,14 @@ pub struct EpisodeReport {
     pub step_us: i64,
     /// Whether raw samples still existed for it.
     pub raw: bool,
+    /// Each path role's loss bursts and jitter. Empty once raw samples have expired.
+    pub patterns: BTreeMap<Role, LossPattern>,
+    /// The NIC's traffic during it, if readings still exist.
+    pub load: Option<LinkLoad>,
+    /// The episode traces of its targets that ran during it.
+    pub traces: Vec<StoredTrace>,
+    /// For each traced target, the latest routine trace before it began.
+    pub baselines: BTreeMap<Role, StoredTrace>,
 }
 
 /// One event in the span.
@@ -57,6 +68,16 @@ pub struct Report {
     pub utc_offset_s: i64,
     /// The host and the report: hostname, kernel, version, clock.
     pub about: Vec<(String, String)>,
+    /// The customer's ticket details, as typed in for this report (ADR-0040).
+    pub ticket: Vec<(String, String)>,
+    /// The customer's description of the problem.
+    pub description: Option<String>,
+    /// Router names, by address, for every identity that has one.
+    pub names: BTreeMap<String, String>,
+    /// The NIC's negotiated speed, in Mb/s.
+    pub link_speed_mbps: Option<u32>,
+    /// Each traced target's latest routine trace before the span ended.
+    pub normal_paths: Vec<StoredTrace>,
     /// The connection: link, addresses, gateways, ISP routers, public identity.
     pub connection: Vec<(String, String)>,
     /// How measurements are taken, one sentence each.
@@ -165,9 +186,17 @@ fn strings<const N: usize>(cells: [&str; N]) -> Vec<String> {
 fn stats_table(
     stats: &[PathStats],
     before: Option<&BTreeMap<Role, f64>>,
+    names: &BTreeMap<String, String>,
     label: Label<'_>,
 ) -> Block {
-    let mut head = strings(["Role", "Identity", "Sent", "Loss", "Median", "p95"]);
+    let name = |s: &PathStats| s.identity.as_ref().and_then(|i| names.get(i)).cloned();
+    let named = stats.iter().any(|s| name(s).is_some());
+    let mut head = strings(["Role", "Identity"]);
+    if named {
+        head.push("Router name".to_owned());
+    }
+    let numeric = head.len();
+    head.extend(strings(["Sent", "Loss", "Median", "p95"]));
     if before.is_some() {
         head.push("Median before".to_owned());
     }
@@ -179,19 +208,156 @@ fn stats_table(
                 let mut row = vec![
                     label(&s.role),
                     s.identity.clone().unwrap_or_else(|| "–".to_owned()),
+                ];
+                if named {
+                    row.push(name(s).unwrap_or_else(|| "–".to_owned()));
+                }
+                row.extend([
                     s.sent.to_string(),
                     format!("{:.1}%", s.loss_percent()),
                     ms(s.median_ms),
                     ms(s.p95_ms),
-                ];
+                ]);
                 if let Some(before) = before {
                     row.push(ms(before.get(&s.role).copied()));
                 }
                 (row, s.lost > 0)
             })
             .collect(),
-        numeric: 2,
+        numeric,
     }
+}
+
+fn kind_text(kind: TraceKind) -> &'static str {
+    match kind {
+        TraceKind::Routine => "Routine",
+        TraceKind::Episode => "Episode",
+    }
+}
+
+fn addresses(responders: &[std::net::IpAddr]) -> String {
+    if responders.is_empty() {
+        "*".to_owned()
+    } else {
+        responders
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// A path trace as a table, beside `baseline` (a routine trace of the same path)
+/// if given, with every TTL whose routers differ from it marked.
+fn trace_blocks(
+    trace: &StoredTrace,
+    baseline: Option<&StoredTrace>,
+    offset_s: i64,
+    label: Label<'_>,
+) -> Vec<Block> {
+    let target = label(&trace.role);
+    let toward = if target.contains(&trace.destination.to_string()) {
+        target
+    } else {
+        format!("{target} ({})", trace.destination)
+    };
+    let mut intro = format!(
+        "{} path trace toward {toward}, beyond hop 3, at {}",
+        kind_text(trace.kind),
+        when_local(trace.at, offset_s)
+    );
+    if let Some(b) = baseline {
+        let _ = write!(intro, ", beside the routine trace at {}", utc(b.at));
+    }
+    intro.push(':');
+    let mut head = strings(["TTL", "Router", "Name", "Answered", "Best", "Median"]);
+    if baseline.is_some() {
+        head.push("Routine trace".to_owned());
+    }
+    let rtt =
+        |t: Option<netwatch_shared::uom::si::f64::Time>| ms(t.map(|t| t.get::<millisecond>()));
+    let rows = trace
+        .trace
+        .hops
+        .iter()
+        .map(|hop| {
+            let names: Vec<&str> = hop
+                .responders
+                .iter()
+                .filter_map(|a| trace.names.get(a).map(String::as_str))
+                .collect();
+            let mut row = vec![
+                hop.ttl.get().to_string(),
+                addresses(&hop.responders),
+                if names.is_empty() {
+                    "–".to_owned()
+                } else {
+                    names.join(", ")
+                },
+                format!("{}/{}", hop.answered, hop.sent),
+                rtt(hop.best),
+                rtt(hop.median),
+            ];
+            let mut changed = false;
+            if let Some(b) = baseline {
+                let before = b.trace.hops.iter().find(|h| h.ttl == hop.ttl);
+                let was = before.map_or_else(Vec::new, |h| h.responders.clone());
+                // A silent TTL, then or now, is no evidence of a different router.
+                changed = !was.is_empty() && !hop.responders.is_empty() && was != hop.responders;
+                row.push(match (before, changed) {
+                    (None, _) => "not reached".to_owned(),
+                    (Some(_), true) => format!("changed, was {}", addresses(&was)),
+                    (Some(_), false) => "same".to_owned(),
+                });
+            }
+            (row, changed)
+        })
+        .collect();
+    let mut blocks = vec![Block::Para(intro)];
+    let end = match (
+        trace.trace.reached,
+        trace.trace.hops.last(),
+        trace.trace.silent_from,
+    ) {
+        (true, Some(last), _) if trace.trace.hops.len() == 1 && last.ttl.get().get() == 4 => Some(
+            "The destination is within 4 hops, so hops 1 to 3 above are its whole path.".to_owned(),
+        ),
+        (true, Some(last), _) => Some(format!(
+            "The destination answered at TTL {}.",
+            last.ttl.get()
+        )),
+        (_, _, Some(from)) => Some(format!(
+            "No router answered from TTL {} up to 30.",
+            from.get()
+        )),
+        _ => None,
+    };
+    if !trace.trace.hops.is_empty() {
+        blocks.push(Block::Table {
+            head,
+            rows,
+            numeric: 3,
+        });
+    }
+    blocks.extend(end.map(Block::Para));
+    blocks
+}
+
+fn rate(bits_per_second: f64) -> String {
+    if bits_per_second >= 1e6 {
+        format!("{:.1} Mb/s", bits_per_second / 1e6)
+    } else {
+        format!("{:.0} kb/s", bits_per_second / 1e3)
+    }
+}
+
+/// The link load as one line: `mean 3.1 Mb/s, peak 9.8 Mb/s (10% of 100 Mb/s)`.
+fn load_text((mean, peak): (f64, f64), speed_mbps: Option<u32>) -> String {
+    let share = speed_mbps
+        .filter(|&s| s > 0)
+        .map(|s| format!(" ({:.0}% of {s} Mb/s)", peak * 100.0 / (f64::from(s) * 1e6)))
+        .unwrap_or_default();
+    format!("mean {}, peak {}{share}", rate(mean), rate(peak))
 }
 
 fn episode_blocks(r: &EpisodeReport, report: &Report, label: Label<'_>) -> Vec<Block> {
@@ -227,17 +393,43 @@ fn episode_blocks(r: &EpisodeReport, report: &Report, label: Label<'_>) -> Vec<B
         "Affected".to_owned(),
         e.affected.iter().map(label).collect::<Vec<_>>().join(", "),
     ));
+    if let Some(load) = r.load {
+        facts.push((
+            "Link load, receive".to_owned(),
+            load_text(load.rx, report.link_speed_mbps),
+        ));
+        facts.push((
+            "Link load, transmit".to_owned(),
+            load_text(load.tx, report.link_speed_mbps),
+        ));
+    }
     let mut blocks = vec![
         Block::Facts(facts),
         Block::Para(
             "Path during the episode, with each role's median in the hour before it:".to_owned(),
         ),
-        stats_table(&r.path, Some(&r.before), label),
+        stats_table(&r.path, Some(&r.before), &report.names, label),
     ];
+    for trace in &r.traces {
+        blocks.extend(trace_blocks(
+            trace,
+            r.baselines.get(&trace.role),
+            report.utc_offset_s,
+            label,
+        ));
+    }
+    if r.traces.is_empty() {
+        for baseline in r.baselines.values() {
+            blocks.push(Block::Para(
+                "No episode trace ran during it. The path before it:".to_owned(),
+            ));
+            blocks.extend(trace_blocks(baseline, None, report.utc_offset_s, label));
+        }
+    }
     if !r.raw {
         blocks.push(Block::Para(
-            "Raw samples for this episode have expired (they are kept 7 days), so why probes failed and the \
-             timeline are not available; the path figures come from rollups."
+            "Raw samples for this episode have expired (they are kept 7 days), so why probes failed, loss \
+             bursts, jitter, and the timeline are not available; the path figures come from rollups."
                 .to_owned(),
         ));
         return blocks;
@@ -256,6 +448,30 @@ fn episode_blocks(r: &EpisodeReport, report: &Report, label: Label<'_>) -> Vec<B
                 })
                 .collect(),
             numeric: 2,
+        });
+    }
+    if !r.patterns.is_empty() {
+        blocks.push(Block::Para(
+            "Loss pattern: runs of consecutive lost probes, by length, and jitter (mean change between \
+             consecutive answers):"
+                .to_owned(),
+        ));
+        blocks.push(Block::Table {
+            head: strings([
+                "Role", "Runs", "Longest", "1", "2–4", "5–29", "30+", "Jitter",
+            ]),
+            rows: r
+                .path
+                .iter()
+                .filter_map(|s| Some((&s.role, r.patterns.get(&s.role)?)))
+                .map(|(role, p)| {
+                    let mut row = vec![label(role), p.bursts.to_string(), p.longest.to_string()];
+                    row.extend(p.by_length.iter().map(ToString::to_string));
+                    row.push(ms(p.jitter_ms));
+                    (row, p.bursts > 0)
+                })
+                .collect(),
+            numeric: 1,
         });
     }
     if !r.timeline.is_empty() {
@@ -316,6 +532,18 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         .chain(report.about.iter().cloned())
         .collect(),
     )];
+    if !report.ticket.is_empty() || report.description.is_some() {
+        blocks.push(Block::Heading("Customer and ticket".to_owned()));
+        if !report.ticket.is_empty() {
+            blocks.push(Block::Facts(report.ticket.clone()));
+        }
+        blocks.extend(
+            report
+                .description
+                .iter()
+                .map(|d| Block::Para(format!("What the customer noticed: {d}"))),
+        );
+    }
 
     let mut episodes: Vec<&EpisodeReport> = report.episodes.iter().collect();
     episodes.sort_by_key(|r| (r.episode.place, r.episode.started));
@@ -437,8 +665,24 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         });
     }
 
+    if !report.normal_paths.is_empty() {
+        blocks.push(Block::Heading("Normal paths".to_owned()));
+        blocks.push(Block::Para(
+            "Each target's latest routine path trace, which runs every 6 hours:".to_owned(),
+        ));
+        // Targets that share an address (an ICMP and a DNS target, say) share a path.
+        let mut shown = std::collections::BTreeSet::new();
+        for trace in report
+            .normal_paths
+            .iter()
+            .filter(|t| shown.insert(t.destination))
+        {
+            blocks.extend(trace_blocks(trace, None, report.utc_offset_s, label));
+        }
+    }
+
     blocks.push(Block::Heading("Every role over the whole span".to_owned()));
-    blocks.push(stats_table(&report.summary, None, label));
+    blocks.push(stats_table(&report.summary, None, &report.names, label));
 
     blocks.push(Block::Heading("Events".to_owned()));
     if report.events.is_empty() {
@@ -536,7 +780,7 @@ fn text_blocks(out: &mut String, blocks: &[Block], indent: &str) {
                 }
             }
             Block::Para(p) => {
-                let _ = writeln!(out, "{indent}{p}");
+                let _ = writeln!(out, "{indent}{}", p.replace('\n', &format!("\n{indent}")));
             }
             Block::Table {
                 head,
@@ -582,7 +826,7 @@ fn html_blocks(out: &mut String, blocks: &[Block]) {
                 out.push_str("</dl>");
             }
             Block::Para(p) => {
-                let _ = write!(out, "<p>{}</p>", escape(p));
+                let _ = write!(out, "<p>{}</p>", escape(p).replace('\n', "<br>"));
             }
             Block::Table {
                 head,
@@ -692,4 +936,115 @@ pub fn html(report: &Report, label: Label<'_>) -> String {
         escape(&text(report, label))
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::IpAddr;
+    use std::num::NonZeroU8;
+
+    use netwatch_probing::trace::{PathTrace, TraceHop};
+    use netwatch_shared::{HopTtl, TargetId};
+
+    use super::*;
+
+    fn report() -> Report {
+        Report {
+            from: WallTime::from_unix_micros(0),
+            until: WallTime::from_unix_micros(3_600_000_000),
+            generated: WallTime::from_unix_micros(3_600_000_000),
+            utc_offset_s: 0,
+            about: vec![],
+            ticket: vec![],
+            description: None,
+            names: BTreeMap::new(),
+            link_speed_mbps: Some(100),
+            normal_paths: vec![],
+            connection: vec![],
+            method: vec![],
+            episodes: vec![],
+            summary: vec![],
+            periods: vec![],
+            period: "Hour",
+            events: vec![],
+            csv_href: String::new(),
+        }
+    }
+
+    fn label(role: &Role) -> String {
+        role.key()
+    }
+
+    fn trace(kind: TraceKind, routers: &[(u8, &str)]) -> StoredTrace {
+        StoredTrace {
+            role: Role::Target(TargetId::new(1)),
+            at: WallTime::from_unix_micros(0),
+            kind,
+            destination: "1.1.1.1".parse().unwrap(),
+            trace: PathTrace {
+                hops: routers
+                    .iter()
+                    .map(|&(ttl, router)| TraceHop {
+                        ttl: HopTtl::new(NonZeroU8::new(ttl).unwrap()),
+                        responders: router.parse::<IpAddr>().into_iter().collect(),
+                        sent: 3,
+                        answered: 3,
+                        best: None,
+                        median: None,
+                    })
+                    .collect(),
+                reached: true,
+                silent_from: None,
+            },
+            names: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_trace_marks_routers_that_differ_from_the_routine_trace() {
+        let routine = trace(
+            TraceKind::Routine,
+            &[(4, "10.0.0.4"), (5, "10.0.0.5"), (6, "1.1.1.1")],
+        );
+        let during = trace(
+            TraceKind::Episode,
+            &[(4, "10.0.0.4"), (5, "10.9.9.9"), (6, "silent")],
+        );
+        let blocks = trace_blocks(&during, Some(&routine), 0, &label);
+        let Block::Table { rows, .. } = &blocks[1] else {
+            panic!("a table follows the introduction: {blocks:?}");
+        };
+        let marks: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|(r, changed)| (r[6].as_str(), *changed))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![
+                ("same", false),
+                ("changed, was 10.0.0.5", true),
+                ("same", false)
+            ],
+            "a silent TTL is no evidence of a different router"
+        );
+    }
+
+    #[test]
+    fn ticket_details_open_the_report_and_link_load_is_against_the_link_speed() {
+        let mut r = report();
+        r.ticket = vec![("Account number".to_owned(), "A-1234".to_owned())];
+        r.description = Some("Drops every evening".to_owned());
+        let text = text(&r, &label);
+        let ticket = text.find("Customer and ticket").unwrap();
+        assert!(ticket < text.find("Summary").unwrap());
+        assert!(text.contains("A-1234") && text.contains("Drops every evening"));
+        assert_eq!(
+            load_text((3e6, 25e6), Some(100)),
+            "mean 3.0 Mb/s, peak 25.0 Mb/s (25% of 100 Mb/s)"
+        );
+        assert!(
+            !super::text(&report(), &label).contains("Customer and ticket"),
+            "no details, no section"
+        );
+    }
 }

@@ -11,6 +11,8 @@
 //!   their control messages, which Kani proves panic-free.
 //! - [`DnsSocket`] is a pinned UDP socket for DNS probes. [`dns`] encodes the query
 //!   and parses responses, also Kani-proven.
+//! - [`lookup`] resolves router names (ADR-0040): PTR and Team Cymru TXT records
+//!   from the system resolver, with a Kani-proven record walk.
 //!
 //! Not yet implemented: the raw-socket fallback and kernel receive timestamps. Every
 //! receive timestamp is currently taken in userspace.
@@ -20,6 +22,7 @@ mod dns_socket;
 pub mod errqueue;
 pub mod http;
 pub mod icmp;
+pub mod lookup;
 mod socket;
 
 pub use dns_socket::DnsSocket;

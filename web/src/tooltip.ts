@@ -128,6 +128,7 @@ function eventText(m: Marker, words: Words): string {
     "config-drift": `sysctl changed: ${detail}`,
     radio: `${role} changed: ${detail}`,
     "public-address": `public address: ${detail}`,
+    trace: detail,
   };
   return `${words.time(m.at)} · ${texts[m.kind]}`;
 }

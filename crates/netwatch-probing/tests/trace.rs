@@ -41,13 +41,22 @@ fn incident(role: Role, open: bool) -> Incident {
 const T1: TargetId = TargetId::new(1);
 
 fn episode() -> Option<TraceRequest> {
-    Some(TraceRequest { target: T1, kind: TraceKind::Episode })
+    Some(TraceRequest {
+        target: T1,
+        kind: TraceKind::Episode,
+    })
 }
 
 #[test]
 fn every_target_gets_a_routine_trace_at_start_and_again_after_the_interval() {
     let mut s = schedule();
-    assert_eq!(s.tick(at(0)), vec![TraceRequest { target: T1, kind: TraceKind::Routine }]);
+    assert_eq!(
+        s.tick(at(0)),
+        vec![TraceRequest {
+            target: T1,
+            kind: TraceKind::Routine
+        }]
+    );
     assert_eq!(s.finished(T1, at(3)), None);
     assert!(s.tick(at(3600)).is_empty());
     assert_eq!(s.tick(at(6 * 3600)).len(), 1);
@@ -56,7 +65,10 @@ fn every_target_gets_a_routine_trace_at_start_and_again_after_the_interval() {
 #[test]
 fn an_incident_beyond_hop_1_gets_one_episode_trace_per_cooldown() {
     let mut s = schedule();
-    let hop2 = Role::Hop { target: T1, ttl: ttl(2) };
+    let hop2 = Role::Hop {
+        target: T1,
+        ttl: ttl(2),
+    };
     assert_eq!(s.incident(&incident(hop2.clone(), true), at(10)), episode());
     s.finished(T1, at(13));
     // Updates to an open incident, and reopening within the cooldown, start nothing.
@@ -64,16 +76,25 @@ fn an_incident_beyond_hop_1_gets_one_episode_trace_per_cooldown() {
     assert_eq!(s.incident(&incident(hop2.clone(), false), at(30)), None);
     assert_eq!(s.incident(&incident(hop2.clone(), true), at(40)), None);
     s.incident(&incident(hop2.clone(), false), at(50));
-    assert_eq!(s.incident(&incident(Role::Target(T1), true), at(611)), episode());
+    assert_eq!(
+        s.incident(&incident(Role::Target(T1), true), at(611)),
+        episode()
+    );
 }
 
 #[test]
 fn incidents_at_hop_1_or_on_the_host_start_no_trace() {
     let mut s = schedule();
-    let hop1 = Role::Hop { target: T1, ttl: ttl(1) };
+    let hop1 = Role::Hop {
+        target: T1,
+        ttl: ttl(1),
+    };
     assert_eq!(s.incident(&incident(hop1, true), at(10)), None);
     assert_eq!(s.incident(&incident(Role::Nic, true), at(10)), None);
-    assert_eq!(s.incident(&incident(Role::Target(TargetId::new(9)), true), at(10)), None);
+    assert_eq!(
+        s.incident(&incident(Role::Target(TargetId::new(9)), true), at(10)),
+        None
+    );
 }
 
 #[test]
@@ -108,7 +129,11 @@ fn a_trace_ends_where_the_destination_answered() {
     assert_eq!(trace.hops.len(), 2);
     let four = &trace.hops[0];
     assert_eq!((four.sent, four.answered), (3, 2));
-    assert_eq!(four.responders.len(), 2, "load balancing shows both routers");
+    assert_eq!(
+        four.responders.len(),
+        2,
+        "load balancing shows both routers"
+    );
     assert_eq!(four.best, Some(Time::new::<millisecond>(5.0)));
 }
 
@@ -122,7 +147,10 @@ fn silent_hops_after_the_last_answer_collapse_into_where_silence_began() {
         probe(8, None, None, false),
     ]);
     assert!(!trace.reached);
-    assert_eq!(trace.hops.iter().map(|h| h.ttl).collect::<Vec<_>>(), vec![ttl(4), ttl(5), ttl(6)]);
+    assert_eq!(
+        trace.hops.iter().map(|h| h.ttl).collect::<Vec<_>>(),
+        vec![ttl(4), ttl(5), ttl(6)]
+    );
     assert_eq!(trace.silent_from, Some(ttl(7)));
     let nothing = assemble(&[probe(4, None, None, false)]);
     assert!(nothing.hops.is_empty());

@@ -30,6 +30,10 @@ public_address: string | null,
  */
 link: string | null, 
 /**
+ * The NIC's negotiated speed, in Mb/s.
+ */
+link_speed_mbps: number | null, 
+/**
  * Whether the clock is NTP-synchronized.
  */
 clock_synchronized: boolean | null, 

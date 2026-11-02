@@ -7,6 +7,11 @@
 listen = "127.0.0.1:8732"
 database = "netwatch.db"
 
+# Router names include each address's origin AS, looked up from Team Cymru's DNS
+# service through the system resolver. That sends router addresses (never this
+# host's own) to a third party (ADR-0040).
+asn_lookups = true
+
 # ICMP echo, plus hops 1-3 toward it.
 [[target]]
 id = 1

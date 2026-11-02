@@ -114,6 +114,7 @@ const EVENT_KINDS: readonly EventKind[] = [
   "config-drift",
   "radio",
   "public-address",
+  "trace",
 ];
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], what: string): T {
@@ -266,9 +267,13 @@ export function parseBindings(value: unknown): ReadonlyMap<RoleKey, Binding> {
   const all = record<Record<string, unknown>>(value, "bindings");
   return new Map(
     Object.entries(all).map(([key, raw]) => {
-      const b = record<{ identity: string; epoch: number }>(raw, "binding");
+      const b = record<{ identity: string; name: string | null; epoch: number }>(raw, "binding");
       if (typeof b.identity !== "string") throw new ParseError("binding.identity: expected a string");
-      return [roleKey(key, "bindings key"), { identity: b.identity, epoch: epoch(b.epoch, "binding.epoch") }];
+      if (b.name !== null && typeof b.name !== "string") throw new ParseError("binding.name: expected a string");
+      return [
+        roleKey(key, "bindings key"),
+        { identity: b.identity, name: b.name, epoch: epoch(b.epoch, "binding.epoch") },
+      ];
     }),
   );
 }

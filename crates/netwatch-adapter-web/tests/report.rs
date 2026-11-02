@@ -150,3 +150,48 @@ fn times_are_written_in_utc_and_durations_in_two_units() {
     assert_eq!(format_duration(3_600_000_000), "1 h");
     assert_eq!(format_duration(500_000), "0 s");
 }
+
+#[test]
+fn the_first_public_hop_comes_from_the_hops_or_else_from_a_trace_beyond_them() {
+    use netwatch_adapter_sqlite::StoredTrace;
+    use netwatch_adapter_web::report::first_public_hop;
+    use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind};
+    use netwatch_shared::{HopTtl, TargetId};
+    let ip = |a: &str| a.parse::<std::net::IpAddr>().unwrap();
+    let cgnat = [
+        (1, ip("192.168.1.1")),
+        (3, ip("100.127.3.193")),
+        (2, ip("100.65.192.1")),
+    ];
+    let trace = StoredTrace {
+        role: Role::Target(TargetId::new(1)),
+        at: s(0),
+        kind: TraceKind::Routine,
+        destination: ip("1.1.1.1"),
+        trace: PathTrace {
+            hops: [(4, "100.127.0.9"), (5, "81.2.69.142")]
+                .map(|(ttl, a)| TraceHop {
+                    ttl: HopTtl::new(std::num::NonZeroU8::new(ttl).unwrap()),
+                    responders: vec![ip(a)],
+                    sent: 3,
+                    answered: 3,
+                    best: None,
+                    median: None,
+                })
+                .to_vec(),
+            reached: false,
+            silent_from: None,
+        },
+        names: Default::default(),
+    };
+    assert_eq!(first_public_hop(&cgnat, &[]), None);
+    assert_eq!(
+        first_public_hop(&cgnat, std::slice::from_ref(&trace)),
+        Some((5, ip("81.2.69.142")))
+    );
+    let direct = [(2, ip("81.2.69.1")), (1, ip("192.168.1.1"))];
+    assert_eq!(
+        first_public_hop(&direct, &[trace]),
+        Some((2, ip("81.2.69.1")))
+    );
+}

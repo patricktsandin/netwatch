@@ -37,6 +37,18 @@
         <p class="hint">Every outage and degradation in a time span, with the path evidence an ISP needs.</p>
         <label>From <input type="datetime-local" id="report-from" step="1" required /></label>
         <label>Until <input type="datetime-local" id="report-until" step="1" required /></label>
+        <details class="ticket">
+          <summary>Ticket details (optional)</summary>
+          <p class="hint">
+            Printed at the top of the report. Never stored by netwatch; this browser remembers the account, address, and
+            contact.
+          </p>
+          <label>Account number <input id="report-account" autocomplete="off" /></label>
+          <label>Service address <input id="report-service_address" autocomplete="street-address" /></label>
+          <label>Contact <input id="report-contact" autocomplete="email" /></label>
+          <label>ISP ticket <input id="report-ticket" autocomplete="off" /></label>
+          <label>What you noticed <textarea id="report-description" rows="3"></textarea></label>
+        </details>
         <div class="actions">
           <button value="cancel" formnovalidate>Cancel</button>
           <button value="text" id="report-text">Plain text</button>

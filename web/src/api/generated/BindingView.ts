@@ -9,6 +9,11 @@ export type BindingView = {
  */
 identity: string, 
 /**
+ * For an address, its router name in words, once it has been looked up
+ * (ADR-0040).
+ */
+name: string | null, 
+/**
  * The epoch during which the role holds it.
  */
 epoch: number, };

@@ -35,6 +35,7 @@ function markerColor(m: Marker): string {
     case "resynchronized":
     case "radio":
     case "public-address":
+    case "trace":
       return color("--marker");
     case "kernel-log":
     case "clock-jump":

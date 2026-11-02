@@ -11,6 +11,10 @@ pub mod analysis;
 pub mod render;
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
+
+use netwatch_adapter_sqlite::StoredTrace;
+use netwatch_host_health::facts::is_public;
 
 use netwatch_history::{Histogram, Rollup};
 use netwatch_probing::incident::{Incident, Severity};
@@ -244,6 +248,24 @@ pub fn path_stats(
         .collect();
     stats.sort_by_key(|s| path_order(&s.role));
     stats
+}
+
+/// The first hop with a public address (glossary: *first public hop*), as its TTL
+/// and address: from the hops measured continuously (`hops`), or else from the
+/// first trace that reached a public router beyond them.
+pub fn first_public_hop(hops: &[(u8, IpAddr)], traces: &[StoredTrace]) -> Option<(u8, IpAddr)> {
+    let mut hops = hops.to_vec();
+    hops.sort_unstable();
+    hops.into_iter()
+        .find(|&(_, address)| is_public(address))
+        .or_else(|| {
+            traces.iter().find_map(|t| {
+                t.trace.hops.iter().find_map(|h| {
+                    let address = h.responders.iter().copied().find(|&a| is_public(a))?;
+                    Some((h.ttl.get().get(), address))
+                })
+            })
+        })
 }
 
 /// A wall time in UTC, to the second: `2026-11-01 15:03:04 UTC`. A NOC works in UTC.

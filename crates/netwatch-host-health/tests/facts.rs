@@ -43,3 +43,51 @@ fn link_facts_read_as_one_line() {
     );
     assert_eq!(LinkFacts::default().summary(), "");
 }
+
+#[test]
+fn cymru_answers_give_the_first_origin_and_the_as_name() {
+    use netwatch_host_health::facts::{RouterName, parse_as_name, parse_origin};
+    assert_eq!(
+        parse_origin("13335 | 1.1.1.0/24 | AU | apnic | 2011-08-11"),
+        Some(13335)
+    );
+    assert_eq!(
+        parse_origin("3356 1299 | 4.0.0.0/9 | US | arin | 1992-12-01"),
+        Some(3356)
+    );
+    assert_eq!(parse_origin("not an answer"), None);
+    assert_eq!(
+        parse_as_name("13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US").as_deref(),
+        Some("CLOUDFLARENET, US")
+    );
+    assert_eq!(parse_as_name("13335 | US"), None);
+    let name = RouterName {
+        ptr: Some("ae1.cr1.lon2.example.net".to_owned()),
+        asn: Some(64500),
+        as_name: Some("EXAMPLE".to_owned()),
+    };
+    assert_eq!(
+        name.text().as_deref(),
+        Some("ae1.cr1.lon2.example.net · AS64500 EXAMPLE")
+    );
+    assert_eq!(RouterName::default().text(), None);
+}
+
+#[test]
+fn only_internet_routed_addresses_are_public() {
+    use netwatch_host_health::facts::is_public;
+    let public = |a: &str| is_public(a.parse().unwrap());
+    assert!(public("81.2.69.142"));
+    assert!(public("2a00:1450::1"));
+    for private in [
+        "192.168.1.1",
+        "10.0.0.1",
+        "100.64.0.1",
+        "169.254.1.1",
+        "fe80::1",
+        "fd00::1",
+        "2001:db8::1",
+    ] {
+        assert!(!public(private), "{private}");
+    }
+}

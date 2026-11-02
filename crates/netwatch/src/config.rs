@@ -24,6 +24,8 @@ pub struct Config {
     pub listen: SocketAddr,
     pub database: PathBuf,
     pub targets: Vec<Target>,
+    /// Whether router names include Team Cymru's origin AS (ADR-0040).
+    pub asn_lookups: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,7 @@ struct RawConfig {
     database: PathBuf,
     #[serde(rename = "target", default)]
     targets: Vec<RawTarget>,
+    asn_lookups: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -143,13 +146,14 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
             .context("listen must be an address:port")?,
         database: raw.database,
         targets,
+        asn_lookups: raw.asn_lookups.unwrap_or(true),
     })
 }
 
 /// The first upstream resolver the system uses (ADR-0009). With systemd-resolved,
 /// `/etc/resolv.conf` names only its local stub, and probing that would measure
 /// loopback, so the upstream list in `/run/systemd/resolve/resolv.conf` comes first.
-fn system_resolver() -> Option<IpAddr> {
+pub fn system_resolver() -> Option<IpAddr> {
     ["/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"]
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())

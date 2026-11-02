@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ParseError, parseLive, parsePoint, parseRollups } from "./parse";
+import { ParseError, parseBindings, parseLive, parsePoint, parseRollups } from "./parse";
 
 describe("parsePoint", () => {
   it("accepts a round trip and converts µs to ms", () => {
@@ -55,5 +55,24 @@ describe("parseRollups", () => {
 
   it("rejects more losses than samples", () => {
     expect(() => parseRollups([{ start_us: 0, epoch: 1, count: 1, lost: 2, p50_us: null }])).toThrow(ParseError);
+  });
+});
+
+describe("parseBindings", () => {
+  it("carries a hop's router name, or null until the daemon has one", () => {
+    const bindings = parseBindings({
+      "hop:1:2": { identity: "81.2.69.142", name: "ae1.example.net · AS64500", epoch: 3 },
+      nic: { identity: "eth0 (ifindex 2)", name: null, epoch: 1 },
+    });
+    const names = Object.fromEntries([...bindings].map(([key, b]) => [String(key), b.name]));
+    expect(names).toEqual({ "hop:1:2": "ae1.example.net · AS64500", nic: null });
+  });
+
+  it("accepts a path trace as an event", () => {
+    const live = parseLive({
+      type: "event",
+      event: { at_us: 1, kind: "trace", role: "target:1", epoch: null, detail: "routine path trace", roles: [] },
+    });
+    expect(live.type === "event" && live.marker.kind).toBe("trace");
   });
 });

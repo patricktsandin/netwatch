@@ -74,7 +74,10 @@ fn target(spec: i64) -> TargetId {
 }
 
 fn role(t: TargetId, spec: &str) -> Role {
-    let hop = |n| Role::Hop { target: t, ttl: HopTtl::new(NonZeroU8::new(n).unwrap()) };
+    let hop = |n| Role::Hop {
+        target: t,
+        ttl: HopTtl::new(NonZeroU8::new(n).unwrap()),
+    };
     match spec {
         "near" => hop(1),
         "hop" => hop(2),
@@ -108,11 +111,17 @@ fn generate(dir: &Path) -> Vec<PathBuf> {
         .args(["run", SPEC, "--mbt", "--max-steps=40", "--seed=0x74726163"])
         .arg(format!("--n-traces={TRACES}"))
         .arg(format!("--max-samples={TRACES}"))
-        .arg(format!("--out-itf={}/trace_{{seq}}.itf.json", dir.display()))
+        .arg(format!(
+            "--out-itf={}/trace_{{seq}}.itf.json",
+            dir.display()
+        ))
         .status()
         .unwrap_or_else(|e| panic!("could not run `{quint}` (install Quint or set QUINT): {e}"));
     assert!(status.success());
-    let mut traces: Vec<PathBuf> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    let mut traces: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
     traces.sort();
     traces
 }
@@ -144,7 +153,10 @@ fn replay(path: &Path) -> usize {
                 schedule.incident(&update, now).into_iter().collect()
             }
             "tick" => schedule.tick(now),
-            "finish" => schedule.finished(target(state.picks.t.get()), now).into_iter().collect(),
+            "finish" => schedule
+                .finished(target(state.picks.t.get()), now)
+                .into_iter()
+                .collect(),
             other => panic!("unknown action {other}"),
         };
         let expected: Vec<TraceRequest> = state.started.iter().map(request).collect();
@@ -158,8 +170,16 @@ fn replay(path: &Path) -> usize {
 fn trace_schedule_conforms_to_the_quint_spec() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("trace-schedule-traces");
     let traces = generate(&dir);
-    assert!(traces.len() >= TRACES / 2, "quint produced {} traces", traces.len());
+    assert!(
+        traces.len() >= TRACES / 2,
+        "quint produced {} traces",
+        traces.len()
+    );
     let started: usize = traces.iter().map(|t| replay(t)).sum();
     // The traces must actually exercise the schedule.
-    assert!(started > TRACES, "only {started} traces started in {} traces", traces.len());
+    assert!(
+        started > TRACES,
+        "only {started} traces started in {} traces",
+        traces.len()
+    );
 }

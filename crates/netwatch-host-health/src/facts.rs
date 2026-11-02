@@ -1,5 +1,6 @@
 //! Facts about the host's connection that a NOC asks for first (ADR-0039): its public
-//! identity, and the NIC's link facts.
+//! identity, and the NIC's link facts; and the names of the routers on its paths
+//! (ADR-0040).
 
 use std::net::IpAddr;
 
@@ -107,6 +108,108 @@ impl LinkFacts {
     }
 }
 
+/// What a router's address is called (glossary: *router name*): its PTR name and
+/// its *origin AS*. Any part may be missing: many routers have no PTR record, and
+/// private addresses have no origin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RouterName {
+    /// The PTR name, without the trailing dot.
+    pub ptr: Option<String>,
+    /// The origin AS's number.
+    pub asn: Option<u32>,
+    /// The origin AS's name, as its registry has it: `CLOUDFLARENET, US`.
+    pub as_name: Option<String>,
+}
+
+impl RouterName {
+    /// One line for people: `one.one.one.one · AS13335 CLOUDFLARENET, US`. `None` if
+    /// nothing is known.
+    pub fn text(&self) -> Option<String> {
+        let origin = self.asn.map(|asn| match &self.as_name {
+            Some(name) => format!("AS{asn} {name}"),
+            None => format!("AS{asn}"),
+        });
+        let parts: Vec<String> = self.ptr.iter().cloned().chain(origin).collect();
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+/// Parses a Team Cymru origin answer, `13335 | 1.1.1.0/24 | AU | apnic | 2011-08-11`,
+/// into the origin AS's number. An address announced by several ASes lists them
+/// all in the first field; the first is taken.
+pub fn parse_origin(text: &str) -> Option<u32> {
+    let (start, end) = pipe_field(text.as_bytes(), 0)?;
+    text.get(start..end)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Parses a Team Cymru AS answer, `13335 | US | arin | 2010-07-14 | CLOUDFLARENET, US`,
+/// into the AS's name.
+pub fn parse_as_name(text: &str) -> Option<String> {
+    let (start, end) = pipe_field(text.as_bytes(), 4)?;
+    let name = text.get(start..end)?.trim();
+    (!name.is_empty() && name.len() <= 128).then(|| name.to_owned())
+}
+
+/// Where the `index`th `|`-separated field is, as a byte range. Plain index loops,
+/// so that Kani can prove it never panics.
+fn pipe_field(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
+    let mut start = 0;
+    let mut field = 0;
+    loop {
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'|' {
+            end += 1;
+        }
+        if field == index {
+            return Some((start, end));
+        }
+        if end >= bytes.len() {
+            return None;
+        }
+        field += 1;
+        start = end + 1;
+    }
+}
+
+/// Whether `address` is in the shared address space of RFC 6598 (100.64.0.0/10),
+/// which ISPs use inside carrier-grade NAT.
+pub fn is_shared(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..128).contains(&b)
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
+/// Whether `address` is routed on the internet: not private, shared (CGNAT),
+/// loopback, link-local, or documentation space. The first hop with such an
+/// address is the *first public hop*.
+pub fn is_public(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => {
+            let shared = is_shared(address);
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_documentation()
+                || v4.is_broadcast()
+                || shared)
+        }
+        IpAddr::V6(v6) => {
+            let [first, second, ..] = v6.segments();
+            // Global unicast is 2000::/3, less documentation space (2001:db8::/32).
+            (0x2000..0x4000).contains(&first) && !(first == 0x2001 && second == 0x0db8)
+        }
+    }
+}
+
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -120,5 +223,18 @@ mod proofs {
         let bytes: [u8; 6] = kani::any();
         let length: usize = kani::any_where(|&l| l <= 6);
         let _ = field_range(&bytes[..length], b"ip");
+    }
+
+    /// Finding a field in a Team Cymru answer never panics, and the range it finds
+    /// is within the bytes.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn finding_a_cymru_field_never_panics() {
+        let bytes: [u8; 6] = kani::any();
+        let length: usize = kani::any_where(|&l| l <= 6);
+        let index: usize = kani::any_where(|&i| i <= 2);
+        if let Some((start, end)) = pipe_field(&bytes[..length], index) {
+            assert!(start <= end && end <= length);
+        }
     }
 }

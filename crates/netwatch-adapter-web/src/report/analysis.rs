@@ -1,13 +1,14 @@
-//! The report's analyses (ADR-0039): totals over episodes, statistics by period,
-//! why probes failed, an episode's timeline, and the raw samples as CSV. All pure.
+//! The report's analyses (ADR-0039, ADR-0040): totals over episodes, statistics by
+//! period, why probes failed, loss bursts and jitter, link load, an episode's
+//! timeline, and the raw samples as CSV. All pure.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use netwatch_history::{Histogram, Loss, Measurement, Rollup, Sample};
+use netwatch_history::{Histogram, Loss, Measurement, Reading, Rollup, Sample};
 use netwatch_probing::incident::Severity;
 use netwatch_shared::uom::si::time::millisecond;
-use netwatch_shared::{IdentityEpoch, Role, WallTime};
+use netwatch_shared::{Gauge, IdentityEpoch, Role, WallTime};
 use netwatch_verified::Summary;
 
 use super::{Episode, Place, utc};
@@ -120,6 +121,105 @@ pub fn loss_reasons(samples: &[Sample]) -> BTreeMap<Role, BTreeMap<String, u64>>
         }
     }
     reasons
+}
+
+/// How one role's probes were lost, and how steady its answers were.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LossPattern {
+    /// Runs of consecutive lost probes (glossary: *loss burst*).
+    pub bursts: u64,
+    /// The longest run, in probes.
+    pub longest: u64,
+    /// Runs of 1, 2–4, 5–29, and 30 or more probes.
+    pub by_length: [u64; 4],
+    /// The mean absolute difference between consecutive answered RTTs (glossary:
+    /// *jitter*), if at least two were answered.
+    pub jitter_ms: Option<f64>,
+}
+
+/// The bucket of [`LossPattern::by_length`] a run of `length` probes falls in.
+fn length_bucket(length: u64) -> usize {
+    match length {
+        0..=1 => 0,
+        2..=4 => 1,
+        5..=29 => 2,
+        _ => 3,
+    }
+}
+
+/// Every role's loss pattern, from its samples in time order.
+pub fn loss_patterns(samples: &[Sample]) -> BTreeMap<Role, LossPattern> {
+    let mut by_role: BTreeMap<Role, Vec<&Sample>> = BTreeMap::new();
+    for s in samples {
+        by_role.entry(s.role.clone()).or_default().push(s);
+    }
+    by_role
+        .into_iter()
+        .map(|(role, mut samples)| {
+            samples.sort_by_key(|s| s.at);
+            let mut pattern = LossPattern {
+                bursts: 0,
+                longest: 0,
+                by_length: [0; 4],
+                jitter_ms: None,
+            };
+            let mut run = 0;
+            let end_run = |run: &mut u64, pattern: &mut LossPattern| {
+                if *run > 0 {
+                    pattern.bursts += 1;
+                    pattern.longest = pattern.longest.max(*run);
+                    pattern.by_length[length_bucket(*run)] += 1;
+                    *run = 0;
+                }
+            };
+            let (mut previous, mut sum, mut steps) = (None::<f64>, 0.0, 0u64);
+            for s in samples {
+                match s.measurement {
+                    Measurement::Lost(_) => run += 1,
+                    Measurement::RoundTrip(rtt) => {
+                        end_run(&mut run, &mut pattern);
+                        let ms = rtt.get::<millisecond>();
+                        if let Some(before) = previous {
+                            sum += (ms - before).abs();
+                            steps += 1;
+                        }
+                        previous = Some(ms);
+                    }
+                }
+            }
+            end_run(&mut run, &mut pattern);
+            pattern.jitter_ms = (steps > 0).then(|| sum / steps as f64);
+            (role, pattern)
+        })
+        .collect()
+}
+
+/// The NIC's traffic over a stretch of time, against its link speed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkLoad {
+    /// Mean and peak receive throughput, in bit/s.
+    pub rx: (f64, f64),
+    /// Mean and peak transmit throughput, in bit/s.
+    pub tx: (f64, f64),
+}
+
+/// The NIC's mean and peak throughput from its readings. `None` without any.
+pub fn link_load(readings: &[Reading]) -> Option<LinkLoad> {
+    let stats = |gauge: Gauge| {
+        let values: Vec<f64> = readings
+            .iter()
+            .filter(|r| r.role == Role::Nic && r.gauge == gauge)
+            .map(|r| r.value)
+            .collect();
+        (!values.is_empty()).then(|| {
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            (mean, values.iter().copied().fold(0.0, f64::max))
+        })
+    };
+    Some(LinkLoad {
+        rx: stats(Gauge::RxThroughput)?,
+        tx: stats(Gauge::TxThroughput)?,
+    })
 }
 
 /// One step of an episode's timeline.
@@ -293,6 +393,45 @@ mod tests {
         let of_target = &reasons[&role("target:1")];
         assert_eq!(of_target["timed out"], 2);
         assert_eq!(of_target["ICMP destination unreachable, code 1"], 1);
+    }
+
+    #[test]
+    fn loss_patterns_count_bursts_by_length_and_jitter_between_answers() {
+        let lost = || Measurement::Lost(Loss::TimedOut);
+        let patterns = loss_patterns(&[
+            sample("target:1", 1, rtt(10.0)),
+            sample("target:1", 2, lost()),
+            sample("target:1", 3, rtt(14.0)),
+            sample("target:1", 4, lost()),
+            sample("target:1", 5, lost()),
+            sample("target:1", 6, lost()),
+            sample("target:1", 7, rtt(12.0)),
+            // Out of order, and still the end of a run of one.
+            sample("target:1", 9, lost()),
+        ]);
+        let p = &patterns[&role("target:1")];
+        assert_eq!((p.bursts, p.longest, p.by_length), (3, 3, [2, 1, 0, 0]));
+        // |14 − 10| and |12 − 14|.
+        assert_eq!(p.jitter_ms, Some(3.0));
+    }
+
+    #[test]
+    fn link_load_is_mean_and_peak_of_each_direction() {
+        let reading = |gauge, value| Reading {
+            role: Role::Nic,
+            epoch: IdentityEpoch::new(NonZeroU64::MIN),
+            at: s(0),
+            gauge,
+            value,
+        };
+        let load = link_load(&[
+            reading(Gauge::RxThroughput, 2e6),
+            reading(Gauge::RxThroughput, 4e6),
+            reading(Gauge::TxThroughput, 1e6),
+        ])
+        .unwrap();
+        assert_eq!((load.rx, load.tx), ((3e6, 4e6), (1e6, 1e6)));
+        assert_eq!(link_load(&[]), None);
     }
 
     #[test]

@@ -410,3 +410,62 @@ mod flush {
         );
     }
 }
+
+#[test]
+fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
+    use netwatch_adapter_sqlite::StoredTrace;
+    use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind};
+    use netwatch_shared::{HopTtl, Role, TargetId, WallTime};
+    use std::num::NonZeroU8;
+    let mut store = Store::open(&fresh("traces.db")).unwrap();
+    let router: std::net::IpAddr = "81.2.69.142".parse().unwrap();
+    let hop = |n: u8, responders: Vec<std::net::IpAddr>| TraceHop {
+        ttl: HopTtl::new(NonZeroU8::new(n).unwrap()),
+        responders,
+        sent: 3,
+        answered: 2,
+        best: Some(Time::new::<microsecond>(4100.0)),
+        median: Some(Time::new::<microsecond>(4800.0)),
+    };
+    let role = Role::Target(TargetId::new(1));
+    let trace = |at: i64, kind| StoredTrace {
+        role: role.clone(),
+        at: WallTime::from_unix_micros(at),
+        kind,
+        destination: "1.1.1.1".parse().unwrap(),
+        trace: PathTrace {
+            hops: vec![hop(4, vec![router]), hop(5, vec![])],
+            reached: false,
+            silent_from: Some(HopTtl::new(NonZeroU8::new(6).unwrap())),
+        },
+        names: [(router, "ae1.example.net · AS64500".to_owned())].into(),
+    };
+    store.write_trace(&trace(10, TraceKind::Routine)).unwrap();
+    store.write_trace(&trace(20, TraceKind::Episode)).unwrap();
+    let all = store
+        .traces(
+            WallTime::from_unix_micros(0),
+            WallTime::from_unix_micros(100),
+        )
+        .unwrap();
+    assert_eq!(
+        all,
+        vec![trace(10, TraceKind::Routine), trace(20, TraceKind::Episode)]
+    );
+    assert_eq!(
+        store
+            .latest_trace(&role, TraceKind::Routine, WallTime::from_unix_micros(30))
+            .unwrap(),
+        Some(trace(10, TraceKind::Routine))
+    );
+    store.flush_history().unwrap();
+    assert!(
+        store
+            .traces(
+                WallTime::from_unix_micros(0),
+                WallTime::from_unix_micros(100)
+            )
+            .unwrap()
+            .is_empty()
+    );
+}

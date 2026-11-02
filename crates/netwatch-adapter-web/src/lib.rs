@@ -85,6 +85,8 @@ pub struct Current {
     pub bindings: BTreeMap<String, BindingView>,
     /// Facts about the host and its connection (ADR-0039).
     pub host: HostView,
+    /// Every router name looked up so far, by address (ADR-0040).
+    pub names: BTreeMap<String, String>,
 }
 
 impl Current {
@@ -328,6 +330,18 @@ struct ReportQuery {
     until_us: i64,
     /// The viewer's offset from UTC in minutes, east positive, for local times.
     offset_min: Option<i64>,
+    /// Ticket details (ADR-0040), shown as given and never stored.
+    account: Option<String>,
+    service_address: Option<String>,
+    contact: Option<String>,
+    ticket: Option<String>,
+    description: Option<String>,
+}
+
+/// A ticket detail as typed, trimmed and cut to `limit` characters. `None` if empty.
+fn ticket_field(text: Option<&str>, limit: usize) -> Option<String> {
+    let text = text?.trim();
+    (!text.is_empty()).then(|| text.chars().take(limit).collect())
 }
 
 /// Longest stretch read from raw samples for one episode's evidence. Longer ones use
@@ -377,8 +391,14 @@ const METHOD: &[&str] = &[
      deprioritizing ICMP, not loss, and is never an incident.",
     "An incident's probable cause is the most upstream role whose own incident began first (or within 10 s). \
      An episode is incidents linked by probable cause. Beyond the gateway means it began at hop 2 or further.",
-    "Hop identities are the addresses of the routers that sent ICMP time-exceeded. Times are UTC, from this \
-     host's clock.",
+    "Hop identities are the addresses of the routers that sent ICMP time-exceeded. Router names are their \
+     PTR records and the origin AS of their prefix (from Team Cymru). Times are UTC, from this host's clock.",
+    "Path traces send 3 rounds of TTL-limited ICMP echo, 1 s apart (2 s timeout), at TTLs 4 to 30 toward each \
+     ICMP and DNS target: a routine trace every 6 hours, and an episode trace when an incident opens at hop 2 \
+     or beyond, at most once per 10 minutes per target. Hops that don't answer are routers that drop or \
+     deprioritize ICMP, which is not loss.",
+    "Jitter is the mean absolute difference between consecutive answered round trips of one role. A loss run \
+     is a sequence of consecutive lost probes. Link load is the NIC's own traffic, sampled every second.",
 ];
 
 /// The longest episode timeline, before steps grow from a minute to 10 minutes.
@@ -410,14 +430,22 @@ fn event_kind_text(kind: &str) -> &str {
         "config-drift" => "sysctl changed",
         "radio" => "radio changed",
         "public-address" => "public address",
+        "trace" => "path trace",
         other => other,
     }
 }
 
 /// Everything the report says about the connection, from current state (ADR-0039).
-fn connection(state: &AppState) -> Vec<(String, String)> {
+fn connection(
+    state: &AppState,
+    traces: &[netwatch_adapter_sqlite::StoredTrace],
+) -> Vec<(String, String)> {
     let current = state.current.borrow().clone();
     let binding = |key: &str| current.bindings.get(key).map(|b| b.identity.clone());
+    let named = |address: &String| match current.names.get(address) {
+        Some(name) => format!("{address} ({name})"),
+        None => address.clone(),
+    };
     let mut facts: Vec<(String, Option<String>)> = vec![
         ("NIC".to_owned(), binding("nic")),
         ("Link".to_owned(), current.host.link.clone()),
@@ -441,9 +469,43 @@ fn connection(state: &AppState) -> Vec<(String, String)> {
             } else {
                 format!("{family} hop {ttl}")
             };
+            let routers: Vec<String> = routers.iter().map(named).collect();
             facts.push((what, (!routers.is_empty()).then(|| routers.join(", "))));
         }
     }
+    // Where the ISP's network most likely begins, and whether it puts this host
+    // behind carrier-grade NAT (ADR-0040).
+    let hops: Vec<(u8, std::net::IpAddr)> = current
+        .bindings
+        .iter()
+        .filter_map(|(key, b)| match Role::from_key(key)? {
+            Role::Hop { ttl, .. } => Some((ttl.get().get(), b.identity.parse().ok()?)),
+            _ => None,
+        })
+        .collect();
+    let first_public = report::first_public_hop(&hops, traces)
+        .map(|(ttl, address)| format!("hop {ttl}: {}", named(&address.to_string())));
+    facts.push(("First public hop".to_owned(), first_public));
+    let mut shared: Vec<(u8, std::net::IpAddr)> = hops
+        .iter()
+        .copied()
+        .filter(|&(_, a)| netwatch_host_health::facts::is_shared(a))
+        .collect();
+    shared.sort_unstable();
+    shared.dedup();
+    facts.push((
+        "Carrier-grade NAT".to_owned(),
+        (!shared.is_empty()).then(|| {
+            let at: Vec<String> = shared
+                .iter()
+                .map(|(ttl, a)| format!("hop {ttl} ({a})"))
+                .collect();
+            format!(
+                "likely: {} in shared address space (RFC 6598)",
+                at.join(", ")
+            )
+        }),
+    ));
     facts.push(("Public address".to_owned(), current.host.public.clone()));
     let resolvers: Vec<String> = state
         .targets
@@ -513,7 +575,8 @@ async fn build_report(
     } else {
         ("Day", DAY_US)
     };
-    let (episodes, summary, periods, events) = read(state, move |store| {
+    let (episodes, summary, periods, events, normal_paths) = read(state, move |store| {
+        use netwatch_probing::trace::TraceKind;
         let known: Vec<Role> = store.roles()?.into_iter().map(|(role, _)| role).collect();
         let identities = store.epoch_identities(
             WallTime::from_unix_micros(from.as_unix_micros() - HOUR_US),
@@ -547,14 +610,13 @@ async fn build_report(
             } else {
                 600_000_000
             };
-            let (reasons, timeline) = if raw {
+            let raw_end = end.min(WallTime::from_unix_micros(
+                start.as_unix_micros() + RAW_EVIDENCE_LIMIT_US,
+            ));
+            let (reasons, timeline, patterns, load) = if raw {
+                let load = analysis::link_load(&store.readings_between(start, raw_end)?);
                 let samples: Vec<_> = store
-                    .samples_between(
-                        start,
-                        end.min(WallTime::from_unix_micros(
-                            start.as_unix_micros() + RAW_EVIDENCE_LIMIT_US,
-                        )),
-                    )?
+                    .samples_between(start, raw_end)?
                     .into_iter()
                     .filter(|s| on_path.contains(&s.role))
                     .collect();
@@ -570,10 +632,37 @@ async fn build_report(
                 (
                     analysis::loss_reasons(&samples),
                     analysis::timeline(&samples, &episode.cause, &targets, start, step_us),
+                    analysis::loss_patterns(&samples),
+                    load,
                 )
             } else {
-                (BTreeMap::new(), Vec::new())
+                (BTreeMap::new(), Vec::new(), BTreeMap::new(), None)
             };
+            // The traces of every target whose path the episode touched (ADR-0040):
+            // the episode traces that ran during it, and the routine trace before it.
+            let traced: Vec<Role> = episode
+                .affected
+                .iter()
+                .filter_map(|r| match r {
+                    Role::Target(t) | Role::Hop { target: t, .. } => Some(Role::Target(*t)),
+                    _ => None,
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let traces: Vec<_> = store
+                .traces(episode.started, end.max(episode.started))?
+                .into_iter()
+                .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
+                .collect();
+            let mut baselines = BTreeMap::new();
+            for role in &traced {
+                if let Some(trace) =
+                    store.latest_trace(role, TraceKind::Routine, episode.started)?
+                {
+                    baselines.insert(role.clone(), trace);
+                }
+            }
             episodes.push(report::render::EpisodeReport {
                 path: report::path_stats(&evidence, &identities),
                 episode,
@@ -582,7 +671,15 @@ async fn build_report(
                 timeline,
                 step_us,
                 raw,
+                patterns,
+                load,
+                traces,
+                baselines,
             });
+        }
+        let mut normal_paths = Vec::new();
+        for role in known.iter().filter(|r| matches!(r, Role::Target(_))) {
+            normal_paths.extend(store.latest_trace(role, TraceKind::Routine, until)?);
         }
         let history = history_between(store, from, until, now)?;
         let summary = report::path_stats(&history, &identities);
@@ -602,9 +699,20 @@ async fn build_report(
                 detail: e.detail.unwrap_or_default(),
             })
             .collect();
-        Ok((episodes, summary, periods, events))
+        Ok((episodes, summary, periods, events, normal_paths))
     })
     .await?;
+    let connection = connection(state, &normal_paths);
+    let current = state.current.borrow().clone();
+    let ticket = [
+        ("Account number", query.account.as_deref(), 200),
+        ("Service address", query.service_address.as_deref(), 400),
+        ("Contact", query.contact.as_deref(), 400),
+        ("ISP ticket", query.ticket.as_deref(), 200),
+    ]
+    .into_iter()
+    .filter_map(|(k, v, limit)| Some((k.to_owned(), ticket_field(v, limit)?)))
+    .collect();
     let names = state
         .targets
         .iter()
@@ -617,7 +725,12 @@ async fn build_report(
             generated: now,
             utc_offset_s: query.offset_min.unwrap_or(0).clamp(-24 * 60, 24 * 60) * 60,
             about: about(state),
-            connection: connection(state),
+            ticket,
+            description: ticket_field(query.description.as_deref(), 4000),
+            names: current.names.clone(),
+            link_speed_mbps: current.host.link_speed_mbps,
+            normal_paths,
+            connection,
             method: METHOD.iter().map(|m| (*m).to_owned()).collect(),
             episodes,
             summary,
