@@ -116,6 +116,9 @@ words are defined elsewhere in this file.
   - `Answered`, with a round-trip time
   - `TimedOut`
   - `Unreachable { code }`
+  - `TimeExceeded`: the probe expired in transit. Only on a stream that doesn't limit
+    its TTL; on a *hop probe*'s stream, time exceeded is the hop's answer (ADR-0049).
+  - `Refused { code }`
   - `SendFailed { cause }`
   - `UnexpectedResponse`
 

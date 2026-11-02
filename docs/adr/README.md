@@ -54,3 +54,4 @@ to "Superseded".
 | [0046](0046-refinements-to-hops-the-map-and-resumption.md) | Refinements to hop sharing, the map, and resumed epochs | Accepted |
 | [0047](0047-a-nearby-target-follows-its-router.md) | A nearby target follows its router; what a stop left open | Accepted |
 | [0048](0048-a-shared-hop-is-one-thing.md) | A shared hop is one thing, for traces and the map too | Accepted |
+| [0049](0049-icmp-errors-answer-only-what-they-say.md) | ICMP errors answer only what they say | Accepted |
