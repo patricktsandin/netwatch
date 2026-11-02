@@ -78,14 +78,9 @@ async fn main() -> anyhow::Result<()> {
     let resume_after = persist::last_epoch(&database)
         .with_context(|| format!("opening {}", database.display()))?;
     // What each role was, and the public address, before this start: a role that
-    // comes back the same has resumed, not changed (ADR-0044). Read before the writer
-    // starts, which closes the epochs the last run left open.
-    let (identities_before, mut public_before) =
-        persist::before_start(&database).unwrap_or_else(|error| {
-            tracing::warn!(%error, "cannot read the identities before this start");
-            Default::default()
-        });
-    let writes = persist::spawn(database.clone(), clock)?;
+    // comes back the same has resumed, not changed (ADR-0044).
+    let (writes, before) = persist::spawn(database.clone(), clock)?;
+    let (identities_before, mut public_before) = (before.identities, before.public);
 
     // The UI listens on localhost only, unless configured otherwise (ADR-0007).
     let listen = config.listen;

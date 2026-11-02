@@ -80,8 +80,9 @@ export function visibleMarkers(markers: readonly Marker[], roles: readonly RoleK
   });
 }
 
-/** The same band: members of a shared row often have identical incidents. */
-const band = (i: Incident): string => `${String(i.started)} ${String(i.ended)} ${i.severity}`;
+/** The same band: members of a shared row often have identical incidents. A
+ *  different probable cause is a different incident, so the tooltip names each. */
+const band = (i: Incident): string => `${String(i.started)} ${String(i.ended)} ${i.severity} ${i.cause ?? ""}`;
 
 /** A row's incidents that overlap `from..until`, open ones included. Identical
  *  bands of a shared row's members are drawn once. */

@@ -345,8 +345,13 @@ async function backfill(from: Micros): Promise<void> {
   statuses = parseStatuses(await fetchJson("/api/status"));
   bindings = parseBindings(await fetchJson("/api/bindings"));
   publicIdentity = parsePublic(await fetchJson("/api/host"));
-  networkMap = parseMap(await fetchJson("/api/map"));
-  drawMap();
+  // The map is a view of its own: a payload it can't parse mustn't stop the graphs.
+  try {
+    networkMap = parseMap(await fetchJson("/api/map"));
+    drawMap();
+  } catch (error) {
+    report(error);
+  }
   await Promise.all(
     // A shared row draws its owner's samples; its other members' are copies.
     roles
@@ -440,7 +445,8 @@ function connect(): void {
               .catch(report);
           }
           renderIdentities();
-          for (const key of live.marker.concerns) redraw(rowOf(shared, key));
+          // Members of a shared row are each concerned, but their row is drawn once.
+          for (const key of new Set(live.marker.concerns.map((c) => rowOf(shared, c)))) redraw(key);
           break;
         case "incident":
           incidents = upsertIncident(incidents, live.incident);

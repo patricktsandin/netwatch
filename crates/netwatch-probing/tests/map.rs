@@ -594,42 +594,51 @@ proptest! {
 }
 
 #[test]
-fn a_target_that_answers_its_own_hop_probes_is_reached_there_with_its_hops_merged_in() {
-    // The system resolver is the gateway: hop 1 is the target itself, and so are the
-    // answers at TTL 2 and 3.
+fn a_target_that_answers_its_own_hop_probes_follows_that_router_with_its_later_hops_merged_in() {
+    // The system resolver is the gateway: hop 1 is the target's own address, and so
+    // are the answers at TTL 2 and 3. Another target's path shares the gateway.
     let all = statuses(&[
         (hop(14, 1), Health::Healthy),
         (hop(14, 2), Health::Healthy),
         (hop(14, 3), Health::Degraded),
         (target(14), Health::Healthy),
+        (hop(1, 1), Health::Healthy),
+        (target(1), Health::Healthy),
     ]);
     let gateway = ip("192.168.1.1");
     let hops = BTreeMap::from([
         (hop(14, 1), gateway),
         (hop(14, 2), gateway),
         (hop(14, 3), gateway),
+        (hop(1, 1), gateway),
     ]);
-    let destinations = BTreeMap::from([(TargetId::new(14), gateway)]);
+    let destinations = BTreeMap::from([
+        (TargetId::new(14), gateway),
+        (TargetId::new(1), ip("1.1.1.1")),
+    ]);
     let map = map::build(&all, &hops, &destinations, &BTreeMap::new());
+    let router_node = node(&map, &router("192.168.1.1", 1));
+    assert_eq!(
+        router_node.roles.keys().cloned().collect::<Vec<_>>(),
+        vec![hop(1, 1), hop(14, 1)],
+        "one gateway node, shared"
+    );
+    assert_eq!(
+        map.nodes
+            .iter()
+            .filter(|n| matches!(n.place, Place::Router { .. }))
+            .count(),
+        1
+    );
     let t = node(&map, &Place::Role(target(14)));
-    assert_eq!(t.depth.get(), 4);
+    assert_eq!(t.depth.get(), 5);
     assert_eq!(
         t.roles.keys().cloned().collect::<Vec<_>>(),
-        vec![hop(14, 1), hop(14, 2), hop(14, 3), target(14)]
+        vec![hop(14, 2), hop(14, 3), target(14)]
     );
     assert_eq!(t.health, Some(Health::Degraded));
-    assert!(
-        !map.nodes
-            .iter()
-            .any(|n| matches!(n.place, Place::Router { .. }))
-    );
     assert_eq!(
-        edge(
-            &map,
-            &Place::Role(Role::LocalInterface),
-            &Place::Role(target(14))
-        )
-        .kind,
+        edge(&map, &router("192.168.1.1", 1), &Place::Role(target(14))).kind,
         EdgeKind::Probed
     );
 }

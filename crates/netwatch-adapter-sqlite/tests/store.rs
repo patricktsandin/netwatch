@@ -577,20 +577,13 @@ fn a_role_whose_latest_epoch_ended_had_no_identity_before_a_start() {
 }
 
 #[test]
-fn closing_the_epochs_a_stop_left_open_keeps_their_identities() {
-    let mut store = Store::open(&fresh("last-identities-closed")).unwrap();
+fn an_epoch_the_run_ended_is_not_resumed_after_a_flush_either() {
+    // The flush keeps the highest epoch but deletes its epoch-ended event.
+    let mut store = Store::open(&fresh("last-identities-flushed")).unwrap();
     started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
-    store
-        .close_epochs_left_open(WallTime::from_unix_micros(30))
-        .unwrap();
-    assert_eq!(
-        store
-            .last_identities()
-            .unwrap()
-            .get("nic")
-            .map(String::as_str),
-        Some("eth0 (ifindex 5)")
-    );
+    ended(&mut store, 1, Role::Nic, 20);
+    store.flush_history().unwrap();
+    assert_eq!(store.last_identities().unwrap().get("nic"), None);
 }
 
 #[test]

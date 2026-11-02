@@ -52,3 +52,4 @@ to "Superseded".
 | [0044](0044-a-restart-is-not-a-change.md) | A restart is not a change | Accepted |
 | [0045](0045-one-row-per-shared-hop-stream.md) | One row per shared hop stream | Accepted |
 | [0046](0046-refinements-to-hops-the-map-and-resumption.md) | Refinements to hop sharing, the map, and resumed epochs | Accepted |
+| [0047](0047-a-nearby-target-follows-its-router.md) | A nearby target follows its router; what a stop left open | Accepted |

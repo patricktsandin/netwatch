@@ -430,7 +430,6 @@ fn wall_now() -> WallTime {
 fn event_kind_text(kind: &str) -> &str {
     match kind {
         "epoch-started" => "identity changed",
-        "epoch-resumed" => "identity resumed",
         "started" => "netwatch started",
         "epoch-ended" => "identity lost",
         "desynchronized" => "topology resync started",

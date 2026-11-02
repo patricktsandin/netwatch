@@ -81,10 +81,27 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     Ok(())
 }
 
-/// Starts the writer. Writes are lost only if the database itself fails, and that is
-/// logged.
-pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::Sender<Write>> {
+/// What the store says each role was, by role key, and the public address, before
+/// this start (ADR-0044).
+#[derive(Debug, Default)]
+pub struct BeforeStart {
+    pub identities: std::collections::BTreeMap<String, String>,
+    pub public: Option<String>,
+}
+
+/// Starts the writer, and returns what was there before this start. Writes are lost
+/// only if the database itself fails, and that is logged.
+pub fn spawn(
+    path: PathBuf,
+    clock: crate::clock::Clock,
+) -> anyhow::Result<(mpsc::Sender<Write>, BeforeStart)> {
     let mut store = Store::open(&path)?;
+    // Read before the epochs the last run left open are closed: those are the ones
+    // that can resume.
+    let before = BeforeStart {
+        identities: store.last_identities()?,
+        public: store.last_public_address()?,
+    };
     let closed = store.close_epochs_left_open(clock.wall_now())?;
     if closed > 0 {
         tracing::info!(closed, "closed epochs left open by the previous run");
@@ -181,7 +198,7 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
             }
             write_readings(&mut store, &mut readings);
         })?;
-    Ok(tx)
+    Ok((tx, before))
 }
 
 fn write_readings(store: &mut Store, readings: &mut Vec<Reading>) {
@@ -225,13 +242,4 @@ pub fn latest_traces(
         }
     }
     Ok(latest)
-}
-
-/// What the store at `path` says each role was, by role key, and the public address,
-/// before this start (ADR-0044).
-pub fn before_start(
-    path: &std::path::Path,
-) -> anyhow::Result<(std::collections::BTreeMap<String, String>, Option<String>)> {
-    let store = Store::open(path)?;
-    Ok((store.last_identities()?, store.last_public_address()?))
 }

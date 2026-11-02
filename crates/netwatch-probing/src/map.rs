@@ -150,9 +150,10 @@ pub struct NetworkMap {
 /// Each graded target's path runs from the host's layers through its hops in TTL
 /// order, then through its trace beyond the last of them, and ends at the target.
 /// Consecutive positions on a path are joined by an edge from every node at one to
-/// every node at the next. Where a hop or a trace hop is answered by the target's
-/// own address, the path has reached the target there: a nearby target, such as a
-/// resolver on the LAN, is that close, and its hop roles beyond merge into it.
+/// every node at the next. Where a trace hop is answered by the target's own address,
+/// the target is at that TTL. Where a hop is, the target follows that hop's router,
+/// which other paths may pass through too, and its hop roles beyond merge into the
+/// target: a nearby target, such as a resolver on the LAN, is that close.
 pub fn build(
     statuses: &BTreeMap<Role, Health>,
     hops: &BTreeMap<Role, IpAddr>,
@@ -225,20 +226,26 @@ pub fn build(
         own_hops.sort();
         let destination = destinations.get(&target).copied();
         // Where the path reached the target, and what a trace saw there.
-        let mut reached: Option<(HopTtl, Option<Sighting>)> = None;
+        let mut reached: Option<Reached> = None;
+        // The hops past the one where the target's own address answered: they
+        // measure the target itself.
         let mut at_target: Vec<&Role> = Vec::new();
         for (ttl, role) in own_hops {
-            let answered = hops.get(role).copied();
-            if reached.is_some() || (answered.is_some() && answered == destination) {
-                reached = reached.or(Some((ttl, None)));
+            if reached.is_some() {
                 at_target.push(role);
                 continue;
             }
+            let answered = hops.get(role).copied();
             let place = match answered {
                 Some(address) => Place::Router { address, ttl },
                 None => Place::Role(role.clone()),
             };
+            // The router there is the target's address, and other paths may share it,
+            // so it stays one router node, and the target follows it.
             map.advance(&mut path, vec![place], ttl, &only, Some(role));
+            if answered.is_some() && answered == destination {
+                reached = Some(Reached::AtHop);
+            }
         }
 
         if let (None, Some(trace)) = (&reached, traces.get(&target)) {
@@ -253,7 +260,7 @@ pub fn build(
                     median: hop.median,
                 };
                 if destination.is_some_and(|d| hop.responders.contains(&d)) {
-                    reached = Some((hop.ttl, Some(sighting)));
+                    reached = Some(Reached::InTrace(hop.ttl, sighting));
                     break;
                 }
                 let places: Vec<Place> = if hop.responders.is_empty() {
@@ -282,12 +289,19 @@ pub fn build(
         }
 
         // The target sits where its path reached it.
-        let Some((ttl, sighting)) = reached else {
-            unplaced.push((target, path));
-            continue;
+        let (depth, gap, sighting) = match reached {
+            None => {
+                unplaced.push((target, path));
+                continue;
+            }
+            Some(Reached::AtHop) => (path.depth.next(), false, None),
+            Some(Reached::InTrace(ttl, sighting)) => (
+                Depth::of(ttl),
+                ttl.get().get() != path.ttl + 1,
+                Some(sighting),
+            ),
         };
-        let place = map.node(Place::Role(Role::Target(target)), Depth::of(ttl));
-        let gap = ttl.get().get() != path.ttl + 1;
+        let place = map.node(Place::Role(Role::Target(target)), depth);
         map.step(
             &path.at,
             std::slice::from_ref(&place),
@@ -325,6 +339,14 @@ pub fn build(
         );
     }
     map.finish()
+}
+
+/// How a path reached its target.
+enum Reached {
+    /// The target's own address answered a hop probe: the router there is the target.
+    AtHop,
+    /// The target's address answered the trace at this TTL.
+    InTrace(HopTtl, Sighting),
 }
 
 /// How an edge was found, before its kind can be told: whether a path edge's ends

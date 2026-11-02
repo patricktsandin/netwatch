@@ -654,19 +654,20 @@ impl Store {
     }
 
     /// Each role's identity in its latest epoch, by role key, as events describe it:
-    /// what the role was before the daemon started (ADR-0044). A role whose latest
-    /// epoch ended before the stop, with an `epoch-ended` event, had no identity then,
-    /// so it is left out: the same identity coming back after the start is a change.
-    /// An epoch that the stop itself ended has no such event, whether or not the next
-    /// start has closed it yet.
+    /// what the role was before the daemon started (ADR-0044). Only an epoch the stop
+    /// left open counts: a role whose latest epoch had ended had no identity then, and
+    /// the same identity coming back is a change. So this must be read before
+    /// [`close_epochs_left_open`](Self::close_epochs_left_open) closes them.
     pub fn last_identities(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let mut query = self.connection.prepare_cached(
-            "SELECT role, identity FROM epochs e
-             WHERE epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)
-               AND NOT EXISTS (SELECT 1 FROM events
-                               WHERE kind = 'epoch-ended' AND events.epoch = e.epoch)",
+            // `epochs.role` isn't indexed and the table is kept forever: the
+            // uncorrelated subquery is evaluated once.
+            "SELECT e.role, e.identity FROM epochs e
+             JOIN (SELECT role, MAX(epoch) AS epoch FROM epochs GROUP BY role) latest
+               ON latest.epoch = e.epoch
+             WHERE e.ended_us IS NULL",
         )?;
         let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
