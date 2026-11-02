@@ -20,7 +20,8 @@ cargo run -p netwatch            # then open http://127.0.0.1:8732
 ```
 
 Targets live in `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`, or
-the file named by `NETWATCH_CONFIG`. To run it as a service, see
+the file named by `NETWATCH_CONFIG`. To install it as a service, from
+an RPM, with the install script on other distros, or as a container, see
 [deploy/README.md](deploy/README.md).
 
 ## How it is built

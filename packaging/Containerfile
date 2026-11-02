@@ -1,0 +1,56 @@
+# netwatch as an OCI image (ADR-0041). Build it with packaging/build-container.sh,
+# which builds from the committed tree. Run it in the host's network namespace, or it
+# measures the container's network instead of the host's:
+#
+#   podman run -d --name netwatch --network host --uts host \
+#     --cap-drop all --cap-add NET_RAW,SYSLOG,BPF,PERFMON --device /dev/kmsg \
+#     -v /run/systemd/resolve:/run/systemd/resolve:ro \
+#     -v netwatch-config:/etc/netwatch -v netwatch-data:/var/lib/netwatch netwatch
+#
+# deploy/README.md covers rootless use and what each option enables.
+
+ARG FEDORA=43
+
+# The same toolchains as the dev host (CLAUDE.md): rustup's pinned stable, nightly
+# with rust-src and bpf-linker for the eBPF program (ADR-0008), and Node 22.
+FROM registry.fedoraproject.org/fedora:${FEDORA} AS build
+ARG EBPF=1
+ARG BPF_LINKER=0.12.0
+RUN dnf install -y --setopt=install_weak_deps=False gcc nodejs npm curl tar zstd \
+    && dnf clean all
+ENV PATH=/root/.cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+RUN if [ "$EBPF" = 1 ]; then \
+        rustup toolchain install nightly --profile minimal --component rust-src \
+        && curl -fsSL "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER}/bpf-linker-$(uname -m)-unknown-linux-musl.tar.zst" \
+            | tar --zstd -x -C /usr/local/bin bpf-linker; \
+    fi
+WORKDIR /src
+# The pinned toolchain, then the web app's dependencies, each a layer of its own so
+# that a source change doesn't fetch them again.
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
+COPY web/package.json web/package-lock.json web/
+RUN cd web && npm ci --no-audit --no-fund
+COPY . .
+RUN cd web && npm run build
+# Without eBPF, the daemon reports drop reasons as disabled (ADR-0037).
+RUN if [ "$EBPF" != 1 ]; then export AYA_BUILD_SKIP=1; fi \
+    && cargo build --release --locked -p netwatch \
+    && install -D -s -m 0755 target/release/netwatch /out/usr/bin/netwatch \
+    && install -D -m 0755 packaging/container-entrypoint.sh /out/usr/bin/netwatch-entrypoint \
+    && install -d /out/usr/share/netwatch /out/etc/netwatch /out/var/lib/netwatch \
+    && sed 's|^database = .*|database = "/var/lib/netwatch/netwatch.db"|' deploy/netwatch.toml \
+        > /out/usr/share/netwatch/netwatch.toml
+
+# The same distribution as the build stage, so the binary's glibc matches.
+FROM registry.fedoraproject.org/fedora-minimal:${FEDORA}
+COPY --from=build /out/ /
+ENV NETWATCH_CONFIG=/etc/netwatch/netwatch.toml
+VOLUME ["/etc/netwatch", "/var/lib/netwatch"]
+EXPOSE 8732
+# netwatch shuts down cleanly on SIGINT. As PID 1 it would ignore SIGTERM.
+STOPSIGNAL SIGINT
+ENTRYPOINT ["/usr/bin/netwatch-entrypoint"]
+LABEL org.opencontainers.image.title="netwatch" \
+      org.opencontainers.image.description="Continuous network path monitor with a web UI"

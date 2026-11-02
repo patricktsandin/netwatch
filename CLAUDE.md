@@ -64,6 +64,11 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
 - **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, `incidents.qnt`,
   and `traces.qnt`, all TLC-exhaustive and conformance-tested.
 
+- **Packaging** (ADR-0041): the RPM (`packaging/build-rpm.sh`), an install script
+  for other systemd distros (`packaging/install.sh`), and a container image
+  (`packaging/build-container.sh`, run with `--network host`). The RPM and image
+  build from HEAD.
+
 - **Radios** (ADR-0036): `wifi` and `cellular` roles, off the path, graded every 5 s
   from nl80211 and ModemManager, with gauges and attachment-change events.
 - **Drop reasons** (ADR-0037): an eBPF program on `tp_btf/kfree_skb`, counted by
