@@ -27,7 +27,8 @@ export interface Hover {
 }
 
 export interface RowContent {
-  readonly role: RoleKey;
+  /** The roles the row shows: one, or a shared row's members (ADR-0045). */
+  readonly roles: readonly RoleKey[];
   readonly points: readonly Point[];
   readonly readings: readonly Reading[];
   readonly incidents: readonly Incident[];
@@ -66,14 +67,24 @@ export function upsertIncident(incidents: readonly Incident[], incident: Inciden
   return at === -1 ? [...others, incident] : [...others.slice(0, at), incident, ...others.slice(at)];
 }
 
-/** A row's own incidents that overlap `from..until`, open ones included. */
+/** The same band: members of a shared row often have identical incidents. */
+const band = (i: Incident): string => `${String(i.started)} ${String(i.ended)} ${i.severity}`;
+
+/** A row's incidents that overlap `from..until`, open ones included. Identical
+ *  bands of a shared row's members are drawn once. */
 export function visibleIncidents(
   incidents: readonly Incident[],
-  role: RoleKey,
+  roles: readonly RoleKey[],
   from: Micros,
   until: Micros,
 ): Incident[] {
-  return incidents.filter((i) => i.role === role && i.started <= until && (i.ended === null || i.ended >= from));
+  const seen = new Set<string>();
+  return incidents.filter((i) => {
+    const shown =
+      roles.includes(i.role) && i.started <= until && (i.ended === null || i.ended >= from) && !seen.has(band(i));
+    if (shown) seen.add(band(i));
+    return shown;
+  });
 }
 
 function nearest(points: readonly Point[], at: Micros): Point | undefined {
@@ -148,14 +159,22 @@ export function tooltip(hover: Hover, row: RowContent, words: Words): TooltipLin
     const together = row.readings.filter((r) => r.at === reading.at);
     lines.push({ tone: "value", text: together.map((r) => words.reading(r)).join(" · ") });
   }
+  // On a shared row, one line per band, naming every path it is on.
+  const under = new Map<string, Incident[]>();
   for (const i of row.incidents) {
     const end = i.ended ?? hover.now;
-    if (i.role === row.role && i.started - hover.nearUs <= hover.at && hover.at <= end + hover.nearUs) {
-      lines.push({ tone: i.severity, text: incidentText(i, hover.now, words) });
+    if (row.roles.includes(i.role) && i.started - hover.nearUs <= hover.at && hover.at <= end + hover.nearUs) {
+      under.set(band(i), [...(under.get(band(i)) ?? []), i]);
     }
   }
+  for (const same of under.values()) {
+    const [first] = same;
+    if (first === undefined) continue;
+    const on = row.roles.length > 1 ? ` · on ${same.map((i) => words.role(i.role)).join(", ")}` : "";
+    lines.push({ tone: first.severity, text: `${incidentText(first, hover.now, words)}${on}` });
+  }
   for (const m of row.markers) {
-    if (m.concerns.includes(row.role) && Math.abs(m.at - hover.at) <= hover.nearUs) {
+    if (m.concerns.some((c) => row.roles.includes(c)) && Math.abs(m.at - hover.at) <= hover.nearUs) {
       lines.push({ tone: "event", text: eventText(m, words) });
     }
   }

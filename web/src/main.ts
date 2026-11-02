@@ -23,6 +23,7 @@ import {
   parseIncidents,
   parseReadingRollups,
   parseReadings,
+  parseSharedRows,
   parseTargetNames,
 } from "./api/parse";
 import { createChart, type Chart } from "./chart";
@@ -40,9 +41,11 @@ import type {
   Point,
   Reading,
   RoleKey,
+  SharedRow,
 } from "./model";
 import { renderMap } from "./mapView";
-import { compareRoles, label } from "./roles";
+import { compareRoles, label, rowLabel } from "./roles";
+import { membersOf, rowOf } from "./rows";
 import { latest, merge, plotColumns, since } from "./series";
 import { openSettings } from "./settingsDialog";
 import { tooltip, upsertIncident, visibleIncidents, type Words } from "./tooltip";
@@ -82,6 +85,9 @@ let incidents: Incident[] = [];
 const layers = new Map<RoleKey, LayerReport>();
 let names: ReadonlyMap<string, string> = new Map();
 let statuses: ReadonlyMap<RoleKey, Status> = new Map();
+/** The rows several hop roles share, and their statuses (ADR-0045). */
+let shared: readonly SharedRow[] = [];
+let rowStatuses: ReadonlyMap<RoleKey, Status> = new Map();
 let bindings: ReadonlyMap<RoleKey, Binding> = new Map();
 let zoom: { min: number; max: number } | null = null;
 /** This host's public address and where it enters Cloudflare (ADR-0039). */
@@ -130,7 +136,7 @@ function addRow(key: RoleKey): Row {
   const head = element("header", "row-head");
   const statusEl = element("span", "status unknown", "unknown");
   const valueEl = element("span", "value");
-  const titleEl = element("h2", "row-title", label(key, names));
+  const titleEl = element("h2", "row-title", rowLabel(membersOf(shared, key), names));
   head.append(titleEl, statusEl, valueEl);
   const plotEl = element("div", "plot");
   rowEl.append(head, plotEl);
@@ -185,14 +191,19 @@ function common(key: RoleKey, series: { points: Point[]; readings: Reading[] }) 
     annotations: () => {
       const window = zoom ?? sharedWindow();
       return {
-        incidents: visibleIncidents(incidents, key, parseMicros(window.min * 1e6), parseMicros(window.max * 1e6)),
-        markers: markers.filter((m) => m.concerns.includes(key)),
+        incidents: visibleIncidents(
+          incidents,
+          membersOf(shared, key),
+          parseMicros(window.min * 1e6),
+          parseMicros(window.max * 1e6),
+        ),
+        markers: markers.filter((m) => m.concerns.some((c) => membersOf(shared, key).includes(c))),
       };
     },
     tooltip: (at: Micros, nearUs: number) =>
       tooltip(
         { at, nearUs, now: nowMicros() },
-        { role: key, points: series.points, readings: series.readings, incidents, markers },
+        { roles: membersOf(shared, key), points: series.points, readings: series.readings, incidents, markers },
         words,
       ),
     onZoom: setZoom,
@@ -263,11 +274,17 @@ function render(row: Row, key: RoleKey): void {
     chart.setWindow(window.min, window.max);
   }
   row.plotEl.hidden = row.points.length === 0;
-  const s: Status = statuses.get(key) ?? "unknown";
+  const s: Status = rowStatuses.get(key) ?? statuses.get(key) ?? "unknown";
   row.statusEl.className = `status ${s}`;
   row.statusEl.textContent = s === "rate-limited" ? "rate-limited?" : s;
-  row.statusEl.title =
-    s === "rate-limited" ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP." : "";
+  // A shared row's members are judged along their own paths, so they can differ.
+  const own = membersOf(shared, key).map((m) => [m, statuses.get(m) ?? "unknown"] as const);
+  const differ = new Set(own.map(([, status]) => status)).size > 1;
+  row.statusEl.title = differ
+    ? own.map(([m, status]) => `${label(m, names)}: ${status}`).join("\n")
+    : s === "rate-limited"
+      ? "Loss here doesn't carry through to later hops: the router is deprioritizing ICMP."
+      : "";
   const last = row.points.at(-1);
   const lastReading = row.readings.at(-1);
   const latestValue =
@@ -299,8 +316,8 @@ function renderIdentities(): void {
   for (const [key, row] of rows) {
     const binding = bindings.get(key);
     const router = binding === undefined ? "" : [binding.identity, binding.name].filter((s) => s !== null).join(" · ");
-    row.titleEl.textContent =
-      key.startsWith("hop") && router !== "" ? `${label(key, names)} · ${router}` : label(key, names);
+    const title = rowLabel(membersOf(shared, key), names);
+    row.titleEl.textContent = key.startsWith("hop") && router !== "" ? `${title} · ${router}` : title;
   }
 }
 
@@ -319,6 +336,15 @@ async function backfill(from: Micros): Promise<void> {
     render(addRow(key), key);
   }
   names = parseTargetNames(await fetchJson("/api/targets"));
+  shared = parseSharedRows(await fetchJson("/api/rows"));
+  rowStatuses = new Map(shared.map((r) => [r.key, r.status]));
+  // A row made for a role before its shared row was known goes.
+  for (const [key, row] of rows) {
+    if (rowOf(shared, key) !== key) {
+      row.rowEl.remove();
+      rows.delete(key);
+    }
+  }
   gauges = parseGauges(await fetchJson("/api/gauges"));
   statuses = parseStatuses(await fetchJson("/api/status"));
   bindings = parseBindings(await fetchJson("/api/bindings"));
@@ -326,38 +352,41 @@ async function backfill(from: Micros): Promise<void> {
   networkMap = parseMap(await fetchJson("/api/map"));
   drawMap();
   await Promise.all(
-    roles.map(async (key) => {
-      const row = addRow(key);
-      const tier = RANGES[range].tier;
-      if (tier === null) {
-        const fetched = parsePoints(
-          await fetchJson(
-            `/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`,
-          ),
-        );
-        row.points = merge(row.points, fetched);
-        const readingsSince = row.readings.at(-1)?.at ?? from;
-        const readings = parseReadings(
-          await fetchJson(`/api/readings?role=${encodeURIComponent(key)}&since_us=${String(readingsSince)}`),
-        );
-        row.readings = mergeReadings(row.readings, readings);
-      } else {
-        // Rollups are re-read whole: the latest interval keeps growing until it closes.
-        row.points = [
-          ...parseRollups(
-            await fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`),
-          ),
-        ];
-        row.readings = [
-          ...parseReadingRollups(
+    // A shared row draws its owner's samples; its other members' are copies.
+    roles
+      .filter((key) => rowOf(shared, key) === key)
+      .map(async (key) => {
+        const row = addRow(key);
+        const tier = RANGES[range].tier;
+        if (tier === null) {
+          const fetched = parsePoints(
             await fetchJson(
-              `/api/reading-rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`,
+              `/api/samples?role=${encodeURIComponent(key)}&since_us=${String(latest(row.points) ?? from)}`,
             ),
-          ),
-        ];
-      }
-      render(row, key);
-    }),
+          );
+          row.points = merge(row.points, fetched);
+          const readingsSince = row.readings.at(-1)?.at ?? from;
+          const readings = parseReadings(
+            await fetchJson(`/api/readings?role=${encodeURIComponent(key)}&since_us=${String(readingsSince)}`),
+          );
+          row.readings = mergeReadings(row.readings, readings);
+        } else {
+          // Rollups are re-read whole: the latest interval keeps growing until it closes.
+          row.points = [
+            ...parseRollups(
+              await fetchJson(`/api/rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`),
+            ),
+          ];
+          row.readings = [
+            ...parseReadingRollups(
+              await fetchJson(
+                `/api/reading-rollups?role=${encodeURIComponent(key)}&tier=${tier}&since_us=${String(from)}`,
+              ),
+            ),
+          ];
+        }
+        render(row, key);
+      }),
   );
   renderIdentities();
 }
@@ -381,7 +410,7 @@ function connect(): void {
       switch (live.type) {
         case "sample": {
           // Live samples are raw, so they only join the raw range.
-          if (range !== "hour") break;
+          if (range !== "hour" || rowOf(shared, live.role) !== live.role) break;
           const row = addRow(live.role);
           row.points = merge(row.points, [live.point]);
           render(row, live.role);
@@ -393,6 +422,7 @@ function connect(): void {
           break;
         case "statuses":
           statuses = live.statuses;
+          rowStatuses = live.rows;
           for (const [key, row] of rows) render(row, key);
           break;
         case "bindings":
@@ -414,11 +444,11 @@ function connect(): void {
               .catch(report);
           }
           renderIdentities();
-          for (const key of live.marker.concerns) redraw(key);
+          for (const key of live.marker.concerns) redraw(rowOf(shared, key));
           break;
         case "incident":
           incidents = upsertIncident(incidents, live.incident);
-          redraw(live.incident.role);
+          redraw(rowOf(shared, live.incident.role));
           break;
         case "cleared":
           // All history was flushed (ADR-0038): start over from the empty store.
@@ -478,7 +508,7 @@ function drawMap(): void {
   if (el === null || tab !== "map") return;
   renderMap(el, networkMap, { role: (key) => label(key, names), time: (at) => words.time(at) }, (role) => {
     selectTab("graphs");
-    const row = rows.get(role)?.rowEl;
+    const row = rows.get(rowOf(shared, role))?.rowEl;
     if (row === undefined) return;
     row.scrollIntoView({ block: "center" });
     row.classList.add("flash");

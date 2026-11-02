@@ -66,6 +66,12 @@ Wi-Fi to cable, say), the chip changes and the graphs mark the moment.
 Each row's title names the role, its current identity (an address or device), and
 its status. Its current values are on the right.
 
+A hop row can serve several targets. Hop 1 is the same router for every target, and
+targets with the same address share hops 2 and 3, so netwatch measures each of these
+once and draws one row for it. The title lists every target it leads to. The status
+is the worst among them, because the same loss can be rate limiting on one path and
+a real problem on another. When they differ, hover over the status to see each.
+
 ## Reading the graphs
 
 ![24 hours, with incidents and markers](images/dashboard-24h.png)

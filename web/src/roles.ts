@@ -27,6 +27,20 @@ export function compareRoles(a: RoleKey, b: RoleKey): number {
   return 0;
 }
 
+/** A row's label: its role's, or for a row shared by several hops (ADR-0045), the hop
+ *  and every target it leads to. */
+export function rowLabel(members: readonly RoleKey[], names: ReadonlyMap<string, string> = new Map()): string {
+  const [first] = members;
+  if (first === undefined) return "";
+  if (members.length === 1) return label(first, names);
+  const hop = numbers(first)[1];
+  const targets = members.map((m) => {
+    const id = String(numbers(m)[0]);
+    return names.get(`target:${id}`) ?? `target ${id}`;
+  });
+  return `Hop ${String(hop)} → ${targets.join(", ")}`;
+}
+
 /** A role's label, for people. `names` maps target role keys (`target:1`) to their
  *  configured names; targets without one are numbered. */
 export function label(key: RoleKey, names: ReadonlyMap<string, string> = new Map()): string {

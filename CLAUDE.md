@@ -62,6 +62,8 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - A live stream with backfill behind a flush barrier.
   - Incident bands, event markers only on the rows they concern, hover tooltips, and
     rate-limit-aware hop status.
+  - One row per shared hop stream (ADR-0045), from `/api/rows`, with the worst of
+    its members' statuses.
   - Report and Settings dialogs. Settings can also flush all history (ADR-0038).
   - A Map tab (ADR-0042): the network map, a DAG of every path with routers shared
     across targets merged, each node's status, and trace hops beyond hop 3. The

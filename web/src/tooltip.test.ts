@@ -58,7 +58,7 @@ describe("formatDuration", () => {
 
 describe("tooltip", () => {
   const row = (more: { points?: Point[]; readings?: Reading[]; incidents?: Incident[]; markers?: Marker[] } = {}) => ({
-    role: target,
+    roles: [target],
     points: more.points ?? [],
     readings: more.readings ?? [],
     incidents: more.incidents ?? [],
@@ -167,6 +167,46 @@ describe("visibleIncidents", () => {
       incident(150, null),
       incident(120, 130, { role: role("nic") }),
     ];
-    expect(visibleIncidents(incidents, target, us(100), us(200))).toEqual([incidents[1], incidents[2]]);
+    expect(visibleIncidents(incidents, [target], us(100), us(200))).toEqual([incidents[1], incidents[2]]);
+  });
+
+  it("draws an incident that several members of a shared row have once", () => {
+    const [a, b] = [role("hop:1:2"), role("hop:11:2")];
+    const incidents = [
+      incident(90, 110, { role: a }),
+      incident(90, 110, { role: b }),
+      incident(150, null, { role: b }),
+      incident(150, 160, { role: role("hop:2:2") }),
+    ];
+    expect(visibleIncidents(incidents, [a, b], us(0), us(200))).toEqual([incidents[0], incidents[2]]);
+  });
+});
+
+describe("a shared row's tooltip", () => {
+  const [a, b] = [role("hop:1:2"), role("hop:11:2")];
+  const shared = (incidents: Incident[], markers: Marker[] = []) => ({
+    roles: [a, b],
+    points: [],
+    readings: [],
+    incidents,
+    markers,
+  });
+  const hover = { at: us(100), nearUs: 2e6, now: us(1000) };
+
+  it("names whose paths an incident is on, once for all of them", () => {
+    const lines = tooltip(
+      hover,
+      shared([incident(90, 110, { role: a }), incident(90, 110, { role: b }), incident(95, 120, { role: b })]),
+      words,
+    ).filter((l) => l.tone !== "value");
+    expect(lines).toEqual([
+      { tone: "outage", text: "Outage t90–t110 (20 s) · on HOP:1:2, HOP:11:2" },
+      { tone: "outage", text: "Outage t95–t120 (25 s) · on HOP:11:2" },
+    ]);
+  });
+
+  it("lists an event that concerns any of its members", () => {
+    const lines = tooltip(hover, shared([], [marker(100, { concerns: [b] })]), words);
+    expect(lines.filter((l) => l.tone === "event")).toHaveLength(1);
   });
 });

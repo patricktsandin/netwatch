@@ -18,8 +18,8 @@ use std::num::NonZeroU64;
 
 use anyhow::Context;
 use netwatch_adapter_web::{
-    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, ReadingPoint, TargetView,
-    status_text,
+    BindingView, EventPoint, IncidentView, LayerReportView, LiveMessage, ReadingPoint, RowView,
+    TargetView, status_text,
 };
 use netwatch_history::{Measurement, Reading, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
@@ -466,7 +466,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, now, &live, &current_tx);
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, now, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     if let Some(request) = traces.incident(&incident, clock.now()) {
@@ -780,6 +780,7 @@ fn publish_current(
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
     traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
+    hop_streams: &[sharing::HopStream],
     now: WallTime,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
@@ -823,9 +824,35 @@ fn publish_current(
         })
         .collect();
     let map = network_map(&grades, topology, names, traces, &bindings);
+    // A stream that serves several hop roles is one row, with their worst status
+    // (ADR-0045).
+    let rows: Vec<RowView> = hop_streams
+        .iter()
+        .filter(|stream| stream.serves.len() > 1)
+        .filter_map(|stream| {
+            Some(RowView {
+                key: stream.role().key(),
+                members: stream
+                    .serves
+                    .iter()
+                    .map(|&target| {
+                        Role::Hop {
+                            target,
+                            ttl: stream.ttl,
+                        }
+                        .key()
+                    })
+                    .collect(),
+                status: status_text(sharing::row_health(stream, &grades)?),
+            })
+        })
+        .collect();
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
-        rows: BTreeMap::new(),
+        rows: rows
+            .iter()
+            .map(|row| (row.key.clone(), row.status.clone()))
+            .collect(),
     });
     let _ = live.send(LiveMessage::Bindings {
         bindings: bindings.clone(),
@@ -836,6 +863,7 @@ fn publish_current(
             c.map = map;
         }
         c.statuses = statuses;
+        c.rows = rows;
         c.bindings = bindings;
         c.names = names
             .iter()

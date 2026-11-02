@@ -53,8 +53,17 @@ impl HopStream {
 /// A shared stream's row status (ADR-0045): the worst status among the hop roles it
 /// serves that are graded, or `None` if none is.
 pub fn row_health(stream: &HopStream, grades: &BTreeMap<Role, Health>) -> Option<Health> {
-    let _ = (stream, grades);
-    None
+    stream
+        .serves
+        .iter()
+        .filter_map(|&target| {
+            grades.get(&Role::Hop {
+                target,
+                ttl: stream.ttl,
+            })
+        })
+        .copied()
+        .reduce(Health::worse)
 }
 
 /// The hop streams for `targets`: every target with hops (ICMP and DNS), with the
