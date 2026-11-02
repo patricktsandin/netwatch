@@ -88,6 +88,9 @@ words are defined elsewhere in this file.
   *identity epoch*, a *suspend gap*, or a *config drift*.
   - The first ones defined in code are: `EpochStarted`, `EpochEnded`,
     `Desynchronized`, and `Resynchronized`.
+- **Resumed epoch**: a role's first *identity epoch* after the daemon starts, when its
+  *identity* is the one it had before the stop. It is a new epoch, but not a change,
+  so no *event marker* shows it (ADR-0044).
 
 ## Probing
 
