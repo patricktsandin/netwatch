@@ -650,6 +650,9 @@ if (bookmarked === "day" || bookmarked === "month") {
 }
 
 if (location.hash === "#map") selectTab("map");
+addEventListener("hashchange", () => {
+  if ((location.hash === "#map") !== (tab === "map")) selectTab(location.hash === "#map" ? "map" : "graphs");
+});
 
 setInterval(() => {
   trim();
