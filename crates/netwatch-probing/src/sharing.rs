@@ -72,7 +72,8 @@ pub fn row_health(stream: &HopStream, grades: &BTreeMap<Role, Health>) -> Option
 }
 
 /// The hop streams for `targets`: every target with hops (ICMP and DNS), with the
-/// address its hops are probed toward. Streams come in TTL order, then by owner.
+/// address its hops are probed toward. Streams come in TTL order, then in the order
+/// of their owners: public addresses first, each group ascending.
 pub fn plan(targets: &[(TargetId, IpAddr)]) -> Vec<HopStream> {
     let mut sorted = targets.to_vec();
     sorted.sort_by_key(|&(target, address)| (!is_public(address), target));

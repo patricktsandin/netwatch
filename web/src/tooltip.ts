@@ -67,6 +67,19 @@ export function upsertIncident(incidents: readonly Incident[], incident: Inciden
   return at === -1 ? [...others, incident] : [...others.slice(0, at), incident, ...others.slice(at)];
 }
 
+/** The same event: members of a shared row each get a copy of it. */
+const event = (m: Marker): string => `${String(m.at)} ${m.kind} ${m.detail ?? ""}`;
+
+/** The markers a row draws: those that concern any of its roles, each event once. */
+export function visibleMarkers(markers: readonly Marker[], roles: readonly RoleKey[]): Marker[] {
+  const seen = new Set<string>();
+  return markers.filter((m) => {
+    const shown = m.concerns.some((c) => roles.includes(c)) && !seen.has(event(m));
+    if (shown) seen.add(event(m));
+    return shown;
+  });
+}
+
 /** The same band: members of a shared row often have identical incidents. */
 const band = (i: Incident): string => `${String(i.started)} ${String(i.ended)} ${i.severity}`;
 
@@ -173,8 +186,8 @@ export function tooltip(hover: Hover, row: RowContent, words: Words): TooltipLin
     const on = row.roles.length > 1 ? ` · on ${same.map((i) => words.role(i.role)).join(", ")}` : "";
     lines.push({ tone: first.severity, text: `${incidentText(first, hover.now, words)}${on}` });
   }
-  for (const m of row.markers) {
-    if (m.concerns.some((c) => row.roles.includes(c)) && Math.abs(m.at - hover.at) <= hover.nearUs) {
+  for (const m of visibleMarkers(row.markers, row.roles)) {
+    if (Math.abs(m.at - hover.at) <= hover.nearUs) {
       lines.push({ tone: "event", text: eventText(m, words) });
     }
   }

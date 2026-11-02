@@ -3,7 +3,7 @@
 // the paths through a node under the pointer.
 
 import { layout, NODE_HEIGHT, NODE_WIDTH } from "./mapLayout";
-import type { MapNode, Micros, NetworkMap, RoleKey, Status } from "./model";
+import type { MapNode, MapNodeId, Micros, NetworkMap, RoleKey, Status } from "./model";
 
 export interface MapWords {
   /** A role's label, as the rows title it. */
@@ -39,6 +39,9 @@ function fit(el: SVGTextElement, text: string, width: number): void {
   }
   el.textContent = `${text.slice(0, fits).trimEnd()}…`;
 }
+
+/** The node under the pointer, across redraws. */
+let hovered: MapNodeId | null = null;
 
 /** Inner padding of a node, either side. */
 const PAD = 10;
@@ -105,6 +108,9 @@ export function renderMap(
     role: "img",
     "aria-label": "Network map",
   });
+  // The map is redrawn whenever a status changes. The node under the pointer, and the
+  // one with keyboard focus, are found again by id, so neither is lost.
+  const focused = document.activeElement?.getAttribute("data-node") ?? null;
   // Text is fitted to the boxes as rendered, so it is drawn into the document.
   container.replaceChildren(root);
 
@@ -152,6 +158,7 @@ export function renderMap(
       class: `map-node ${node.status ?? "traced"}${node.roles.length > 0 ? " openable" : ""}`,
       transform: `translate(${String(p.x)} ${String(p.y)})`,
       tabindex: node.roles.length > 0 ? 0 : -1,
+      "data-node": node.id,
     });
     root.append(g);
     g.append(svg("title", {}, details(node, words)));
@@ -170,12 +177,17 @@ export function renderMap(
     fit(second, node.identity ?? (node.kind === "silent" ? "no reply" : ""), NODE_WIDTH - 2 * PAD);
     fit(third, node.name ?? sightingText(node, words), NODE_WIDTH - 2 * PAD);
     g.addEventListener("mouseenter", () => {
+      hovered = node.id;
       light(node.targets);
     });
     g.addEventListener("mouseleave", () => {
+      hovered = null;
       light(null);
     });
-    const role = node.roles[0]?.key;
+    if (node.id === hovered) light(node.targets);
+    if (node.id === focused && g instanceof SVGGElement) g.focus();
+    // A target's node opens the target's own row, not a hop merged into it.
+    const role = node.roles.find((r) => r.key === node.role)?.key ?? node.roles[0]?.key;
     if (role !== undefined) {
       const go = (): void => {
         open(role);

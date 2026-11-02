@@ -577,6 +577,23 @@ fn a_role_whose_latest_epoch_ended_had_no_identity_before_a_start() {
 }
 
 #[test]
+fn closing_the_epochs_a_stop_left_open_keeps_their_identities() {
+    let mut store = Store::open(&fresh("last-identities-closed")).unwrap();
+    started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+    store
+        .close_epochs_left_open(WallTime::from_unix_micros(30))
+        .unwrap();
+    assert_eq!(
+        store
+            .last_identities()
+            .unwrap()
+            .get("nic")
+            .map(String::as_str),
+        Some("eth0 (ifindex 5)")
+    );
+}
+
+#[test]
 fn the_public_address_before_a_start_is_the_last_one_noted() {
     let mut store = Store::open(&fresh("last-public")).unwrap();
     assert_eq!(store.last_public_address().unwrap(), None);
@@ -630,6 +647,47 @@ fn migration_8_marks_restarts_resumed_and_drops_repeated_public_addresses() {
             s("public-address", "A → B"),
             s("epoch-started", "wlan0 (ifindex 3)"),
             s("public-address", "C"),
+        ]
+    );
+}
+
+#[test]
+fn migration_9_makes_an_identity_back_long_after_a_start_a_change() {
+    let path = fresh("migrate-to-9");
+    {
+        let mut store = Store::open(&path).unwrap();
+        // eth0 and lo before a stop; the next start, at 100 s, closes both.
+        started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+        started(&mut store, 2, Role::Kernel, eth(b"lo", 1), 10, false);
+        store
+            .close_epochs_left_open(WallTime::from_unix_micros(100_000_000))
+            .unwrap();
+        // lo is back at once; eth0 only after an outage of two minutes.
+        started(
+            &mut store,
+            3,
+            Role::Kernel,
+            eth(b"lo", 1),
+            101_000_000,
+            true,
+        );
+        started(&mut store, 4, Role::Nic, eth(b"eth0", 5), 220_000_000, true);
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 8)
+            .unwrap();
+    }
+
+    let store = Store::open(&path).unwrap();
+
+    let s = |k: &str, d: &str| (k.to_owned(), Some(d.to_owned()));
+    assert_eq!(
+        kinds(&store),
+        [
+            s("epoch-started", "eth0 (ifindex 5)"),
+            s("epoch-started", "lo (ifindex 1)"),
+            s("epoch-resumed", "lo (ifindex 1)"),
+            s("epoch-started", "eth0 (ifindex 5)"),
         ]
     );
 }

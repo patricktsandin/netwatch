@@ -48,7 +48,7 @@ import { compareRoles, label, rowLabel } from "./roles";
 import { membersOf, rowOf } from "./rows";
 import { latest, merge, plotColumns, since } from "./series";
 import { openSettings } from "./settingsDialog";
-import { tooltip, upsertIncident, visibleIncidents, type Words } from "./tooltip";
+import { tooltip, upsertIncident, visibleIncidents, visibleMarkers, type Words } from "./tooltip";
 import type { Status } from "./model";
 
 /** The time ranges the UI offers: raw samples for the last hour, then the rollup
@@ -190,14 +190,10 @@ function common(key: RoleKey, series: { points: Point[]; readings: Reading[] }) 
   return {
     annotations: () => {
       const window = zoom ?? sharedWindow();
+      const members = membersOf(shared, key);
       return {
-        incidents: visibleIncidents(
-          incidents,
-          membersOf(shared, key),
-          parseMicros(window.min * 1e6),
-          parseMicros(window.max * 1e6),
-        ),
-        markers: markers.filter((m) => m.concerns.some((c) => membersOf(shared, key).includes(c))),
+        incidents: visibleIncidents(incidents, members, parseMicros(window.min * 1e6), parseMicros(window.max * 1e6)),
+        markers: visibleMarkers(markers, members),
       };
     },
     tooltip: (at: Micros, nearUs: number) =>
@@ -519,6 +515,11 @@ function drawMap(): void {
 }
 
 // The tabs: the graphs, or the network map (ADR-0042), which `#map` bookmarks.
+/** Sets the address's hash, keeping its path and query. */
+function setHash(hash: string): void {
+  history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
+}
+
 function selectTab(selected: Tab): void {
   tab = selected;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#tabs button")) {
@@ -531,8 +532,7 @@ function selectTab(selected: Tab): void {
   const reset = document.getElementById("reset-zoom");
   if (reset !== null && selected === "map") reset.hidden = true;
   if (reset !== null && selected === "graphs") reset.hidden = zoom === null;
-  const hash = selected === "map" ? "#map" : range === "hour" ? "" : `#${range}`;
-  history.replaceState(null, "", hash === "" ? location.pathname : hash);
+  setHash(selected === "map" ? "#map" : range === "hour" ? "" : `#${range}`);
   drawMap();
   if (selected === "graphs") for (const [key, row] of rows) render(row, key);
 }
@@ -571,7 +571,7 @@ document.getElementById("reset-zoom")?.addEventListener("click", (event) => {
 });
 function selectRange(selected: Range): void {
   range = selected;
-  history.replaceState(null, "", selected === "hour" ? location.pathname : `#${selected}`);
+  setHash(selected === "hour" ? "" : `#${selected}`);
   zoom = null;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#ranges button")) {
     button.setAttribute("aria-pressed", String(button.dataset["range"] === selected));
@@ -680,8 +680,16 @@ if (bookmarked === "day" || bookmarked === "month") {
 }
 
 if (location.hash === "#map") selectTab("map");
+// Back and Forward, and edited addresses: `#map`, or the graphs at `#day`, `#month`,
+// or the hour.
 addEventListener("hashchange", () => {
-  if ((location.hash === "#map") !== (tab === "map")) selectTab(location.hash === "#map" ? "map" : "graphs");
+  if (location.hash === "#map") {
+    if (tab !== "map") selectTab("map");
+    return;
+  }
+  if (tab !== "graphs") selectTab("graphs");
+  const wanted: Range = location.hash === "#day" ? "day" : location.hash === "#month" ? "month" : "hour";
+  if (wanted !== range) selectRange(wanted);
 });
 
 setInterval(() => {

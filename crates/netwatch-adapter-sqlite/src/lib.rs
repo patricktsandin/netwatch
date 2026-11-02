@@ -35,6 +35,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0006-readings.sql"),
     include_str!("../migrations/0007-traces.sql"),
     include_str!("../migrations/0008-resumed-epochs.sql"),
+    include_str!("../migrations/0009-resumed-only-at-a-start.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -654,15 +655,18 @@ impl Store {
 
     /// Each role's identity in its latest epoch, by role key, as events describe it:
     /// what the role was before the daemon started (ADR-0044). A role whose latest
-    /// epoch ended before the stop had no identity then, so it is left out: the same
-    /// identity coming back after the start is a change.
+    /// epoch ended before the stop, with an `epoch-ended` event, had no identity then,
+    /// so it is left out: the same identity coming back after the start is a change.
+    /// An epoch that the stop itself ended has no such event, whether or not the next
+    /// start has closed it yet.
     pub fn last_identities(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let mut query = self.connection.prepare_cached(
             "SELECT role, identity FROM epochs e
-             WHERE ended_us IS NULL
-               AND epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)",
+             WHERE epoch = (SELECT MAX(epoch) FROM epochs WHERE role = e.role)
+               AND NOT EXISTS (SELECT 1 FROM events
+                               WHERE kind = 'epoch-ended' AND events.epoch = e.epoch)",
         )?;
         let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)

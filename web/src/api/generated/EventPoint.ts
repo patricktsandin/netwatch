@@ -9,7 +9,8 @@ export type EventPoint = {
  */
 at_us: number, 
 /**
- * `epoch-started`, `epoch-ended`, `desynchronized`, or `resynchronized`.
+ * `epoch-started`, `epoch-resumed`, `epoch-ended`, `desynchronized`,
+ * `resynchronized`, or a note's kind.
  */
 kind: string, 
 /**

@@ -205,6 +205,11 @@ describe("a shared row's tooltip", () => {
     ]);
   });
 
+  it("lists an event that each member got a copy of once", () => {
+    const copies = [marker(100, { concerns: [a] }), marker(100, { concerns: [b] })];
+    expect(tooltip(hover, shared([], copies), words).filter((l) => l.tone === "event")).toHaveLength(1);
+  });
+
   it("lists an event that concerns any of its members", () => {
     const lines = tooltip(hover, shared([], [marker(100, { concerns: [b] })]), words);
     expect(lines.filter((l) => l.tone === "event")).toHaveLength(1);

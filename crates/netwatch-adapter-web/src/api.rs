@@ -145,7 +145,8 @@ pub struct EventPoint {
     /// When it happened, in µs since the Unix epoch.
     #[ts(type = "number")]
     pub at_us: i64,
-    /// `epoch-started`, `epoch-ended`, `desynchronized`, or `resynchronized`.
+    /// `epoch-started`, `epoch-resumed`, `epoch-ended`, `desynchronized`,
+    /// `resynchronized`, or a note's kind.
     pub kind: String,
     /// The role it concerns, as a key.
     pub role: Option<String>,

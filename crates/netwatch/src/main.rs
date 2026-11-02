@@ -77,6 +77,14 @@ async fn main() -> anyhow::Result<()> {
     let database = config.database.clone();
     let resume_after = persist::last_epoch(&database)
         .with_context(|| format!("opening {}", database.display()))?;
+    // What each role was, and the public address, before this start: a role that
+    // comes back the same has resumed, not changed (ADR-0044). Read before the writer
+    // starts, which closes the epochs the last run left open.
+    let (identities_before, mut public_before) =
+        persist::before_start(&database).unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot read the identities before this start");
+            Default::default()
+        });
     let writes = persist::spawn(database.clone(), clock)?;
 
     // The UI listens on localhost only, unless configured otherwise (ADR-0007).
@@ -94,13 +102,6 @@ async fn main() -> anyhow::Result<()> {
     let (layers_tx, layers) =
         watch::channel::<std::collections::BTreeMap<String, LayerReportView>>(Default::default());
     let (current_tx, current) = watch::channel(netwatch_adapter_web::Current::default());
-    // What each role was, and the public address, before this start: a role that
-    // comes back the same has resumed, not changed (ADR-0044).
-    let (identities_before, mut public_before) =
-        persist::before_start(&database).unwrap_or_else(|error| {
-            tracing::warn!(%error, "cannot read the identities before this start");
-            Default::default()
-        });
     let recorder = Recorder {
         writes: writes.clone(),
         live: live.clone(),
@@ -251,9 +252,11 @@ async fn main() -> anyhow::Result<()> {
     // Hop streams are shared where the hops are the same router (ADR-0026,
     // ADR-0043): separate streams would trip routers' ICMP rate limits and show loss
     // that isn't there.
-    let hop_streams = sharing::plan(&hopped_targets(&config));
-    // Where each target with hops is, for the map to see where a path reaches it.
-    let destinations: BTreeMap<TargetId, IpAddr> = hopped_targets(&config).into_iter().collect();
+    let hopped = hopped_targets(&config);
+    let hop_streams = sharing::plan(&hopped);
+    // Where each target with hops is: for the map to see where a path reaches it, and
+    // for path traces.
+    let destinations: BTreeMap<TargetId, IpAddr> = hopped.into_iter().collect();
     current_tx.send_modify(|c| c.rows = shared_rows(&hop_streams, &BTreeMap::new()));
     for stream in &hop_streams {
         tokio::spawn(probe::run_role(
@@ -337,17 +340,16 @@ async fn main() -> anyhow::Result<()> {
     // a minute, for the egress path and the hops to be known.
     let names = names::Names::new(config::system_resolver(), config.asn_lookups);
     names::follow_hops(names.clone(), current_tx.subscribe());
-    let traceable: HashMap<TargetId, IpAddr> = hopped_targets(&config).into_iter().collect();
     let mut traces = TraceSchedule::new(
-        traceable.keys().copied(),
+        destinations.keys().copied(),
         Time::new::<second>(600.0),
         Time::new::<second>(6.0 * 3600.0),
         clock.now().after(Time::new::<second>(30.0)),
     );
-    // Each target's latest trace, for the network map (ADR-0042).
-    // Which flush generation each one's write was sent in.
+    // Each target's latest trace, for the network map (ADR-0042), and the flush
+    // generation each one's write was sent in.
     let mut trace_generations: BTreeMap<TargetId, u64> = BTreeMap::new();
-    let mut latest_traces = persist::latest_traces(&config.database, traceable.keys().copied())
+    let mut latest_traces = persist::latest_traces(&config.database, destinations.keys().copied())
         .unwrap_or_else(|error| {
             tracing::warn!(%error, "cannot read the latest path traces");
             BTreeMap::new()
@@ -355,7 +357,7 @@ async fn main() -> anyhow::Result<()> {
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
     let tracer = trace::Tracer::new(pin.clone(), names.clone(), clock, traced_tx);
     let start_trace = |request: TraceRequest| {
-        if let Some(&destination) = traceable.get(&request.target) {
+        if let Some(&destination) = destinations.get(&request.target) {
             tracing::info!(target = request.target.get(), kind = ?request.kind, "path trace");
             tracer.start(request, destination);
         }
