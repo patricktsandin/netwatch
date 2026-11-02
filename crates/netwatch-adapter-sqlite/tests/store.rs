@@ -552,11 +552,11 @@ fn the_identities_before_a_start_are_each_roles_latest() {
     started(&mut store, 3, Role::Kernel, eth(b"lo", 1), 10, false);
     let last = store.last_identities().unwrap();
     assert_eq!(
-        last.get("nic").map(String::as_str),
+        last.get(&Role::Nic).map(String::as_str),
         Some("wlan0 (ifindex 3)")
     );
     assert_eq!(
-        last.get("kernel").map(String::as_str),
+        last.get(&Role::Kernel).map(String::as_str),
         Some("lo (ifindex 1)")
     );
     assert_eq!(last.len(), 2);
@@ -569,9 +569,9 @@ fn a_role_whose_latest_epoch_ended_had_no_identity_before_a_start() {
     ended(&mut store, 1, Role::Nic, 20);
     started(&mut store, 2, Role::Kernel, eth(b"lo", 1), 10, false);
     let last = store.last_identities().unwrap();
-    assert_eq!(last.get("nic"), None);
+    assert_eq!(last.get(&Role::Nic), None);
     assert_eq!(
-        last.get("kernel").map(String::as_str),
+        last.get(&Role::Kernel).map(String::as_str),
         Some("lo (ifindex 1)")
     );
 }
@@ -583,7 +583,7 @@ fn an_epoch_the_run_ended_is_not_resumed_after_a_flush_either() {
     started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
     ended(&mut store, 1, Role::Nic, 20);
     store.flush_history().unwrap();
-    assert_eq!(store.last_identities().unwrap().get("nic"), None);
+    assert_eq!(store.last_identities().unwrap().get(&Role::Nic), None);
 }
 
 #[test]

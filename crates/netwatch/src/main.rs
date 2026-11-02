@@ -720,8 +720,8 @@ struct Recorder {
     live: broadcast::Sender<LiveMessage>,
     current: watch::Receiver<netwatch_adapter_web::Current>,
     clock: Clock,
-    /// Each role's identity before this start, by role key, until its first epoch.
-    before_start: std::sync::Mutex<BTreeMap<String, String>>,
+    /// Each role's identity before this start, until its first epoch.
+    before_start: std::sync::Mutex<BTreeMap<Role, String>>,
     /// When this run started.
     started: netwatch_shared::Instant,
 }
@@ -750,7 +750,7 @@ impl Recorder {
                     .before_start
                     .lock()
                     .ok()
-                    .and_then(|mut before| before.remove(&role.key()));
+                    .and_then(|mut before| before.remove(role));
                 let identity = netwatch_adapter_sqlite::describe(&event, at, false).detail;
                 let soon =
                     self.clock.now().since(self.started) <= Time::new::<second>(RESUME_WITHIN_S);

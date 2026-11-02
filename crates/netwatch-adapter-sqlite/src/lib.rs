@@ -653,14 +653,12 @@ impl Store {
         Ok(())
     }
 
-    /// Each role's identity in its latest epoch, by role key, as events describe it:
+    /// Each role's identity in its latest epoch, as events describe it:
     /// what the role was before the daemon started (ADR-0044). Only an epoch the stop
     /// left open counts: a role whose latest epoch had ended had no identity then, and
     /// the same identity coming back is a change. So this must be read before
     /// [`close_epochs_left_open`](Self::close_epochs_left_open) closes them.
-    pub fn last_identities(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+    pub fn last_identities(&self) -> Result<std::collections::BTreeMap<Role, String>, StoreError> {
         let mut query = self.connection.prepare_cached(
             // `epochs.role` isn't indexed and the table is kept forever: the
             // uncorrelated subquery is evaluated once.
@@ -669,8 +667,18 @@ impl Store {
                ON latest.epoch = e.epoch
              WHERE e.ended_us IS NULL",
         )?;
-        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut identities = std::collections::BTreeMap::new();
+        for row in rows {
+            let (role, identity) = row?;
+            // A row from a role this version doesn't know can't resume.
+            if let Some(role) = Role::from_key(&role) {
+                identities.insert(role, identity);
+            }
+        }
+        Ok(identities)
     }
 
     /// The public address last noted, in words, before the daemon started.

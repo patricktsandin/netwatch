@@ -81,11 +81,11 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     Ok(())
 }
 
-/// What the store says each role was, by role key, and the public address, before
+/// What the store says each role was, and the public address, before
 /// this start (ADR-0044).
 #[derive(Debug, Default)]
 pub struct BeforeStart {
-    pub identities: std::collections::BTreeMap<String, String>,
+    pub identities: std::collections::BTreeMap<netwatch_shared::Role, String>,
     pub public: Option<String>,
 }
 
