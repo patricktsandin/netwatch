@@ -25,10 +25,23 @@ function svg<K extends keyof SVGElementTagNameMap>(
   return el;
 }
 
-/** `text`, cut to `max` characters with an ellipsis. The full text is in the title. */
-function fit(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/** Sets `el` to `text`, cut with an ellipsis to fit `width` as rendered. The full
+ *  text is in the node's title. `el` must be in the document to be measured. */
+function fit(el: SVGTextElement, text: string, width: number): void {
+  el.textContent = text;
+  if (el.getComputedTextLength() <= width) return;
+  let [fits, overflows] = [0, text.length];
+  while (overflows - fits > 1) {
+    const mid = Math.floor((fits + overflows) / 2);
+    el.textContent = `${text.slice(0, mid)}…`;
+    if (el.getComputedTextLength() <= width) fits = mid;
+    else overflows = mid;
+  }
+  el.textContent = `${text.slice(0, fits).trimEnd()}…`;
 }
+
+/** Inner padding of a node, either side. */
+const PAD = 10;
 
 const statusWord = (s: Status): string => (s === "rate-limited" ? "rate-limited?" : s);
 
@@ -92,6 +105,8 @@ export function renderMap(
     role: "img",
     "aria-label": "Network map",
   });
+  // Text is fitted to the boxes as rendered, so it is drawn into the document.
+  container.replaceChildren(root);
 
   const edges = map.edges.map((e, i) => {
     const [a, b] = [positions.get(e.from), positions.get(e.to)];
@@ -138,21 +153,22 @@ export function renderMap(
       transform: `translate(${String(p.x)} ${String(p.y)})`,
       tabindex: node.roles.length > 0 ? 0 : -1,
     });
+    root.append(g);
     g.append(svg("title", {}, details(node, words)));
     g.append(svg("rect", { width: NODE_WIDTH, height: NODE_HEIGHT, rx: 7 }));
     g.append(svg("circle", { cx: 12, cy: 15, r: 4.5, class: "dot" }));
-    g.append(svg("text", { x: 23, y: 19, class: "name" }, fit(title(node, words), 18)));
-    g.append(
-      svg(
-        "text",
-        { x: NODE_WIDTH - 8, y: 19, class: "badge", "text-anchor": "end" },
-        node.status === null ? "traced" : statusWord(node.status),
-      ),
+    const badge = svg(
+      "text",
+      { x: NODE_WIDTH - PAD, y: 19, class: "badge", "text-anchor": "end" },
+      node.status === null ? "traced" : statusWord(node.status),
     );
-    const second = node.identity ?? (node.kind === "silent" ? "no reply" : "");
-    const third = node.name ?? sightingText(node, words);
-    g.append(svg("text", { x: 10, y: 37, class: "line" }, fit(second, 28)));
-    g.append(svg("text", { x: 10, y: 51, class: "line muted" }, fit(third, 30)));
+    const name = svg("text", { x: 23, y: 19, class: "name" });
+    const second = svg("text", { x: PAD, y: 37, class: "line" });
+    const third = svg("text", { x: PAD, y: 51, class: "line muted" });
+    g.append(badge, name, second, third);
+    fit(name, title(node, words), NODE_WIDTH - 23 - PAD - badge.getComputedTextLength() - 6);
+    fit(second, node.identity ?? (node.kind === "silent" ? "no reply" : ""), NODE_WIDTH - 2 * PAD);
+    fit(third, node.name ?? sightingText(node, words), NODE_WIDTH - 2 * PAD);
     g.addEventListener("mouseenter", () => {
       light(node.targets);
     });
@@ -169,7 +185,5 @@ export function renderMap(
         if (event.key === "Enter" || event.key === " ") go();
       });
     }
-    root.append(g);
   }
-  container.replaceChildren(root);
 }
