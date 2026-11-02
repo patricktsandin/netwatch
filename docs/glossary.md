@@ -121,14 +121,16 @@ words are defined elsewhere in this file.
 - **Probe stream**: the fixed-cadence sequence of *probes* for one *role*. Several
   *targets* can share one stream (see *stream sharing*).
 - **Stream sharing**: running one *probe stream* for *hops* that resolve identically
-  (same *egress interface*, *gateway*, and *responding addresses*) across *targets*.
+  across *targets*. Hop 1 is shared by every target of an address family (ADR-0026),
+  and hops 2–3 by every target with the same destination address (ADR-0043). Each
+  target's *hop* keeps its own *role*.
 - **Cadence**: the fixed interval at which a *probe stream* sends, measured from the
   schedule, never from the last reply.
 - **Timer lateness**: how far after its scheduled *instant* a *probe* was actually sent.
 - **Hop**: the router at a given TTL on a *target*'s path. Hop N is a *role*.
 - **Responding address**: the address that answered a *hop probe*. It is the hop's
   *identity*.
-- **Hop discovery**: finding hops 1–3 for a *target*. It runs again immediately whenever
+- **Hop discovery**: finding hops 1–3 for an ICMP or DNS *target*. It runs again immediately whenever
   the target's *egress path* changes.
 - **Suspected rate limiting**: loss at a *hop* that doesn't carry through to later hops.
   It is shown as such, never as loss.
