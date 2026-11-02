@@ -50,3 +50,4 @@ to "Superseded".
 | [0042](0042-the-network-map.md) | The network map | Accepted |
 | [0043](0043-hops-for-dns-targets-shared-by-address.md) | Hops for DNS targets, with hop streams shared by destination address | Accepted |
 | [0044](0044-a-restart-is-not-a-change.md) | A restart is not a change | Accepted |
+| [0045](0045-one-row-per-shared-hop-stream.md) | One row per shared hop stream | Accepted |

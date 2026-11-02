@@ -203,7 +203,8 @@ words are defined elsewhere in this file.
 ## Presentation
 
 - **Row**: one *layer* or *role* on the main screen, with a *status*, a sparkline, and
-  current values.
+  current values. A *probe stream* shared by several *hops* (*stream sharing*) is one
+  row, whose status is the worst of theirs (ADR-0045).
 - **Status**: a *row*'s current condition: `Healthy`, `Degraded`, `Failing`, `Unknown`, or
   `Disabled`.
 - **Time axis**: the single shared horizontal axis that every *row* uses. Zoom and pan
