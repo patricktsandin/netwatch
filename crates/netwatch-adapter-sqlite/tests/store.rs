@@ -86,6 +86,7 @@ fn epochs_are_tracked_from_their_events() {
                 identity: eth0,
             },
             WallTime::from_unix_micros(10),
+            false,
         )
         .unwrap();
     store
@@ -95,6 +96,7 @@ fn epochs_are_tracked_from_their_events() {
                 role: Role::Nic,
             },
             WallTime::from_unix_micros(20),
+            false,
         )
         .unwrap();
 
@@ -369,6 +371,7 @@ mod flush {
                         identity: nic.clone(),
                     },
                     WallTime::from_unix_micros(0),
+                    false,
                 )
                 .unwrap();
             if ended {
@@ -379,6 +382,7 @@ mod flush {
                             role: Role::Nic,
                         },
                         WallTime::from_unix_micros(1),
+                        false,
                     )
                     .unwrap();
             }

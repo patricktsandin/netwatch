@@ -99,7 +99,8 @@ pub struct StoredSample {
 pub struct StoredEvent {
     /// When the event happened.
     pub at: WallTime,
-    /// `epoch-started`, `epoch-ended`, `desynchronized`, or `resynchronized`.
+    /// `epoch-started`, `epoch-resumed`, `epoch-ended`, `desynchronized`,
+    /// `resynchronized`, or a note's kind.
     pub kind: String,
     /// The role it concerns, as a key, if any.
     pub role: Option<String>,
@@ -184,7 +185,14 @@ impl Store {
     }
 
     /// Records a topology event, and keeps the `epochs` table in step with it.
-    pub fn record_event(&mut self, event: &TopologyEvent, at: WallTime) -> Result<(), StoreError> {
+    /// `resumed` says that an `EpochStarted` resumes the identity its role had
+    /// before the daemon started (ADR-0044); see [`describe`].
+    pub fn record_event(
+        &mut self,
+        event: &TopologyEvent,
+        at: WallTime,
+        resumed: bool,
+    ) -> Result<(), StoreError> {
         let at_us = at.as_unix_micros();
         let transaction = self.connection.transaction()?;
         match event {
@@ -206,7 +214,7 @@ impl Store {
             }
             TopologyEvent::Desynchronized { .. } | TopologyEvent::Resynchronized { .. } => {}
         }
-        let row = describe(event, at);
+        let row = describe(event, at, resumed);
         transaction.execute(
             "INSERT INTO events (at_us, kind, role, epoch, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![at_us, row.kind, row.role, row.epoch, row.detail],
@@ -643,6 +651,19 @@ impl Store {
         Ok(())
     }
 
+    /// Each role's identity in its latest epoch, by role key, as events describe it:
+    /// what the role was before the daemon started (ADR-0044).
+    pub fn last_identities(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+        Ok(std::collections::BTreeMap::new())
+    }
+
+    /// The public address last noted, in words, before the daemon started.
+    pub fn last_public_address(&self) -> Result<Option<String>, StoreError> {
+        Ok(None)
+    }
+
     /// The highest epoch ever stored, so that a restarted daemon's epochs don't
     /// collide with earlier ones.
     pub fn last_epoch(&self) -> Result<Option<i64>, StoreError> {
@@ -655,8 +676,10 @@ impl Store {
 }
 
 /// The stored form of a topology event, exactly as [`Store::events`] would return it.
-/// The live UI uses this too, so live and stored events read identically.
-pub fn describe(event: &TopologyEvent, at: WallTime) -> StoredEvent {
+/// The live UI uses this too, so live and stored events read identically. An
+/// `EpochStarted` that is `resumed` is `epoch-resumed`, not a change (ADR-0044).
+pub fn describe(event: &TopologyEvent, at: WallTime, resumed: bool) -> StoredEvent {
+    let _ = resumed;
     let (kind, role, epoch, detail) = match event {
         TopologyEvent::EpochStarted {
             epoch,

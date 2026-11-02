@@ -696,8 +696,8 @@ impl Recorder {
 
     fn topology(&self, event: TopologyEvent) {
         let at = self.clock.wall_now();
-        self.show(netwatch_adapter_sqlite::describe(&event, at));
-        let _ = self.writes.send(persist::Write::Event(event, at));
+        self.show(netwatch_adapter_sqlite::describe(&event, at, false));
+        let _ = self.writes.send(persist::Write::Event(event, at, false));
     }
 
     /// Records an event that isn't a topology event: a kernel log line, a clock jump,

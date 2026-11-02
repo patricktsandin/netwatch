@@ -14,7 +14,9 @@ pub enum Write {
     Sample(Sample),
     /// A gauge reading (ADR-0032), batched with samples.
     Reading(Reading),
-    Event(TopologyEvent, WallTime),
+    /// A topology event, and whether it resumes an identity from before the
+    /// start (ADR-0044).
+    Event(TopologyEvent, WallTime, bool),
     /// An event that isn't a topology event: a kernel log line, a disabled source.
     Note(netwatch_adapter_sqlite::StoredEvent),
     /// An incident that opened, changed, or closed (ADR-0031).
@@ -105,8 +107,8 @@ pub fn spawn(path: PathBuf, clock: crate::clock::Clock) -> anyhow::Result<mpsc::
                 match next {
                     Ok(Write::Sample(sample)) => batch.push(sample),
                     Ok(Write::Reading(reading)) => readings.push(reading),
-                    Ok(Write::Event(event, at)) => {
-                        if let Err(error) = store.record_event(&event, at) {
+                    Ok(Write::Event(event, at, resumed)) => {
+                        if let Err(error) = store.record_event(&event, at, resumed) {
                             tracing::error!(%error, "cannot record topology event");
                         }
                     }
