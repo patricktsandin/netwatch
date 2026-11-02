@@ -68,19 +68,30 @@ pub fn parse_echo_reply(family: Family, packet: &[u8]) -> Option<Reply> {
     })
 }
 
+/// The length of an echo request's header, which is all of it that a router must
+/// quote in an ICMP error (RFC 792).
+const HEADER_LEN: usize = 8;
+
 /// Parses one of *our own* echo requests, as the error queue returns it alongside
-/// an ICMP error: the sequence number and token of the probe the error answers.
-pub fn parse_own_request(family: Family, packet: &[u8]) -> Option<(ProbeSequence, ProbeIndex)> {
-    let header: &[u8; REQUEST_LEN] = packet.get(..REQUEST_LEN)?.try_into().ok()?;
+/// an ICMP error: the sequence number of the probe the error answers, and its token
+/// if the router quoted enough of the probe to include it. Many routers quote only
+/// the 8-byte header, as RFC 792 allows, and those probes are matched by sequence
+/// number alone (ADR-0023).
+pub fn parse_own_request(
+    family: Family,
+    packet: &[u8],
+) -> Option<(ProbeSequence, Option<ProbeIndex>)> {
+    let header = packet.get(..HEADER_LEN)?;
     if header[0] != family.request_type() {
         return None;
     }
+    let token = packet
+        .get(HEADER_LEN..REQUEST_LEN)
+        .and_then(|t| <[u8; 8]>::try_from(t).ok())
+        .map(|t| ProbeIndex::new(u64::from_be_bytes(t)));
     Some((
         ProbeSequence::new(u16::from_be_bytes([header[6], header[7]])),
-        ProbeIndex::new(u64::from_be_bytes([
-            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
-            header[15],
-        ])),
+        token,
     ))
 }
 
@@ -133,5 +144,41 @@ mod proofs {
 
         let reply = parse_echo_reply(family, &packet).expect("a well-formed echo reply");
         assert!(reply.sequence == sequence && reply.token == Some(token));
+    }
+
+    /// Parsing a quoted request never panics, and it always reads the sequence
+    /// number; the token exactly when the quote is long enough to hold it.
+    #[kani::proof]
+    #[kani::unwind(26)]
+    fn parsing_a_quoted_request_never_panics() {
+        let buffer: [u8; 24] = kani::any();
+        let len: usize = kani::any();
+        kani::assume(len <= buffer.len());
+        let family = if kani::any() { Family::V4 } else { Family::V6 };
+        let packet = &buffer[..len];
+        if let Some((sequence, token)) = parse_own_request(family, packet) {
+            assert!(len >= HEADER_LEN && packet[0] == family.request_type());
+            assert!(sequence.get().to_be_bytes() == [packet[6], packet[7]]);
+            assert!(token.is_some() == (len >= REQUEST_LEN));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_router_quoting_only_the_header_still_names_the_probe_without_its_token() {
+        let request = echo_request(Family::V4, ProbeSequence::new(7), ProbeIndex::new(42));
+        assert_eq!(
+            parse_own_request(Family::V4, &request[..8]),
+            Some((ProbeSequence::new(7), None))
+        );
+        assert_eq!(
+            parse_own_request(Family::V4, &request),
+            Some((ProbeSequence::new(7), Some(ProbeIndex::new(42))))
+        );
+        assert_eq!(parse_own_request(Family::V4, &request[..7]), None);
     }
 }

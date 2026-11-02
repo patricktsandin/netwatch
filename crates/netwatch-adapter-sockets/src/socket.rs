@@ -139,7 +139,7 @@ impl ProbeSocket {
             icmp::parse_own_request(self.family, &data).map(|(sequence, token)| Received {
                 reply: Reply {
                     sequence,
-                    token: Some(token),
+                    token,
                     kind,
                 },
                 responder: error.offender,
