@@ -16,6 +16,7 @@
 //! - `GET /api/status`: every role's current status, graded by the daemon (ADR-0030)
 //! - `GET /api/host`: facts about the host and its connection (ADR-0039)
 //! - `GET /api/bindings`: every role's current identity and epoch, from Topology
+//! - `GET /api/map`: the network map (ADR-0042)
 //! - `GET /api/config`: the targets as the settings page edits them
 //! - `PUT /api/config`: replaces the targets, then the daemon restarts (ADR-0035)
 //! - `DELETE /api/history`: flushes all history (ADR-0038)
@@ -49,8 +50,9 @@ use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
 
 pub use api::{
-    BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, ReadingPoint,
-    ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView, status_text,
+    BindingView, EventPoint, GaugeView, IncidentView, LayerReportView, LiveMessage, MapView,
+    ReadingPoint, ReadingRollupPoint, RoleSummary, RollupPoint, SamplePoint, TargetView,
+    status_text,
 };
 pub use api::{ConfigView, HostView, TargetSpec};
 
@@ -87,6 +89,8 @@ pub struct Current {
     pub host: HostView,
     /// Every router name looked up so far, by address (ADR-0040).
     pub names: BTreeMap<String, String>,
+    /// The network map (ADR-0042).
+    pub map: MapView,
 }
 
 impl Current {
@@ -146,6 +150,7 @@ pub async fn serve(address: SocketAddr, daemon: Daemon) -> std::io::Result<()> {
         .route("/api/layers", get(layer_reports))
         .route("/api/status", get(statuses))
         .route("/api/bindings", get(bindings))
+        .route("/api/map", get(network_map))
         .route("/api/host", get(host))
         .route("/api/config", get(config).put(save_config))
         .route("/api/history", axum::routing::delete(delete_history))
@@ -926,6 +931,10 @@ async fn host(State(state): State<AppState>) -> Json<HostView> {
 
 async fn bindings(State(state): State<AppState>) -> Json<BTreeMap<String, BindingView>> {
     Json(state.current.borrow().bindings.clone())
+}
+
+async fn network_map(State(state): State<AppState>) -> Json<MapView> {
+    Json(state.current.borrow().map.clone())
 }
 
 async fn layer_reports(State(state): State<AppState>) -> Json<BTreeMap<String, LayerReportView>> {

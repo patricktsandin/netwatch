@@ -59,6 +59,9 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - Incident bands, event markers only on the rows they concern, hover tooltips, and
     rate-limit-aware hop status.
   - Report and Settings dialogs. Settings can also flush all history (ADR-0038).
+  - A Map tab (ADR-0042): the network map, a DAG of every path with routers shared
+    across targets merged, each node's status, and trace hops beyond hop 3. The
+    daemon builds it (`netwatch_probing::map`) and sends it when it changes.
   - An Auto / Light / Dark theme switch, remembered per browser, which the report
     page follows too.
 - **Specs:** `topology.qnt`, `probing.qnt`, `live_backfill.qnt`, `incidents.qnt`,

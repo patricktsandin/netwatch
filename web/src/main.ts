@@ -10,6 +10,7 @@ import {
   ParseError,
   parseLayers,
   parseLive,
+  parseMap,
   parseMarkers,
   parseMicros,
   parsePoints,
@@ -35,10 +36,12 @@ import type {
   LayerReport,
   Marker,
   Micros,
+  NetworkMap,
   Point,
   Reading,
   RoleKey,
 } from "./model";
+import { renderMap } from "./mapView";
 import { compareRoles, label } from "./roles";
 import { latest, merge, plotColumns, since } from "./series";
 import { openSettings } from "./settingsDialog";
@@ -83,6 +86,10 @@ let bindings: ReadonlyMap<RoleKey, Binding> = new Map();
 let zoom: { min: number; max: number } | null = null;
 /** This host's public address and where it enters Cloudflare (ADR-0039). */
 let publicIdentity: string | null = null;
+/** The network map, as the daemon last sent it (ADR-0042). */
+let networkMap: NetworkMap = { nodes: [], edges: [] };
+type Tab = "graphs" | "map";
+let tab: Tab = "graphs";
 
 const nowMicros = (): Micros => parseMicros(Date.now() * 1000);
 
@@ -316,6 +323,8 @@ async function backfill(from: Micros): Promise<void> {
   statuses = parseStatuses(await fetchJson("/api/status"));
   bindings = parseBindings(await fetchJson("/api/bindings"));
   publicIdentity = parsePublic(await fetchJson("/api/host"));
+  networkMap = parseMap(await fetchJson("/api/map"));
+  drawMap();
   await Promise.all(
     roles.map(async (key) => {
       const row = addRow(key);
@@ -390,6 +399,10 @@ function connect(): void {
           bindings = live.bindings;
           renderIdentities();
           break;
+        case "map":
+          networkMap = live.map;
+          drawMap();
+          break;
         case "event":
           markers.push(live.marker);
           if (live.marker.kind === "public-address") {
@@ -456,6 +469,47 @@ if (themeSelect instanceof HTMLSelectElement) {
       // Storage may be unavailable; the choice then lasts until the page closes.
     }
     rebuild();
+  });
+}
+
+/** Draws the network map, if it's showing. Switching to it draws it then. */
+function drawMap(): void {
+  const el = document.getElementById("map");
+  if (el === null || tab !== "map") return;
+  renderMap(el, networkMap, { role: (key) => label(key, names), time: (at) => words.time(at) }, (role) => {
+    selectTab("graphs");
+    const row = rows.get(role)?.rowEl;
+    if (row === undefined) return;
+    row.scrollIntoView({ block: "center" });
+    row.classList.add("flash");
+    setTimeout(() => {
+      row.classList.remove("flash");
+    }, 1500);
+  });
+}
+
+// The tabs: the graphs, or the network map (ADR-0042), which `#map` bookmarks.
+function selectTab(selected: Tab): void {
+  tab = selected;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#tabs button")) {
+    button.setAttribute("aria-selected", String(button.dataset["tab"] === selected));
+  }
+  const [stack, mapView, ranges] = ["stack", "map-view", "ranges"].map((id) => document.getElementById(id));
+  if (stack) stack.hidden = selected !== "graphs";
+  if (mapView) mapView.hidden = selected !== "map";
+  if (ranges) ranges.hidden = selected !== "graphs";
+  const reset = document.getElementById("reset-zoom");
+  if (reset !== null && selected === "map") reset.hidden = true;
+  if (reset !== null && selected === "graphs") reset.hidden = zoom === null;
+  const hash = selected === "map" ? "#map" : range === "hour" ? "" : `#${range}`;
+  history.replaceState(null, "", hash === "" ? location.pathname : hash);
+  drawMap();
+  if (selected === "graphs") for (const [key, row] of rows) render(row, key);
+}
+for (const button of document.querySelectorAll<HTMLButtonElement>("#tabs button")) {
+  button.addEventListener("click", () => {
+    const selected = button.dataset["tab"];
+    if (selected === "graphs" || selected === "map") selectTab(selected);
   });
 }
 
@@ -594,6 +648,8 @@ if (bookmarked === "day" || bookmarked === "month") {
     button.setAttribute("aria-pressed", String(button.dataset["range"] === bookmarked));
   }
 }
+
+if (location.hash === "#map") selectTab("map");
 
 setInterval(() => {
   trim();

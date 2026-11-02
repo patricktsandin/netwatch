@@ -15,6 +15,10 @@
   <body>
     <header class="top">
       <h1>netwatch</h1>
+      <div id="tabs" role="tablist" aria-label="View">
+        <button role="tab" data-tab="graphs" aria-selected="true">Graphs</button>
+        <button role="tab" data-tab="map" aria-selected="false">Map</button>
+      </div>
       <div id="identities"></div>
       <div id="ranges" role="group" aria-label="Time range">
         <button data-range="hour" aria-pressed="true">1 h</button>
@@ -58,6 +62,21 @@
     </dialog>
     <div id="connection" hidden>Disconnected from the daemon. Reconnecting…</div>
     <main id="stack"></main>
+    <main id="map-view" hidden>
+      <div class="map-legend" aria-label="Legend">
+        <span><i class="dot healthy"></i>healthy</span>
+        <span><i class="dot degraded"></i>degraded</span>
+        <span><i class="dot failing"></i>failing</span>
+        <span><i class="dot rate-limited"></i>rate-limited?</span>
+        <span><i class="dot unknown"></i>unknown</span>
+        <span><i class="dot traced"></i>seen by a trace</span>
+        <span><svg width="28" height="8" aria-hidden="true"><line x1="0" y1="4" x2="28" y2="4" class="map-edge probed" /></svg>probed</span>
+        <span><svg width="28" height="8" aria-hidden="true"><line x1="0" y1="4" x2="28" y2="4" class="map-edge traced" /></svg>traced</span>
+        <span><svg width="28" height="8" aria-hidden="true"><line x1="0" y1="4" x2="28" y2="4" class="map-edge unmeasured" /></svg>hops unknown</span>
+        <span class="hint">Hover a node to light up the paths through it. Click one to see its graph.</span>
+      </div>
+      <div id="map" class="map-scroll"></div>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

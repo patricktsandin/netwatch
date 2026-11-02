@@ -121,11 +121,25 @@ async fn main() -> anyhow::Result<()> {
             database: database.clone(),
             writes: writes.clone(),
         });
+    // Flushing history also deletes the traces the network map draws (ADR-0038), so
+    // the main loop is told to forget its own copies.
+    let history_flushed = std::sync::Arc::new(tokio::sync::Notify::new());
     let flush_history: netwatch_adapter_web::FlushHistory = {
         let writes = writes.clone();
+        let history_flushed = history_flushed.clone();
         std::sync::Arc::new(move || {
-            let (done, result) = tokio::sync::oneshot::channel();
+            let (done, written) = tokio::sync::oneshot::channel();
+            let (tell, result) = tokio::sync::oneshot::channel();
             let _ = writes.send(persist::Write::FlushHistory(done));
+            let history_flushed = history_flushed.clone();
+            tokio::spawn(async move {
+                if let Ok(outcome) = written.await {
+                    if outcome.is_ok() {
+                        history_flushed.notify_one();
+                    }
+                    let _ = tell.send(outcome);
+                }
+            });
             result
         })
     };
@@ -320,6 +334,12 @@ async fn main() -> anyhow::Result<()> {
         Time::new::<second>(6.0 * 3600.0),
         clock.now().after(Time::new::<second>(30.0)),
     );
+    // Each target's latest trace, for the network map (ADR-0042).
+    let mut latest_traces = persist::latest_traces(&config.database, traceable.keys().copied())
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "cannot read the latest path traces");
+            BTreeMap::new()
+        });
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
     let tracer = trace::Tracer::new(pin.clone(), names.clone(), clock, traced_tx);
     let start_trace = |request: TraceRequest| {
@@ -451,7 +471,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let now = clock.wall_now();
-                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), now, &live, &current_tx);
+                let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, now, &live, &current_tx);
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     if let Some(request) = traces.incident(&incident, clock.now()) {
@@ -501,11 +521,15 @@ async fn main() -> anyhow::Result<()> {
             Some(finished) = traced.recv() => {
                 if let Some(trace) = finished.trace {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
+                    latest_traces.insert(finished.target, trace.clone());
                     let _ = writes.send(persist::Write::Trace(trace));
                 }
                 if let Some(request) = traces.finished(finished.target, clock.now()) {
                     start_trace(request);
                 }
+            }
+            () = history_flushed.notified() => {
+                latest_traces.clear();
             }
             Some(reason) = disabled_rx.recv() => {
                 disabled.insert(reason);
@@ -724,13 +748,16 @@ const STALE_AFTER_US: i64 = 30_000_000;
 
 /// Grades every role from its recent outcomes, reads loss along each path, folds in
 /// the layer reports, and publishes the result together with every role's current
-/// binding. This is the only place statuses are decided (ADR-0030). Returns the
-/// grades, from which incidents are tracked.
+/// binding, and the network map built from them (ADR-0042). This is the only place
+/// statuses are decided (ADR-0030). Returns the grades, from which incidents are
+/// tracked.
+#[allow(clippy::too_many_arguments)] // Each is one of the daemon's views.
 fn publish_current(
     recent: &HashMap<Role, VecDeque<(WallTime, bool)>>,
     layers: &BTreeMap<Role, Health>,
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
+    traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
     now: WallTime,
     live: &broadcast::Sender<LiveMessage>,
     current: &watch::Sender<netwatch_adapter_web::Current>,
@@ -773,6 +800,7 @@ fn publish_current(
             )
         })
         .collect();
+    let map = network_map(&grades, topology, names, traces, &bindings);
     let _ = live.send(LiveMessage::Statuses {
         statuses: statuses.clone(),
     });
@@ -780,6 +808,10 @@ fn publish_current(
         bindings: bindings.clone(),
     });
     current.send_modify(|c| {
+        if c.map != map {
+            let _ = live.send(LiveMessage::Map { map: map.clone() });
+            c.map = map;
+        }
         c.statuses = statuses;
         c.bindings = bindings;
         c.names = names
@@ -788,6 +820,45 @@ fn publish_current(
             .collect();
     });
     grades
+}
+
+/// The network map (ADR-0042), from the grades, the hops' responding addresses, and
+/// each target's latest trace. Router names come from the lookups so far, and else
+/// from the trace that saw the router.
+fn network_map(
+    grades: &BTreeMap<Role, Health>,
+    topology: &Topology,
+    names: &HashMap<IpAddr, String>,
+    traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
+    bindings: &BTreeMap<String, BindingView>,
+) -> netwatch_adapter_web::MapView {
+    let hops: BTreeMap<Role, IpAddr> = topology
+        .bindings()
+        .filter_map(|(role, binding)| match (role, &binding.identity) {
+            (Role::Hop { .. }, Identity::Address(address)) => Some((role.clone(), *address)),
+            _ => None,
+        })
+        .collect();
+    let latest: BTreeMap<TargetId, netwatch_probing::map::LatestTrace> = traces
+        .iter()
+        .map(|(&target, stored)| {
+            (
+                target,
+                netwatch_probing::map::LatestTrace {
+                    destination: stored.destination,
+                    trace: stored.trace.clone(),
+                },
+            )
+        })
+        .collect();
+    let mut known: BTreeMap<IpAddr, String> = traces
+        .values()
+        .flat_map(|t| t.names.iter().map(|(a, n)| (*a, n.clone())))
+        .collect();
+    known.extend(names.iter().map(|(a, n)| (*a, n.clone())));
+    let traced = traces.iter().map(|(&t, stored)| (t, stored.at)).collect();
+    let map = netwatch_probing::map::build(grades, &hops, &latest);
+    netwatch_adapter_web::MapView::new(&map, bindings, &known, &traced)
 }
 
 /// Publishes a layer's report, and returns its grade for [`publish_current`].

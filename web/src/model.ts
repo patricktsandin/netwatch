@@ -124,6 +124,8 @@ export interface Sighting {
 export interface MapNode {
   readonly id: MapNodeId;
   readonly kind: "role" | "router" | "silent";
+  /** For a node of its own role, that role: its id is the role's key. */
+  readonly role: RoleKey | null;
   /** Its position along the path. Every edge goes to a greater depth. */
   readonly depth: number;
   readonly ttl: number | null;
@@ -157,7 +159,8 @@ export type Live =
   | { readonly type: "reading"; readonly role: RoleKey; readonly reading: Reading }
   | { readonly type: "layer"; readonly role: RoleKey; readonly report: LayerReport }
   | { readonly type: "statuses"; readonly statuses: ReadonlyMap<RoleKey, Status> }
-  | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> };
+  | { readonly type: "bindings"; readonly bindings: ReadonlyMap<RoleKey, Binding> }
+  | { readonly type: "map"; readonly map: NetworkMap };
 
 export type TargetKind = "icmp" | "dns" | "https";
 

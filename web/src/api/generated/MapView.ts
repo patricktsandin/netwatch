@@ -3,8 +3,7 @@ import type { MapEdgeView } from "./MapEdgeView";
 import type { MapNodeView } from "./MapNodeView";
 
 /**
- * The network map (ADR-0042), as the Map tab draws it. Built by
- * [`MapView::new`] from `netwatch_probing::map::build`.
+ * The network map (ADR-0042), as the Map tab draws it.
  */
 export type MapView = { 
 /**

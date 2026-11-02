@@ -123,11 +123,275 @@ pub struct LatestTrace {
 
 /// Builds the map from every role's status, each hop's responding address, and each
 /// target's latest trace.
+///
+/// Each graded target's path runs from the host's layers through its hops in TTL
+/// order, then through its trace beyond the last of them, and ends at the target.
+/// Consecutive positions on a path are joined by an edge from every node at one to
+/// every node at the next.
 pub fn build(
     statuses: &BTreeMap<Role, Health>,
     hops: &BTreeMap<Role, IpAddr>,
     traces: &BTreeMap<TargetId, LatestTrace>,
 ) -> NetworkMap {
-    let _ = (statuses, hops, traces);
-    NetworkMap::default()
+    let mut map = Builder {
+        statuses,
+        nodes: BTreeMap::new(),
+        edges: BTreeMap::new(),
+    };
+    let targets: BTreeSet<TargetId> = statuses
+        .keys()
+        .filter_map(|role| match role {
+            Role::Target(target) | Role::Hop { target, .. } => Some(*target),
+            _ => None,
+        })
+        .collect();
+
+    // The host's layers. The kernel is always there, as the root every path starts
+    // from.
+    let kernel = map.node(Place::Role(Role::Kernel), 0);
+    let mut trunk = kernel.clone();
+    for (role, depth) in [(Role::Nic, 1), (Role::Tunnel, 2), (Role::LocalInterface, 3)] {
+        if statuses.contains_key(&role) {
+            let place = map.node(Place::Role(role), depth);
+            map.step(
+                &[trunk],
+                std::slice::from_ref(&place),
+                Link::Path { gap: false },
+                &targets,
+            );
+            trunk = place;
+        }
+    }
+    for radio in [Role::Wifi, Role::Cellular] {
+        if statuses.contains_key(&radio) {
+            let place = map.node(Place::Role(radio), 1);
+            map.step(
+                std::slice::from_ref(&kernel),
+                &[place],
+                Link::OffPath,
+                &BTreeSet::new(),
+            );
+        }
+    }
+    let trunk_depth = map.nodes.get(&trunk).map_or(0, |n| n.depth);
+
+    for &target in &targets {
+        let only = BTreeSet::from([target]);
+        let mut path = Path {
+            at: vec![trunk.clone()],
+            ttl: 0,
+            depth: trunk_depth,
+        };
+        let mut own_hops: Vec<(HopTtl, &Role)> = statuses
+            .keys()
+            .filter_map(|role| match role {
+                Role::Hop { target: t, ttl } if *t == target => Some((*ttl, role)),
+                _ => None,
+            })
+            .collect();
+        own_hops.sort();
+        for (ttl, role) in own_hops {
+            let place = match hops.get(role) {
+                Some(&address) => Place::Router { address, ttl },
+                None => Place::Role(role.clone()),
+            };
+            map.advance(&mut path, vec![place], ttl, &only, Some(role));
+        }
+
+        let mut reached = None;
+        if let Some(latest) = traces.get(&target) {
+            for hop in &latest.trace.hops {
+                if hop.ttl.get().get() <= path.ttl {
+                    continue;
+                }
+                let sighting = Sighting {
+                    target,
+                    sent: hop.sent,
+                    answered: hop.answered,
+                    median: hop.median,
+                };
+                if hop.responders.contains(&latest.destination) {
+                    reached = Some((hop.ttl, sighting));
+                    break;
+                }
+                let places: Vec<Place> = if hop.responders.is_empty() {
+                    vec![Place::Silent {
+                        target,
+                        ttl: hop.ttl,
+                    }]
+                } else {
+                    hop.responders
+                        .iter()
+                        .map(|&address| Place::Router {
+                            address,
+                            ttl: hop.ttl,
+                        })
+                        .collect()
+                };
+                map.advance(&mut path, places.clone(), hop.ttl, &only, None);
+                for place in &places {
+                    map.sight(place, sighting.clone());
+                }
+            }
+            if reached.is_none()
+                && let Some(ttl) = latest.trace.silent_from
+                && ttl.get().get() > path.ttl
+            {
+                map.advance(
+                    &mut path,
+                    vec![Place::Silent { target, ttl }],
+                    ttl,
+                    &only,
+                    None,
+                );
+            }
+        }
+
+        // The target sits where its trace reached it, or else one step past what
+        // leads to it, across hops nobody has measured.
+        let (depth, gap) = match &reached {
+            Some((ttl, _)) => (depth_of(*ttl), ttl.get().get() != path.ttl + 1),
+            None => (path.depth + 1, true),
+        };
+        let place = map.node(Place::Role(Role::Target(target)), depth);
+        map.step(
+            &path.at,
+            std::slice::from_ref(&place),
+            Link::Path { gap },
+            &only,
+        );
+        if let Some((_, sighting)) = reached {
+            map.sight(&place, sighting);
+        }
+    }
+    map.finish()
+}
+
+/// A hop's depth: one past the local interface's at TTL 1.
+fn depth_of(ttl: HopTtl) -> u16 {
+    3 + u16::from(ttl.get().get())
+}
+
+/// How an edge was found, before its kind can be told: whether a path edge's ends
+/// are probed depends on every path merged into them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Path { gap: bool },
+    OffPath,
+}
+
+/// Where one target's path has got to.
+struct Path {
+    at: Vec<Place>,
+    ttl: u8,
+    depth: u16,
+}
+
+struct Builder<'a> {
+    statuses: &'a BTreeMap<Role, Health>,
+    nodes: BTreeMap<Place, MapNode>,
+    edges: BTreeMap<(Place, Place), (Link, BTreeSet<TargetId>)>,
+}
+
+impl Builder<'_> {
+    /// The node at `place`, made if new, with its role merged in if it is graded.
+    fn node(&mut self, place: Place, depth: u16) -> Place {
+        let role = match &place {
+            Place::Role(role) => Some(role.clone()),
+            Place::Router { .. } | Place::Silent { .. } => None,
+        };
+        self.nodes.entry(place.clone()).or_insert_with(|| MapNode {
+            place: place.clone(),
+            depth,
+            roles: BTreeMap::new(),
+            health: None,
+            sightings: Vec::new(),
+        });
+        if let Some(role) = role {
+            self.merge(&place, &role);
+        }
+        place
+    }
+
+    fn merge(&mut self, place: &Place, role: &Role) {
+        if let (Some(node), Some(&health)) = (self.nodes.get_mut(place), self.statuses.get(role)) {
+            node.roles.insert(role.clone(), health);
+        }
+    }
+
+    fn sight(&mut self, place: &Place, sighting: Sighting) {
+        if let Some(node) = self.nodes.get_mut(place) {
+            node.sightings.push(sighting);
+        }
+    }
+
+    /// Moves `path` on to `places`, all at `ttl`. `role` is the hop role measured
+    /// there, if any, which merges into its place.
+    fn advance(
+        &mut self,
+        path: &mut Path,
+        places: Vec<Place>,
+        ttl: HopTtl,
+        targets: &BTreeSet<TargetId>,
+        role: Option<&Role>,
+    ) {
+        let depth = depth_of(ttl);
+        for place in &places {
+            self.node(place.clone(), depth);
+            if let Some(role) = role {
+                self.merge(place, role);
+            }
+        }
+        let gap = ttl.get().get() != path.ttl + 1;
+        self.step(&path.at, &places, Link::Path { gap }, targets);
+        *path = Path {
+            at: places,
+            ttl: ttl.get().get(),
+            depth,
+        };
+    }
+
+    fn step(&mut self, from: &[Place], to: &[Place], link: Link, targets: &BTreeSet<TargetId>) {
+        for a in from {
+            for b in to {
+                let (known, on) = self
+                    .edges
+                    .entry((a.clone(), b.clone()))
+                    .or_insert((link, BTreeSet::new()));
+                if let (Link::Path { gap }, Link::Path { gap: other }) = (known, link) {
+                    *gap = *gap && other;
+                }
+                on.extend(targets.iter().copied());
+            }
+        }
+    }
+
+    fn finish(self) -> NetworkMap {
+        let probed = |place: &Place| self.nodes.get(place).is_some_and(|n| !n.roles.is_empty());
+        let edges = self
+            .edges
+            .iter()
+            .map(|((from, to), (link, targets))| MapEdge {
+                from: from.clone(),
+                to: to.clone(),
+                kind: match link {
+                    Link::OffPath => EdgeKind::OffPath,
+                    Link::Path { gap: true } => EdgeKind::Unmeasured,
+                    Link::Path { gap: false } if probed(from) && probed(to) => EdgeKind::Probed,
+                    Link::Path { gap: false } => EdgeKind::Traced,
+                },
+                targets: targets.clone(),
+            })
+            .collect();
+        let mut nodes: Vec<MapNode> = self
+            .nodes
+            .into_values()
+            .map(|mut node| {
+                node.health = node.roles.values().copied().reduce(Health::worse);
+                node
+            })
+            .collect();
+        nodes.sort_by(|a, b| (a.depth, &a.place).cmp(&(b.depth, &b.place)));
+        NetworkMap { nodes, edges }
+    }
 }

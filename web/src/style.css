@@ -120,3 +120,47 @@ dialog .hint.error { color: var(--failing); white-space: pre-wrap; }
 dialog .danger-zone { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
 dialog button.danger { border-color: var(--failing); color: var(--failing); }
 .identity.public { color: var(--text); border-color: var(--line); }
+#tabs { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+#tabs button { font: inherit; padding: 2px 12px; border: 0; background: var(--surface); color: var(--text); cursor: pointer; }
+#tabs button[aria-selected="true"] { background: var(--text); color: var(--bg); }
+#map-view { padding: 16px; }
+.map-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.map-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.map-legend .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.map-legend .hint { flex-basis: 100%; }
+.dot.healthy { background: var(--healthy); }
+.dot.degraded { background: var(--degraded); }
+.dot.failing { background: var(--failing); }
+.dot.unknown { background: var(--muted); }
+.dot.rate-limited { border: 1.5px dashed var(--muted); }
+.dot.traced { border: 1.5px solid var(--muted); }
+.map-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.map-scroll svg { display: block; margin: 0 auto; }
+.map-edge { fill: none; stroke: var(--muted); stroke-width: 1.5; opacity: 0.7; }
+.map-edge.traced { stroke-dasharray: 6 4; }
+.map-edge.unmeasured { stroke-dasharray: 2 4; }
+.map-edge.off-path { stroke-dasharray: 1 5; opacity: 0.4; }
+.map-edge.lit { stroke: var(--line); stroke-width: 2.5; opacity: 1; }
+.map-edge.dim { opacity: 0.15; }
+.map-node rect { fill: var(--bg); stroke: var(--border); stroke-width: 1.5; }
+.map-node.openable { cursor: pointer; }
+.map-node.openable:hover rect, .map-node.openable:focus rect { stroke: var(--line); }
+.map-node:focus { outline: none; }
+.map-node text { fill: var(--text); font: 12px system-ui, sans-serif; }
+.map-node .name { font-weight: 600; }
+.map-node .line { font-size: 11.5px; }
+.map-node .muted, .map-node .badge { fill: var(--muted); font-size: 11px; }
+.map-node .dot { fill: var(--muted); }
+.map-node.healthy .dot { fill: var(--healthy); }
+.map-node.degraded .dot { fill: var(--degraded); }
+.map-node.failing .dot { fill: var(--failing); }
+.map-node.healthy .badge { fill: var(--healthy); }
+.map-node.degraded .badge { fill: var(--degraded); }
+.map-node.failing .badge { fill: var(--failing); }
+.map-node.degraded rect { stroke: var(--degraded); }
+.map-node.failing rect { stroke: var(--failing); stroke-width: 2; }
+.map-node.rate-limited .dot { fill: none; stroke: var(--muted); stroke-dasharray: 2 2; }
+.map-node.traced .dot { fill: none; stroke: var(--muted); }
+.map-node.traced rect { stroke-dasharray: 4 3; }
+.row.flash { outline: 2px solid var(--line); outline-offset: 2px; }
+[hidden] { display: none !important; }

@@ -19,7 +19,7 @@ digraph data_flow {
   subgraph cluster_domain {
     label="Domain state machines"; fontsize=11; style="rounded"; color="#5e7fb8"; fontcolor="#2d4a7a";
     topo   [label="Topology\nroles → identities, epochs", fillcolor="#eaf0fa", color="#5e7fb8"];
-    probe  [label="Probing\nreply matching, grading,\nincident tracker, trace schedule", fillcolor="#eaf0fa", color="#5e7fb8"];
+    probe  [label="Probing\nreply matching, grading,\nincident tracker, trace schedule,\nnetwork map", fillcolor="#eaf0fa", color="#5e7fb8"];
     health [label="Host health\ncounters → gauges, layer grades", fillcolor="#eaf0fa", color="#5e7fb8"];
   }
 
@@ -34,7 +34,7 @@ digraph data_flow {
 
   subgraph cluster_web {
     label="Presentation"; fontsize=11; style="rounded,dashed"; color="#b8bec7"; fontcolor="#444444";
-    current [label="Current\nstatuses, bindings, layers"];
+    current [label="Current\nstatuses, bindings, layers,\nnetwork map"];
     api     [label="REST API\nbackfill, reports"];
     ws      [label="WebSocket\nlive stream"];
     spa     [label="Browser SPA\ndraws only (ADR-0030)", fillcolor="#fff6e5", color="#c9a24a"];
@@ -44,7 +44,7 @@ digraph data_flow {
   socks -> probe [label="replies, ICMP errors"];
   proc -> health; bpf -> health; kmsg -> loop [label="log lines"]; radio -> health; radio -> topo [label="BSSID, cell"];
   topo -> loop [label="bindings,\ntopology events"];
-  probe -> loop [label="samples, grades,\nincidents"];
+  probe -> loop [label="samples, grades,\nincidents, the map"];
   health -> loop [label="readings,\nlayer reports"];
   loop -> probe [label="hop identities,\ntrace requests", style=dashed, constraint=false];
   loop -> writer [label="writes"];
@@ -52,7 +52,7 @@ digraph data_flow {
   db -> roll [label="every minute"];
   roll -> db [style=dashed];
   loop -> current;
-  loop -> ws [label="samples, events,\nincidents"];
+  loop -> ws [label="samples, events,\nincidents, map changes"];
   db -> api [label="reads behind a\nflush barrier (ADR-0029)"];
   current -> api;
   api -> spa; ws -> spa;

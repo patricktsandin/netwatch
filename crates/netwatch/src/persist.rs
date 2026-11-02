@@ -197,3 +197,30 @@ pub fn last_epoch(path: &std::path::Path) -> anyhow::Result<Option<u64>> {
         .last_epoch()?
         .and_then(|e| u64::try_from(e).ok()))
 }
+
+/// Each of `targets`' latest trace stored at `path`, routine or episode, for the
+/// network map (ADR-0042).
+pub fn latest_traces(
+    path: &std::path::Path,
+    targets: impl IntoIterator<Item = netwatch_shared::TargetId>,
+) -> anyhow::Result<
+    std::collections::BTreeMap<netwatch_shared::TargetId, netwatch_adapter_sqlite::StoredTrace>,
+> {
+    use netwatch_probing::trace::TraceKind;
+    let store = Store::open(path)?;
+    let end = netwatch_shared::WallTime::from_unix_micros(i64::MAX);
+    let mut latest = std::collections::BTreeMap::new();
+    for target in targets {
+        let role = netwatch_shared::Role::Target(target);
+        let routine = store.latest_trace(&role, TraceKind::Routine, end)?;
+        let episode = store.latest_trace(&role, TraceKind::Episode, end)?;
+        let newest = [routine, episode]
+            .into_iter()
+            .flatten()
+            .max_by_key(|t| t.at.as_unix_micros());
+        if let Some(trace) = newest {
+            latest.insert(target, trace);
+        }
+    }
+    Ok(latest)
+}

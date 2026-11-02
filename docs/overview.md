@@ -38,6 +38,8 @@ follows each link as it changes.
 - **It isn't fooled by routers that deprioritize probes.** Loss at a router that
   doesn't carry on to the rest of the path is rate limiting, not a fault, and netwatch
   doesn't raise an incident for it.
+- **It draws the paths.** A map shows every path to every target, with the routers
+  that paths share drawn once, so a failing shared router stands out.
 - **It writes the ISP's report.** One click produces a report of any time span, with
   per-router evidence, path traces, router ownership, and link load, in the form a
   network operations center (NOC) asks for. See
@@ -123,7 +125,7 @@ disabled and reported, never fatal (ADR-0007). There are three ways to install
 ## Size and status
 
 - About 17,000 lines of Rust in 16 crates and 2,600 lines of TypeScript.
-- 41 architecture decision records, a glossary, and a context map.
+- 42 architecture decision records, a glossary, and a context map.
 - Working end to end and in daily use. The current feature list is the *Status*
   section of [CLAUDE.md](../CLAUDE.md).
 

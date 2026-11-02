@@ -14,6 +14,7 @@ This manual covers day-to-day use. For installing, see
 - [Reading the graphs](#reading-the-graphs)
 - [Statuses](#statuses)
 - [Incidents and markers](#incidents-and-markers)
+- [The network map](#the-network-map)
 - [Reporting a problem to your ISP](#reporting-a-problem-to-your-isp)
 - [Changing what netwatch watches](#changing-what-netwatch-watches)
 - [Starting over](#starting-over)
@@ -43,6 +44,7 @@ Wi-Fi to cable, say), the chip changes and the graphs mark the moment.
 
 | Control | What it does |
 |---|---|
+| Graphs · Map | The rows of graphs, or the [network map](#the-network-map). |
 | 1 h · 24 h · 30 d | The time range every graph shows. |
 | Reset zoom | Appears after you zoom; returns to the selected range. |
 | Report | Writes an incident report for your ISP ([below](#reporting-a-problem-to-your-isp)). |
@@ -115,6 +117,49 @@ netwatch also decides a **probable cause** for each incident: the incident furth
 upstream on the path that started first. If your router drops out, every target
 after it fails too. netwatch reports that as one problem caused by hop 1, not as six
 separate failures.
+
+## The network map
+
+The **Map** tab draws every path from this machine to every target as one picture,
+top to bottom in the order traffic travels. The page address `…/#map` opens it
+directly.
+
+![The network map](images/map.png)
+
+- **Each box is one thing on a path:**
+  - this machine's layers: kernel, NIC, local interface
+  - a router
+  - a target
+
+  The dot and the word in its corner give its status, as in the
+  [Statuses](#statuses) table.
+- **Shared routers are drawn once.** When several targets' paths go through the
+  same router at the same distance, they meet at that box. If several targets fail
+  at once and all their paths share a red box, that router is the likely place to
+  look.
+- **A shared router lists each path's own status.** Hover over it to see them. A
+  router can be rate-limited on one path and fine on another.
+- **Boxes with a dashed outline and "traced"** are routers beyond hop 3, which
+  netwatch doesn't measure continuously. They come from the latest path trace,
+  which runs every 6 hours and whenever a problem starts beyond your router. Hover
+  for when it ran, how many probes were answered, and the median time.
+- **"Hop n · no reply"** is a distance at which the trace got no answer.
+- **Lines:**
+
+  | Line | Meaning |
+  |---|---|
+  | Solid | Both ends are measured all the time. |
+  | Dashed | Known from a trace. |
+  | Dotted | The hops in between are unknown. For example, HTTPS targets aren't traced, and DNS targets have no hop 1–3 rows. |
+
+- **Hover over a box** to light up the paths through it. **Click a box** with a status
+  to jump to its graph.
+- **Several boxes at one distance** usually mean load balancing: the ISP spreads
+  traffic over several routers. The map joins each of them to each box at the next
+  distance, because a trace can't tell which leads where.
+
+The map shows the network as it is now. For what happened earlier, use the graphs or
+a report.
 
 ## Reporting a problem to your ISP
 

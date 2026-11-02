@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ParseError, parseBindings, parseLive, parsePoint, parseRollups } from "./parse";
+import { ParseError, parseBindings, parseLive, parseMap, parsePoint, parseRollups } from "./parse";
 
 describe("parsePoint", () => {
   it("accepts a round trip and converts µs to ms", () => {
@@ -74,5 +74,35 @@ describe("parseBindings", () => {
       event: { at_us: 1, kind: "trace", role: "target:1", epoch: null, detail: "routine path trace", roles: [] },
     });
     expect(live.type === "event" && live.marker.kind).toBe("trace");
+  });
+});
+
+describe("parseMap", () => {
+  const node = (id: string, depth: number) => ({
+    id,
+    kind: "role",
+    depth,
+    ttl: null,
+    identity: null,
+    name: null,
+    status: "healthy",
+    roles: [{ key: id, status: "healthy" }],
+    sightings: [],
+    targets: [],
+  });
+  const edge = (from: string, to: string) => ({ from, to, kind: "probed", targets: [] });
+
+  it("accepts edges that join two of its nodes and go deeper", () => {
+    const map = parseMap({ nodes: [node("kernel", 0), node("nic", 1)], edges: [edge("kernel", "nic")] });
+    expect(map.edges[0]?.to).toBe("nic");
+  });
+
+  it.each([
+    [{ nodes: [node("kernel", 0)], edges: [edge("kernel", "nic")] }, "an edge to no node"],
+    [{ nodes: [node("kernel", 0), node("nic", 1)], edges: [edge("nic", "kernel")] }, "an edge going up"],
+    [{ nodes: [node("kernel", 0), node("kernel", 1)], edges: [] }, "a duplicate id"],
+    [{ nodes: [{ ...node("kernel", 0), status: "fine" }], edges: [] }, "an unknown status"],
+  ])("rejects %j (%s)", (value: unknown, why: string) => {
+    expect(() => parseMap(value), why).toThrow(ParseError);
   });
 });

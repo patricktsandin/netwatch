@@ -9,6 +9,9 @@ import type { IncidentView } from "./generated/IncidentView";
 import type { ReadingPoint } from "./generated/ReadingPoint";
 import type { ReadingRollupPoint } from "./generated/ReadingRollupPoint";
 import type { LayerReportView } from "./generated/LayerReportView";
+import type { MapEdgeView } from "./generated/MapEdgeView";
+import type { MapNodeView } from "./generated/MapNodeView";
+import type { SightingView } from "./generated/SightingView";
 import type { RoleSummary } from "./generated/RoleSummary";
 import type { SamplePoint } from "./generated/SamplePoint";
 import type {
@@ -25,7 +28,11 @@ import type {
   LayerReport,
   Live,
   LossReason,
+  MapEdge,
+  MapNode,
+  MapNodeId,
   Marker,
+  NetworkMap,
   Micros,
   Point,
   Reading,
@@ -281,9 +288,7 @@ export function parseBindings(value: unknown): ReadonlyMap<RoleKey, Binding> {
 /** Every layer's latest report by role key, from `/api/layers`. */
 export function parseLayers(value: unknown): ReadonlyMap<RoleKey, LayerReport> {
   const all = record<Record<string, unknown>>(value, "layers");
-  return new Map(
-    Object.entries(all).map(([key, report]) => [roleKey(key, "layers key"), parseLayerReport(report)]),
-  );
+  return new Map(Object.entries(all).map(([key, report]) => [roleKey(key, "layers key"), parseLayerReport(report)]));
 }
 
 /** Target names by role key, from `/api/targets`. */
@@ -347,10 +352,8 @@ export function parseLive(value: unknown): Live {
     report: unknown;
     statuses: unknown;
     bindings: unknown;
-  }>(
-    value,
-    "live",
-  );
+    map: unknown;
+  }>(value, "live");
   switch (m.type) {
     case "sample":
       return { type: "sample", role: roleKey(m.role, "live.role"), point: parsePoint(m.point) };
@@ -368,6 +371,8 @@ export function parseLive(value: unknown): Live {
       return { type: "bindings", bindings: parseBindings(m.bindings) };
     case "layer":
       return { type: "layer", role: roleKey(m.role, "live.role"), report: parseLayerReport(m.report) };
+    case "map":
+      return { type: "map", map: parseMap(m.map) };
     default:
       throw new ParseError(`live: unknown type ${JSON.stringify(m.type)}`);
   }
@@ -411,4 +416,73 @@ export function parseConfig(value: unknown): Config {
 export function parsePublic(value: unknown): string | null {
   const host = record<{ public: unknown }>(value, "host");
   return nullableString(host.public ?? null, "host.public");
+}
+
+const NODE_KINDS: readonly MapNode["kind"][] = ["role", "router", "silent"];
+const EDGE_KINDS: readonly MapEdge["kind"][] = ["probed", "traced", "unmeasured", "off-path"];
+
+function strings<T>(value: unknown, what: string, each: (v: unknown, what: string) => T): T[] {
+  return array(value, what).map((v) => each(v, what));
+}
+
+function parseMapNode(value: unknown): MapNode {
+  const n = record<MapNodeView>(value, "map node");
+  if (typeof n.id !== "string" || n.id === "") throw new ParseError("map node.id: expected a string");
+  const ttl = n.ttl === null ? null : integer(n.ttl, "map node.ttl");
+  const kind = oneOf(n.kind, NODE_KINDS, "map node.kind");
+  return {
+    id: n.id as MapNodeId,
+    kind,
+    role: kind === "role" ? roleKey(n.id, "map node.id") : null,
+    depth: integer(n.depth, "map node.depth"),
+    ttl,
+    identity: nullableString(n.identity, "map node.identity"),
+    name: nullableString(n.name, "map node.name"),
+    status: n.status === null ? null : oneOf(n.status, ROLE_STATUSES, "map node.status"),
+    roles: array(n.roles, "map node.roles").map((r) => {
+      const role = record<{ key: string; status: string }>(r, "map node.role");
+      return {
+        key: roleKey(role.key, "map node.role.key"),
+        status: oneOf(role.status, ROLE_STATUSES, "map node.role.status"),
+      };
+    }),
+    sightings: array(n.sightings, "map node.sightings").map((v) => {
+      const s = record<SightingView>(v, "sighting");
+      return {
+        target: roleKey(s.target, "sighting.target"),
+        at: micros(s.at_us, "sighting.at_us"),
+        sent: integer(s.sent, "sighting.sent"),
+        answered: integer(s.answered, "sighting.answered"),
+        medianUs: s.median_us === null ? null : integer(s.median_us, "sighting.median_us"),
+      };
+    }),
+    targets: strings(n.targets, "map node.targets", roleKey),
+  };
+}
+
+/** The network map (ADR-0042), from `/api/map` or the live stream. Every edge must
+ *  join two of its nodes, and go deeper. */
+export function parseMap(value: unknown): NetworkMap {
+  const m = record<{ nodes: unknown; edges: unknown }>(value, "map");
+  const nodes = array(m.nodes, "map.nodes").map(parseMapNode);
+  const depths = new Map(nodes.map((n) => [n.id, n.depth]));
+  if (depths.size !== nodes.length) throw new ParseError("map.nodes: duplicate id");
+  const edges = array(m.edges, "map.edges").map((value): MapEdge => {
+    const e = record<MapEdgeView>(value, "map edge");
+    const end = (id: unknown, what: string): MapNodeId => {
+      const found = nodes.find((n) => n.id === id);
+      if (found === undefined) throw new ParseError(`${what}: no such node ${JSON.stringify(id)}`);
+      return found.id;
+    };
+    const from = end(e.from, "map edge.from");
+    const to = end(e.to, "map edge.to");
+    if ((depths.get(from) ?? 0) >= (depths.get(to) ?? 0)) throw new ParseError("map edge: must go deeper");
+    return {
+      from,
+      to,
+      kind: oneOf(e.kind, EDGE_KINDS, "map edge.kind"),
+      targets: strings(e.targets, "map edge.targets", roleKey),
+    };
+  });
+  return { nodes, edges };
 }

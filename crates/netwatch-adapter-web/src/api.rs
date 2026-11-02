@@ -6,9 +6,11 @@
 use netwatch_adapter_sqlite::{StoredEvent, StoredSample};
 use netwatch_history::{Loss, Measurement, Reading, ReadingRollup, Sample};
 use netwatch_probing::incident::{Incident, Severity};
+use netwatch_probing::map::{EdgeKind, NetworkMap, Place};
 use netwatch_shared::uom::si::time::microsecond;
-use netwatch_shared::{Gauge, Role, WallTime};
-use std::collections::BTreeMap;
+use netwatch_shared::{Gauge, Role, TargetId, WallTime};
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -539,8 +541,7 @@ pub struct HostView {
     pub clock_error_us: Option<i64>,
 }
 
-/// The network map (ADR-0042), as the Map tab draws it. Built by
-/// [`MapView::new`] from `netwatch_probing::map::build`.
+/// The network map (ADR-0042), as the Map tab draws it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
 #[ts(export, export_to = "../../../web/src/api/generated/")]
 pub struct MapView {
@@ -622,4 +623,102 @@ pub struct MapEdgeView {
     pub kind: String,
     /// The keys of the targets whose paths take it.
     pub targets: Vec<String>,
+}
+
+impl MapView {
+    /// The map in words the UI can draw. `bindings` gives the layers' identities,
+    /// `names` the router names known for addresses, and `traced` when each target's
+    /// latest trace ran.
+    pub fn new(
+        map: &NetworkMap,
+        bindings: &BTreeMap<String, BindingView>,
+        names: &BTreeMap<IpAddr, String>,
+        traced: &BTreeMap<TargetId, WallTime>,
+    ) -> Self {
+        let id = |place: &Place| match place {
+            Place::Role(role) => role.key(),
+            Place::Router { address, ttl } => format!("router:{address}:{}", ttl.get()),
+            Place::Silent { target, ttl } => format!("silent:{}:{}", target.get(), ttl.get()),
+        };
+        let target_keys =
+            |targets: &BTreeSet<TargetId>| targets.iter().map(|&t| Role::Target(t).key()).collect();
+        let nodes = map
+            .nodes
+            .iter()
+            .map(|node| {
+                let (kind, ttl, identity, name) = match &node.place {
+                    Place::Role(role) => {
+                        let binding = bindings.get(&role.key());
+                        (
+                            "role",
+                            None,
+                            binding.map(|b| b.identity.clone()),
+                            binding.and_then(|b| b.name.clone()),
+                        )
+                    }
+                    Place::Router { address, ttl } => (
+                        "router",
+                        Some(ttl.get().get()),
+                        Some(address.to_string()),
+                        names.get(address).cloned(),
+                    ),
+                    Place::Silent { ttl, .. } => ("silent", Some(ttl.get().get()), None, None),
+                };
+                let through: BTreeSet<TargetId> = map
+                    .edges
+                    .iter()
+                    .filter(|e| e.from == node.place || e.to == node.place)
+                    .flat_map(|e| e.targets.iter().copied())
+                    .collect();
+                MapNodeView {
+                    id: id(&node.place),
+                    kind: kind.to_owned(),
+                    depth: node.depth,
+                    ttl,
+                    identity,
+                    name,
+                    status: node.health.map(status_text),
+                    roles: node
+                        .roles
+                        .iter()
+                        .map(|(role, &health)| MapRoleView {
+                            key: role.key(),
+                            status: status_text(health),
+                        })
+                        .collect(),
+                    sightings: node
+                        .sightings
+                        .iter()
+                        .filter_map(|s| {
+                            Some(SightingView {
+                                target: Role::Target(s.target).key(),
+                                at_us: traced.get(&s.target)?.as_unix_micros(),
+                                sent: s.sent,
+                                answered: s.answered,
+                                median_us: s.median.map(|m| m.get::<microsecond>().round() as i64),
+                            })
+                        })
+                        .collect(),
+                    targets: target_keys(&through),
+                }
+            })
+            .collect();
+        let edges = map
+            .edges
+            .iter()
+            .map(|edge| MapEdgeView {
+                from: id(&edge.from),
+                to: id(&edge.to),
+                kind: match edge.kind {
+                    EdgeKind::Probed => "probed",
+                    EdgeKind::Traced => "traced",
+                    EdgeKind::Unmeasured => "unmeasured",
+                    EdgeKind::OffPath => "off-path",
+                }
+                .to_owned(),
+                targets: target_keys(&edge.targets),
+            })
+            .collect();
+        MapView { nodes, edges }
+    }
 }
