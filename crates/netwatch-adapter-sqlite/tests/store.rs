@@ -473,3 +473,149 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
             .is_empty()
     );
 }
+
+fn eth(name: &[u8], index: u32) -> Identity {
+    Identity::Interface {
+        index: InterfaceIndex::new(NonZeroU32::new(index).unwrap()),
+        name: InterfaceName::parse(name).unwrap(),
+    }
+}
+
+fn started(store: &mut Store, n: u64, role: Role, identity: Identity, at: i64, resumed: bool) {
+    store
+        .record_event(
+            &TopologyEvent::EpochStarted {
+                epoch: epoch(n),
+                role,
+                identity,
+            },
+            WallTime::from_unix_micros(at),
+            resumed,
+        )
+        .unwrap();
+}
+
+fn ended(store: &mut Store, n: u64, role: Role, at: i64) {
+    store
+        .record_event(
+            &TopologyEvent::EpochEnded {
+                epoch: epoch(n),
+                role,
+            },
+            WallTime::from_unix_micros(at),
+            false,
+        )
+        .unwrap();
+}
+
+fn public(store: &mut Store, at: i64, detail: &str) {
+    store
+        .record_note(&netwatch_adapter_sqlite::StoredEvent {
+            at: WallTime::from_unix_micros(at),
+            kind: "public-address".to_owned(),
+            role: Some("local-interface".to_owned()),
+            epoch: None,
+            detail: Some(detail.to_owned()),
+        })
+        .unwrap();
+}
+
+fn kinds(store: &Store) -> Vec<(String, Option<String>)> {
+    store
+        .events(WallTime::from_unix_micros(0))
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.kind, e.detail))
+        .collect()
+}
+
+#[test]
+fn a_resumed_epoch_is_recorded_as_resumed_and_still_starts_an_epoch() {
+    let mut store = Store::open(&fresh("resumed")).unwrap();
+    started(&mut store, 4, Role::Nic, eth(b"eth0", 5), 10, true);
+    assert_eq!(
+        kinds(&store),
+        [(
+            "epoch-resumed".to_owned(),
+            Some("eth0 (ifindex 5)".to_owned())
+        )]
+    );
+    assert_eq!(store.last_epoch().unwrap(), Some(4));
+}
+
+#[test]
+fn the_identities_before_a_start_are_each_roles_latest() {
+    let mut store = Store::open(&fresh("last-identities")).unwrap();
+    started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+    ended(&mut store, 1, Role::Nic, 20);
+    started(&mut store, 2, Role::Nic, eth(b"wlan0", 3), 20, false);
+    started(&mut store, 3, Role::Kernel, eth(b"lo", 1), 10, false);
+    let last = store.last_identities().unwrap();
+    assert_eq!(
+        last.get("nic").map(String::as_str),
+        Some("wlan0 (ifindex 3)")
+    );
+    assert_eq!(
+        last.get("kernel").map(String::as_str),
+        Some("lo (ifindex 1)")
+    );
+    assert_eq!(last.len(), 2);
+}
+
+#[test]
+fn the_public_address_before_a_start_is_the_last_one_noted() {
+    let mut store = Store::open(&fresh("last-public")).unwrap();
+    assert_eq!(store.last_public_address().unwrap(), None);
+    public(&mut store, 10, "192.0.2.1 (enters Cloudflare at LHR, GB)");
+    public(
+        &mut store,
+        20,
+        "192.0.2.1 (enters Cloudflare at LHR, GB) → 198.51.100.2 (enters Cloudflare at MAN, GB)",
+    );
+    assert_eq!(
+        store.last_public_address().unwrap().as_deref(),
+        Some("198.51.100.2 (enters Cloudflare at MAN, GB)")
+    );
+}
+
+#[test]
+fn migration_8_marks_restarts_resumed_and_drops_repeated_public_addresses() {
+    let path = fresh("migrate-to-8");
+    {
+        let mut store = Store::open(&path).unwrap();
+        // A run with eth0, a restart with eth0 again, and within that run eth0
+        // going away and coming back.
+        started(&mut store, 1, Role::Nic, eth(b"eth0", 5), 10, false);
+        started(&mut store, 2, Role::Nic, eth(b"eth0", 5), 20, false);
+        ended(&mut store, 2, Role::Nic, 30);
+        started(&mut store, 3, Role::Nic, eth(b"eth0", 5), 40, false);
+        // After a restart, a different NIC.
+        started(&mut store, 4, Role::Nic, eth(b"wlan0", 3), 50, false);
+        public(&mut store, 11, "A");
+        public(&mut store, 21, "A");
+        public(&mut store, 41, "A → B");
+        public(&mut store, 51, "B");
+        public(&mut store, 61, "C");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", 7)
+            .unwrap();
+    }
+
+    let store = Store::open(&path).unwrap();
+
+    let s = |k: &str, d: &str| (k.to_owned(), Some(d.to_owned()));
+    assert_eq!(
+        kinds(&store),
+        [
+            s("epoch-started", "eth0 (ifindex 5)"),
+            s("public-address", "A"),
+            s("epoch-resumed", "eth0 (ifindex 5)"),
+            ("epoch-ended".to_owned(), None),
+            s("epoch-started", "eth0 (ifindex 5)"),
+            s("public-address", "A → B"),
+            s("epoch-started", "wlan0 (ifindex 3)"),
+            s("public-address", "C"),
+        ]
+    );
+}

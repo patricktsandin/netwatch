@@ -60,3 +60,16 @@ fn a_note_concerns_only_the_role_it_names_or_else_the_kernel() {
     );
     assert_eq!(concerns("source-disabled", None, &known()), ["kernel"]);
 }
+
+#[test]
+fn a_resumed_epoch_concerns_no_role_because_nothing_changed() {
+    assert!(concerns("epoch-resumed", Some(Role::Nic), &known()).is_empty());
+}
+
+#[test]
+fn a_start_concerns_the_kernel_alone() {
+    assert_eq!(
+        concerns("started", Some(Role::Kernel), &known()),
+        ["kernel"]
+    );
+}
