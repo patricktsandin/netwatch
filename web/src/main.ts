@@ -474,7 +474,7 @@ if (themeSelect instanceof HTMLSelectElement) {
 
 /** Draws the network map, if it's showing. Switching to it draws it then. */
 function drawMap(): void {
-  const el = document.getElementById("map");
+  const el = document.getElementById("map-canvas");
   if (el === null || tab !== "map") return;
   renderMap(el, networkMap, { role: (key) => label(key, names), time: (at) => words.time(at) }, (role) => {
     selectTab("graphs");
