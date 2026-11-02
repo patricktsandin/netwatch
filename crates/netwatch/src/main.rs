@@ -25,12 +25,13 @@ use netwatch_history::{Measurement, Reading, Sample};
 use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
+use netwatch_probing::sharing;
 use netwatch_probing::trace::{TraceRequest, TraceSchedule};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
 use netwatch_shared::{
-    Gauge, HopTtl, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
+    Gauge, Identity, IdentityEpoch, InterfaceIndex, InterfaceName, Role, TargetId, WallTime,
 };
 use netwatch_topology::{Binding, Command, Observation, Output, Topology, TopologyEvent};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -39,33 +40,17 @@ use tokio::sync::{broadcast, mpsc, watch};
 use crate::clock::Clock;
 use crate::config::{Config, TargetProbe};
 
-/// The hops probed toward every target (ADR-0002).
-const HOPS: [std::num::NonZeroU8; 3] = [
-    std::num::NonZeroU8::MIN,
-    std::num::NonZeroU8::MIN.saturating_add(1),
-    std::num::NonZeroU8::MIN.saturating_add(2),
-];
-
-/// Every echo target, with the address it probes.
-fn echo_targets(config: &Config) -> Vec<(TargetId, IpAddr)> {
+/// Every target with hops (ICMP and DNS, ADR-0043), with the address they are
+/// probed toward. HTTPS targets have no fixed address.
+fn hopped_targets(config: &Config) -> Vec<(TargetId, IpAddr)> {
     config
         .targets
         .iter()
         .filter_map(|t| match t.probe {
-            TargetProbe::Echo(address) => Some((t.id, address)),
-            _ => None,
+            TargetProbe::Echo(address) | TargetProbe::Dns(address) => Some((t.id, address)),
+            TargetProbe::Https(_) => None,
         })
         .collect()
-}
-
-/// The echo target whose hop-1 stream is shared by every echo target of the same
-/// address family (ADR-0026). IPv4 and IPv6 have different gateways.
-fn shares_first_hop_for(echo: &[(TargetId, IpAddr)], id: TargetId) -> TargetId {
-    let family = |address: &IpAddr| address.is_ipv4();
-    let own = echo.iter().find(|&&(i, _)| i == id).map(|(_, a)| family(a));
-    echo.iter()
-        .find(|(_, address)| Some(family(address)) == own)
-        .map_or(id, |&(i, _)| i)
 }
 
 /// Every target's name for the UI, by role key.
@@ -224,30 +209,34 @@ async fn main() -> anyhow::Result<()> {
         clock,
     ));
 
-    let echo_targets = echo_targets(&config);
-    for &(target, destination) in &echo_targets {
-        let mut streams = vec![(Role::Target(target), None, echo)];
-        for ttl in HOPS {
-            // Hop 1 is the gateway for every target pinned to the same interface, so
-            // one shared stream serves them all (ADR-0026). Separate streams would
-            // trip the gateway's ICMP rate limit and show loss that isn't there.
-            if ttl == HOPS[0] && target != shares_first_hop_for(&echo_targets, target) {
-                continue;
-            }
-            let ttl = HopTtl::new(ttl);
-            streams.push((Role::Hop { target, ttl }, Some(ttl), hop));
-        }
-        for (role, ttl, config) in streams {
-            tokio::spawn(probe::run_role(
-                role,
-                destination,
-                probe::ProbeKind::Echo(ttl),
-                config,
-                pin.clone(),
-                reports.clone(),
-                clock,
-            ));
-        }
+    for (target, destination) in config.targets.iter().filter_map(|t| match t.probe {
+        TargetProbe::Echo(address) => Some((t.id, address)),
+        _ => None,
+    }) {
+        tokio::spawn(probe::run_role(
+            Role::Target(target),
+            destination,
+            probe::ProbeKind::Echo(None),
+            echo,
+            pin.clone(),
+            reports.clone(),
+            clock,
+        ));
+    }
+    // Hop streams are shared where the hops are the same router (ADR-0026,
+    // ADR-0043): separate streams would trip routers' ICMP rate limits and show loss
+    // that isn't there.
+    let hop_streams = sharing::plan(&hopped_targets(&config));
+    for stream in &hop_streams {
+        tokio::spawn(probe::run_role(
+            stream.role(),
+            stream.destination,
+            probe::ProbeKind::Echo(Some(stream.ttl)),
+            hop,
+            pin.clone(),
+            reports.clone(),
+            clock,
+        ));
     }
 
     for (id, server) in config.targets.iter().filter_map(|t| match t.probe {
@@ -320,14 +309,7 @@ async fn main() -> anyhow::Result<()> {
     // a minute, for the egress path and the hops to be known.
     let names = names::Names::new(config::system_resolver(), config.asn_lookups);
     names::follow_hops(names.clone(), current_tx.subscribe());
-    let traceable: HashMap<TargetId, IpAddr> = config
-        .targets
-        .iter()
-        .filter_map(|t| match t.probe {
-            TargetProbe::Echo(address) | TargetProbe::Dns(address) => Some((t.id, address)),
-            TargetProbe::Https(_) => None,
-        })
-        .collect();
+    let traceable: HashMap<TargetId, IpAddr> = hopped_targets(&config).into_iter().collect();
     let mut traces = TraceSchedule::new(
         traceable.keys().copied(),
         Time::new::<second>(600.0),
@@ -500,7 +482,7 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
             Some(resolution) = resolutions.recv() => {
-                for resolution in fan_out(resolution, &echo_targets) {
+                for resolution in fan_out(resolution, &hop_streams) {
                     let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
                         handle(output, &observations_tx, &recorder);
                     }) else {
@@ -635,21 +617,27 @@ fn handle(output: Output, observations: &mpsc::Sender<Observation>, recorder: &R
     }
 }
 
-/// The shared first-hop stream's resolutions, copied to every target's first-hop
-/// role (ADR-0026). Each role then gets its own epoch and sample.
-fn fan_out(resolution: probe::Resolution, echo: &[(TargetId, IpAddr)]) -> Vec<probe::Resolution> {
-    match resolution.role {
-        Role::Hop { target, ttl } if ttl.get() == HOPS[0] => echo
+/// A shared hop stream's resolutions, copied to the hop role of every target it
+/// serves (ADR-0026, ADR-0043). Each role then gets its own epoch and sample.
+fn fan_out(
+    resolution: probe::Resolution,
+    streams: &[sharing::HopStream],
+) -> Vec<probe::Resolution> {
+    match streams.iter().find(|s| s.role() == resolution.role) {
+        Some(stream) => stream
+            .serves
             .iter()
-            .filter(|&&(id, _)| shares_first_hop_for(echo, id) == target)
-            .map(|&(id, _)| probe::Resolution {
-                role: Role::Hop { target: id, ttl },
+            .map(|&target| probe::Resolution {
+                role: Role::Hop {
+                    target,
+                    ttl: stream.ttl,
+                },
                 pin: resolution.pin.clone(),
                 responder: resolution.responder,
                 measurement: resolution.measurement,
             })
             .collect(),
-        _ => vec![resolution],
+        None => vec![resolution],
     }
 }
 

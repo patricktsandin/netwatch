@@ -48,8 +48,38 @@ impl HopStream {
 }
 
 /// The hop streams for `targets`: every target with hops (ICMP and DNS), with the
-/// address its hops are probed toward.
+/// address its hops are probed toward. Streams come in TTL order, then by owner.
 pub fn plan(targets: &[(TargetId, IpAddr)]) -> Vec<HopStream> {
-    let _ = targets;
-    Vec::new()
+    let mut sorted = targets.to_vec();
+    sorted.sort();
+    HOP_TTLS
+        .iter()
+        .flat_map(|&ttl| {
+            // What a target's hop at this TTL is shared by: its address family at
+            // the gateway, its address beyond it.
+            let key = |address: &IpAddr| {
+                if ttl == HOP_TTLS[0] {
+                    (address.is_ipv4(), None)
+                } else {
+                    (address.is_ipv4(), Some(*address))
+                }
+            };
+            let mut streams: Vec<HopStream> = Vec::new();
+            for &(target, address) in &sorted {
+                match streams
+                    .iter_mut()
+                    .find(|s| key(&s.destination) == key(&address))
+                {
+                    Some(stream) => stream.serves.push(target),
+                    None => streams.push(HopStream {
+                        ttl,
+                        destination: address,
+                        owner: target,
+                        serves: vec![target],
+                    }),
+                }
+            }
+            streams
+        })
+        .collect()
 }

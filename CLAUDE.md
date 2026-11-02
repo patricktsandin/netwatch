@@ -19,8 +19,9 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
 - **Probing:**
   - ICMP echo (IPv4 and IPv6) and DNS (`. IN NS`) to targets every 5 s, HTTPS every
     10 s.
-  - Hops 1–3 per echo target every 1 s via `IP_RECVERR`, with hop 1 shared per
-    address family.
+  - Hops 1–3 per ICMP and DNS target every 1 s via `IP_RECVERR`, as ICMP echoes.
+    Hop 1 is shared per address family, hops 2–3 per destination address
+    (`netwatch_probing::sharing`, ADR-0043).
   - Loopback baseline every 1 s.
 - **Host health:**
   - Kernel: snmp/netstat/softnet counters, PSI, conntrack, and neighbor tables.
@@ -84,7 +85,8 @@ Deliberately left unbuilt for now:
 - IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC)
 - ethtool driver stats and qdisc stats
 - percentile bands on the rollup charts, and pan/zoom beyond the selected range
-- dynamic stream sharing for hops ≥ 2 (ADR-0026), and the tunnel underlay (ADR-0022)
+- sharing hops 2–3 by responding address rather than destination (ADR-0002,
+  ADR-0043), and the tunnel underlay (ADR-0022)
 - kernel receive timestamps (`SO_TIMESTAMPING`)
 - path traces of HTTPS targets, large-packet (MTU) probes, and TCP retransmissions
   in the report

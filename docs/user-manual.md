@@ -151,7 +151,7 @@ directly.
   |---|---|
   | Solid | Both ends are measured all the time. |
   | Dashed | Known from a trace. |
-  | Dotted | The hops in between are unknown. For example, HTTPS targets aren't traced, and DNS targets have no hop 1–3 rows. |
+  | Dotted | The hops in between are unknown. For example, HTTPS targets aren't traced, and a target's trace may not have run yet. |
 
 - **Hover over a box** to light up the paths through it. **Click a box** with a status
   to jump to its graph.
@@ -212,7 +212,11 @@ Each target is one line: a kind, an address, and an optional name. Kinds:
 - **HTTPS**: fetch a URL, expecting a status code and optionally some text in the
   body.
 
-ICMP targets also get hop 1–3 rows. ICMP and DNS targets get path traces.
+ICMP and DNS targets also get hop 1–3 rows and path traces. Hops are always measured
+with pings, so a DNS target's hop rows show the route pings to that server take. That
+is nearly always the route its DNS queries take too. Targets toward the same address
+share their hop measurements, so a DNS target with the same address as an ICMP
+target adds no extra traffic.
 
 **Save and restart** rewrites `/etc/netwatch/netwatch.toml` and restarts netwatch in
 a second or two. History is kept per target number, so a target you edit keeps its
