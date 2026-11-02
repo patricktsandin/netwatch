@@ -85,7 +85,9 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
 /// this start (ADR-0044).
 #[derive(Debug, Default)]
 pub struct BeforeStart {
+    /// Each role's identity, in words, in the epoch the stop left open.
     pub identities: std::collections::BTreeMap<netwatch_shared::Role, String>,
+    /// The public address last noted, in words.
     pub public: Option<String>,
 }
 
@@ -218,10 +220,12 @@ pub fn last_epoch(path: &std::path::Path) -> anyhow::Result<Option<u64>> {
 }
 
 /// Each of `targets`' latest trace stored at `path`, routine or episode, for the
-/// network map (ADR-0042).
+/// network map (ADR-0042). A trace toward another address than the target's own is
+/// a path the target no longer takes, since its address was edited (ADR-0035), so
+/// it is left out.
 pub fn latest_traces(
     path: &std::path::Path,
-    targets: impl IntoIterator<Item = netwatch_shared::TargetId>,
+    targets: &std::collections::BTreeMap<netwatch_shared::TargetId, std::net::IpAddr>,
 ) -> anyhow::Result<
     std::collections::BTreeMap<netwatch_shared::TargetId, netwatch_adapter_sqlite::StoredTrace>,
 > {
@@ -229,7 +233,7 @@ pub fn latest_traces(
     let store = Store::open(path)?;
     let end = netwatch_shared::WallTime::from_unix_micros(i64::MAX);
     let mut latest = std::collections::BTreeMap::new();
-    for target in targets {
+    for (&target, &destination) in targets {
         let role = netwatch_shared::Role::Target(target);
         let routine = store.latest_trace(&role, TraceKind::Routine, end)?;
         let episode = store.latest_trace(&role, TraceKind::Episode, end)?;
@@ -237,7 +241,7 @@ pub fn latest_traces(
             .into_iter()
             .flatten()
             .max_by_key(|t| t.at.as_unix_micros());
-        if let Some(trace) = newest {
+        if let Some(trace) = newest.filter(|t| t.destination == destination) {
             latest.insert(target, trace);
         }
     }

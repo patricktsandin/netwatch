@@ -185,6 +185,9 @@ function addRow(key: RoleKey): Row {
   return row;
 }
 
+/** The row each role is drawn in, as the daemon's shared rows say. */
+const sharedRowOf = (role: RoleKey): RoleKey => rowOf(shared, role);
+
 /** What every chart of a row shares: its incidents, markers, tooltip, and zoom. */
 function common(key: RoleKey, series: { points: Point[]; readings: Reading[] }) {
   return {
@@ -192,14 +195,27 @@ function common(key: RoleKey, series: { points: Point[]; readings: Reading[] }) 
       const window = zoom ?? sharedWindow();
       const members = membersOf(shared, key);
       return {
-        incidents: visibleIncidents(incidents, members, parseMicros(window.min * 1e6), parseMicros(window.max * 1e6)),
-        markers: visibleMarkers(markers, members),
+        incidents: visibleIncidents(
+          incidents,
+          members,
+          parseMicros(window.min * 1e6),
+          parseMicros(window.max * 1e6),
+          sharedRowOf,
+        ),
+        markers: visibleMarkers(markers, members, sharedRowOf),
       };
     },
     tooltip: (at: Micros, nearUs: number) =>
       tooltip(
         { at, nearUs, now: nowMicros() },
-        { roles: membersOf(shared, key), points: series.points, readings: series.readings, incidents, markers },
+        {
+          roles: membersOf(shared, key),
+          rowOf: sharedRowOf,
+          points: series.points,
+          readings: series.readings,
+          incidents,
+          markers,
+        },
         words,
       ),
     onZoom: setZoom,
@@ -693,8 +709,9 @@ addEventListener("hashchange", () => {
     if (tab !== "map") selectTab("map");
     return;
   }
-  if (tab !== "graphs") selectTab("graphs");
+  // Read before selectTab, which rewrites the address for the range it shows.
   const wanted: Range = location.hash === "#day" ? "day" : location.hash === "#month" ? "month" : "hour";
+  if (tab !== "graphs") selectTab("graphs");
   if (wanted !== range) selectRange(wanted);
 });
 

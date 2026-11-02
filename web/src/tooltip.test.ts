@@ -186,6 +186,7 @@ describe("a shared row's tooltip", () => {
   const [a, b] = [role("hop:1:2"), role("hop:11:2")];
   const shared = (incidents: Incident[], markers: Marker[] = []) => ({
     roles: [a, b],
+    rowOf: (r: RoleKey) => (r === b ? a : r),
     points: [],
     readings: [],
     incidents,
@@ -208,6 +209,27 @@ describe("a shared row's tooltip", () => {
   it("lists an event that each member got a copy of once", () => {
     const copies = [marker(100, { concerns: [a] }), marker(100, { concerns: [b] })];
     expect(tooltip(hover, shared([], copies), words).filter((l) => l.tone === "event")).toHaveLength(1);
+  });
+
+  it("lists a hop's identity change that each member's own hop got once", () => {
+    const copy = (hop: RoleKey) =>
+      marker(100, { kind: "epoch-started", role: hop, detail: "192.0.2.1", concerns: [hop] });
+    expect(tooltip(hover, shared([], [copy(a), copy(b)]), words).filter((l) => l.tone === "event")).toHaveLength(1);
+  });
+
+  it("draws one band when members' causes are each their own copy of one shared hop", () => {
+    const [x, y] = [role("hop:1:1"), role("hop:11:1")];
+    const rowOf = (r: RoleKey) => (r === b ? a : r === y ? x : r);
+    const incidents = [incident(90, 110, { role: a, cause: x }), incident(90, 110, { role: b, cause: y })];
+    expect(visibleIncidents(incidents, [a, b], us(0), us(200), rowOf)).toHaveLength(1);
+    const lines = tooltip(hover, { ...shared(incidents), rowOf }, words).filter((l) => l.tone === "outage");
+    expect(lines).toHaveLength(1);
+  });
+
+  it("lists events of different roles at the same moment apart", () => {
+    const ended = (layer: RoleKey) => marker(100, { kind: "epoch-ended", role: layer, detail: null, concerns: [a, b] });
+    const lines = tooltip(hover, shared([], [ended(role("nic")), ended(role("local-interface"))]), words);
+    expect(lines.filter((l) => l.tone === "event")).toHaveLength(2);
   });
 
   it("lists an event that concerns any of its members", () => {

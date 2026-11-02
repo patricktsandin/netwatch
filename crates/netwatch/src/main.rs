@@ -211,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         role: Role::Kernel,
         identity: loopback,
     }) {
-        handle(output, &observations_tx, &recorder);
+        handle(output, clock.wall_now(), &observations_tx, &recorder);
     }
     let (_kernel_pin_tx, kernel_pin) = watch::channel(topology.binding(&Role::Kernel).cloned());
     let baseline = StreamConfig::new(
@@ -344,8 +344,8 @@ async fn main() -> anyhow::Result<()> {
     // Each target's latest trace, for the network map (ADR-0042), and the flush
     // generation each one's write was sent in.
     let mut trace_generations: BTreeMap<TargetId, u64> = BTreeMap::new();
-    let mut latest_traces = persist::latest_traces(&config.database, destinations.keys().copied())
-        .unwrap_or_else(|error| {
+    let mut latest_traces =
+        persist::latest_traces(&config.database, &destinations).unwrap_or_else(|error| {
             tracing::warn!(%error, "cannot read the latest path traces");
             BTreeMap::new()
         });
@@ -494,7 +494,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
-                    handle(output, &observations_tx, &recorder);
+                    handle(output, clock.wall_now(), &observations_tx, &recorder);
                 }
                 // Targets are pinned to the egress interface: the tunnel if there
                 // is one, otherwise the NIC (ADR-0020, ADR-0022).
@@ -509,9 +509,12 @@ async fn main() -> anyhow::Result<()> {
                 });
             }
             Some(resolution) = resolutions.recv() => {
+                // A shared stream's copies are one measurement: one time for all of
+                // them, so that their samples, incidents, and events line up.
+                let at = clock.wall_now();
                 for resolution in fan_out(resolution, &hop_streams) {
-                    let Some(sample) = attribute(resolution, &mut topology, clock, |output| {
-                        handle(output, &observations_tx, &recorder);
+                    let Some(sample) = attribute(resolution, &mut topology, at, |output| {
+                        handle(output, at, &observations_tx, &recorder);
                     }) else {
                         continue;
                     };
@@ -581,7 +584,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 if let Some(identity) = identity {
                     for output in topology.observe(Observation::ProbeIdentified { role: role.clone(), identity }) {
-                        handle(output, &observations_tx, &recorder);
+                        handle(output, clock.wall_now(), &observations_tx, &recorder);
                     }
                 }
                 // A new access point or network is an event on the radio's row.
@@ -624,11 +627,17 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle(output: Output, observations: &mpsc::Sender<Observation>, recorder: &Recorder) {
+/// Acts on Topology's output. Its events are recorded as happening `at`.
+fn handle(
+    output: Output,
+    at: WallTime,
+    observations: &mpsc::Sender<Observation>,
+    recorder: &Recorder,
+) {
     match output {
         Output::Event(event) => {
             log_event(&event);
-            recorder.topology(event);
+            recorder.topology(event, at);
         }
         Output::Command(Command::Resync { generation }) => {
             let observations = observations.clone();
@@ -684,11 +693,11 @@ fn fan_out(
 ///   the sample carries the hop's resulting epoch
 ///
 /// A hop that has never answered has no identity to attribute a loss to, so that
-/// loss isn't recorded as a sample.
+/// loss isn't recorded as a sample. The sample is stamped `at`.
 fn attribute(
     resolution: probe::Resolution,
     topology: &mut Topology,
-    clock: Clock,
+    at: WallTime,
     mut emit: impl FnMut(Output),
 ) -> Option<Sample> {
     let epoch = match resolution.role {
@@ -708,7 +717,7 @@ fn attribute(
     Some(Sample {
         role: resolution.role,
         epoch,
-        at: clock.wall_now(),
+        at,
         measurement: resolution.measurement,
     })
 }
@@ -741,9 +750,8 @@ impl Recorder {
 
     /// Records a topology event. A role's first epoch this run, soon after the start,
     /// with the identity it had before the start resumes it, and isn't a change
-    /// (ADR-0044, ADR-0046).
-    fn topology(&self, event: TopologyEvent) {
-        let at = self.clock.wall_now();
+    /// (ADR-0044, ADR-0046). `at` is when it happened.
+    fn topology(&self, event: TopologyEvent, at: WallTime) {
         let resumed = match &event {
             TopologyEvent::EpochStarted { role, .. } => {
                 let before = self

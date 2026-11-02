@@ -29,6 +29,9 @@ export interface Hover {
 export interface RowContent {
   /** The roles the row shows: one, or a shared row's members (ADR-0045). */
   readonly roles: readonly RoleKey[];
+  /** The row each role is drawn in, so that members' copies of one event or
+   *  incident count once. */
+  readonly rowOf?: RowOf;
   readonly points: readonly Point[];
   readonly readings: readonly Reading[];
   readonly incidents: readonly Incident[];
@@ -67,22 +70,33 @@ export function upsertIncident(incidents: readonly Incident[], incident: Inciden
   return at === -1 ? [...others, incident] : [...others.slice(0, at), incident, ...others.slice(at)];
 }
 
-/** The same event: members of a shared row each get a copy of it. */
-const event = (m: Marker): string => `${String(m.at)} ${m.kind} ${m.detail ?? ""}`;
+/** The row a role is drawn in, by its key: several hop roles share one when a single
+ *  probe stream serves them (ADR-0045). The daemon says which. */
+export type RowOf = (role: RoleKey) => RoleKey;
+
+const ownRow: RowOf = (role) => role;
+
+/** The same event: members of a shared row each get a copy of it, for their own hop
+ *  in the same row. Events of roles in different rows stay apart. */
+const event = (m: Marker, rowOf: RowOf): string =>
+  `${String(m.at)} ${m.kind} ${m.role === null ? "" : rowOf(m.role)} ${m.detail ?? ""}`;
 
 /** The markers a row draws: those that concern any of its roles, each event once. */
-export function visibleMarkers(markers: readonly Marker[], roles: readonly RoleKey[]): Marker[] {
+export function visibleMarkers(markers: readonly Marker[], roles: readonly RoleKey[], rowOf: RowOf = ownRow): Marker[] {
   const seen = new Set<string>();
   return markers.filter((m) => {
-    const shown = m.concerns.some((c) => roles.includes(c)) && !seen.has(event(m));
-    if (shown) seen.add(event(m));
+    const key = event(m, rowOf);
+    const shown = m.concerns.some((c) => roles.includes(c)) && !seen.has(key);
+    if (shown) seen.add(key);
     return shown;
   });
 }
 
-/** The same band: members of a shared row often have identical incidents. A
- *  different probable cause is a different incident, so the tooltip names each. */
-const band = (i: Incident): string => `${String(i.started)} ${String(i.ended)} ${i.severity} ${i.cause ?? ""}`;
+/** The same band: members of a shared row often have identical incidents, each
+ *  caused by its own copy of the same hop. A cause in a different row is a different
+ *  incident, so the tooltip names each. */
+const band = (i: Incident, rowOf: RowOf): string =>
+  `${String(i.started)} ${String(i.ended)} ${i.severity} ${i.cause === null ? "" : rowOf(i.cause)}`;
 
 /** A row's incidents that overlap `from..until`, open ones included. Identical
  *  bands of a shared row's members are drawn once. */
@@ -91,12 +105,14 @@ export function visibleIncidents(
   roles: readonly RoleKey[],
   from: Micros,
   until: Micros,
+  rowOf: RowOf = ownRow,
 ): Incident[] {
   const seen = new Set<string>();
   return incidents.filter((i) => {
+    const key = band(i, rowOf);
     const shown =
-      roles.includes(i.role) && i.started <= until && (i.ended === null || i.ended >= from) && !seen.has(band(i));
-    if (shown) seen.add(band(i));
+      roles.includes(i.role) && i.started <= until && (i.ended === null || i.ended >= from) && !seen.has(key);
+    if (shown) seen.add(key);
     return shown;
   });
 }
@@ -178,7 +194,8 @@ export function tooltip(hover: Hover, row: RowContent, words: Words): TooltipLin
   for (const i of row.incidents) {
     const end = i.ended ?? hover.now;
     if (row.roles.includes(i.role) && i.started - hover.nearUs <= hover.at && hover.at <= end + hover.nearUs) {
-      under.set(band(i), [...(under.get(band(i)) ?? []), i]);
+      const key = band(i, row.rowOf ?? ownRow);
+      under.set(key, [...(under.get(key) ?? []), i]);
     }
   }
   for (const same of under.values()) {
@@ -187,7 +204,7 @@ export function tooltip(hover: Hover, row: RowContent, words: Words): TooltipLin
     const on = row.roles.length > 1 ? ` · on ${same.map((i) => words.role(i.role)).join(", ")}` : "";
     lines.push({ tone: first.severity, text: `${incidentText(first, hover.now, words)}${on}` });
   }
-  for (const m of visibleMarkers(row.markers, row.roles)) {
+  for (const m of visibleMarkers(row.markers, row.roles, row.rowOf)) {
     if (Math.abs(m.at - hover.at) <= hover.nearUs) {
       lines.push({ tone: "event", text: eventText(m, words) });
     }

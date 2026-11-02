@@ -34,17 +34,18 @@ export function rowLabel(members: readonly RoleKey[], names: ReadonlyMap<string,
   if (first === undefined) return "";
   if (members.length === 1) return label(first, names);
   const hop = numbers(first)[1];
-  const targets = members.map((m) => {
-    const id = String(numbers(m)[0]);
-    return names.get(`target:${id}`) ?? `target ${id}`;
-  });
+  const targets = members.map((m) => targetName(numbers(m)[0], names));
   return `Hop ${String(hop)} → ${targets.join(", ")}`;
+}
+
+/** A target's configured name, or else its number. */
+function targetName(id: number | undefined, names: ReadonlyMap<string, string>): string {
+  return names.get(`target:${String(id)}`) ?? `target ${String(id)}`;
 }
 
 /** A role's label, for people. `names` maps target role keys (`target:1`) to their
  *  configured names; targets without one are numbered. */
 export function label(key: RoleKey, names: ReadonlyMap<string, string> = new Map()): string {
-  const target = (id: number | undefined): string => names.get(`target:${String(id)}`) ?? `target ${String(id)}`;
   const l = layer(key);
   const [first, second] = numbers(key);
   switch (l) {
@@ -61,7 +62,7 @@ export function label(key: RoleKey, names: ReadonlyMap<string, string> = new Map
     case "local-interface":
       return "Local interface";
     case "hop":
-      return `Hop ${String(second)} → ${target(first)}`;
+      return `Hop ${String(second)} → ${targetName(first, names)}`;
     case "target":
       return names.get(key) ?? `Target ${String(first)}`;
   }
