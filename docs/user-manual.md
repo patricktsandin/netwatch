@@ -143,7 +143,7 @@ directly.
   netwatch doesn't measure continuously. They come from the latest path trace,
   which runs every 6 hours and whenever a problem starts beyond your router. Hover
   for when it ran, how many probes were answered, and the median time.
-- **"Hop n · no reply"** is a distance at which the trace got no answer.
+- **"no reply"** marks a distance at which the trace got no answer.
 - **Lines:**
 
   | Line | Meaning |

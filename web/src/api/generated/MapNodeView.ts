@@ -8,7 +8,8 @@ import type { SightingView } from "./SightingView";
 export type MapNodeView = { 
 /**
  * A stable key: the role's key for a node of its own (`nic`, `target:1`,
- * `hop:1:2`), `router:<address>:<ttl>`, or `silent:<target>:<ttl>`.
+ * `hop:1:2`), `router:<address>:<ttl>`, or `silent:<target>:<ttl>`, named after
+ * the first target through it.
  */
 id: string, 
 /**

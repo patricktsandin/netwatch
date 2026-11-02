@@ -556,7 +556,8 @@ pub struct MapView {
 #[ts(export, export_to = "../../../web/src/api/generated/")]
 pub struct MapNodeView {
     /// A stable key: the role's key for a node of its own (`nic`, `target:1`,
-    /// `hop:1:2`), `router:<address>:<ttl>`, or `silent:<target>:<ttl>`.
+    /// `hop:1:2`), `router:<address>:<ttl>`, or `silent:<target>:<ttl>`, named after
+    /// the first target through it.
     pub id: String,
     /// `role`, `router`, or `silent`.
     pub kind: String,
@@ -635,11 +636,31 @@ impl MapView {
         names: &BTreeMap<IpAddr, String>,
         traced: &BTreeMap<TargetId, WallTime>,
     ) -> Self {
-        let id = |place: &Place| match place {
-            Place::Role(role) => role.key(),
-            Place::Router { address, ttl } => format!("router:{address}:{}", ttl.get()),
-            Place::Silent { target, ttl } => format!("silent:{}:{}", target.get(), ttl.get()),
+        let through = |place: &Place| -> BTreeSet<TargetId> {
+            map.edges
+                .iter()
+                .filter(|e| &e.from == place || &e.to == place)
+                .flat_map(|e| e.targets.iter().copied())
+                .collect()
         };
+        // A target's path has one place per TTL, so two silent places at one TTL never
+        // share a target, and the first target through one names it uniquely.
+        let ids: BTreeMap<&Place, String> = map
+            .nodes
+            .iter()
+            .map(|node| {
+                let id = match &node.place {
+                    Place::Role(role) => role.key(),
+                    Place::Router { address, ttl } => format!("router:{address}:{}", ttl.get()),
+                    Place::Silent { ttl, .. } => {
+                        let first = through(&node.place).first().map_or(0, |t| t.get());
+                        format!("silent:{first}:{}", ttl.get())
+                    }
+                };
+                (&node.place, id)
+            })
+            .collect();
+        let id = |place: &Place| ids.get(place).cloned().unwrap_or_default();
         let target_keys =
             |targets: &BTreeSet<TargetId>| targets.iter().map(|&t| Role::Target(t).key()).collect();
         let nodes = map
@@ -664,12 +685,6 @@ impl MapView {
                     ),
                     Place::Silent { ttl, .. } => ("silent", Some(ttl.get().get()), None, None),
                 };
-                let through: BTreeSet<TargetId> = map
-                    .edges
-                    .iter()
-                    .filter(|e| e.from == node.place || e.to == node.place)
-                    .flat_map(|e| e.targets.iter().copied())
-                    .collect();
                 MapNodeView {
                     id: id(&node.place),
                     kind: kind.to_owned(),
@@ -699,7 +714,7 @@ impl MapView {
                             })
                         })
                         .collect(),
-                    targets: target_keys(&through),
+                    targets: target_keys(&through(&node.place)),
                 }
             })
             .collect();

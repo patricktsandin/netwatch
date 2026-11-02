@@ -37,10 +37,11 @@ pub enum Place {
         /// The TTL it answered at.
         ttl: HopTtl,
     },
-    /// A TTL of one target's trace at which nobody answered.
+    /// A TTL at which nobody answered a trace. Paths that reach it from the same
+    /// places share it: nothing tells them apart there.
     Silent {
-        /// Whose trace.
-        target: TargetId,
+        /// The places just before it, in order.
+        after: Vec<Place>,
         /// The TTL.
         ttl: HopTtl,
     },
@@ -215,10 +216,7 @@ pub fn build(
                     break;
                 }
                 let places: Vec<Place> = if hop.responders.is_empty() {
-                    vec![Place::Silent {
-                        target,
-                        ttl: hop.ttl,
-                    }]
+                    vec![path.silent(hop.ttl)]
                 } else {
                     hop.responders
                         .iter()
@@ -237,13 +235,8 @@ pub fn build(
                 && let Some(ttl) = latest.trace.silent_from
                 && ttl.get().get() > path.ttl
             {
-                map.advance(
-                    &mut path,
-                    vec![Place::Silent { target, ttl }],
-                    ttl,
-                    &only,
-                    None,
-                );
+                let silent = path.silent(ttl);
+                map.advance(&mut path, vec![silent], ttl, &only, None);
             }
         }
 
@@ -285,6 +278,15 @@ struct Path {
     at: Vec<Place>,
     ttl: u8,
     depth: u16,
+}
+
+impl Path {
+    /// The silent place at `ttl`, next on from here.
+    fn silent(&self, ttl: HopTtl) -> Place {
+        let mut after = self.at.clone();
+        after.sort();
+        Place::Silent { after, ttl }
+    }
 }
 
 struct Builder<'a> {

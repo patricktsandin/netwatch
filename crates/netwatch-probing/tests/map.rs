@@ -301,13 +301,17 @@ fn a_load_balanced_ttl_has_a_node_per_responder_each_joined_to_the_next_ttl() {
 }
 
 #[test]
-fn a_ttl_nobody_answered_is_a_silent_node_of_that_target_alone() {
-    let all = statuses(&[(target(1), Health::Healthy), (target(2), Health::Healthy)]);
-    let trace = |dest: &str| {
+fn a_ttl_nobody_answered_is_one_silent_node_for_every_path_that_reaches_it_from_the_same_place() {
+    let all = statuses(&[
+        (target(1), Health::Healthy),
+        (target(2), Health::Healthy),
+        (target(3), Health::Healthy),
+    ]);
+    let trace = |via: &str, dest: &str| {
         latest(
             dest,
             vec![
-                trace_hop(4, &["10.9.0.1"]),
+                trace_hop(4, &[via]),
                 trace_hop(5, &[]),
                 trace_hop(6, &[dest]),
             ],
@@ -315,21 +319,27 @@ fn a_ttl_nobody_answered_is_a_silent_node_of_that_target_alone() {
         )
     };
     let traces = BTreeMap::from([
-        (TargetId::new(1), trace("1.1.1.1")),
-        (TargetId::new(2), trace("8.8.8.8")),
+        (TargetId::new(1), trace("10.9.0.1", "1.1.1.1")),
+        (TargetId::new(2), trace("10.9.0.1", "8.8.8.8")),
+        (TargetId::new(3), trace("10.9.0.9", "9.9.9.9")),
     ]);
     let map = build(&all, &BTreeMap::new(), &traces);
-    let silent = |id| Place::Silent {
-        target: TargetId::new(id),
+    let silent = |via: &str| Place::Silent {
+        after: vec![router(via, 4)],
         ttl: ttl(5),
     };
-    let one = node(&map, &silent(1));
-    assert_eq!(one.depth, 8);
-    assert_eq!(one.health, None);
-    node(&map, &silent(2));
+    let shared = node(&map, &silent("10.9.0.1"));
+    assert_eq!(shared.depth, 8);
+    assert_eq!(shared.health, None);
+    assert_eq!(shared.sightings.len(), 2);
     assert_eq!(
-        edge(&map, &router("10.9.0.1", 4), &silent(1)).targets,
-        targets(&[1])
+        edge(&map, &router("10.9.0.1", 4), &silent("10.9.0.1")).targets,
+        targets(&[1, 2])
+    );
+    assert_eq!(
+        edge(&map, &silent("10.9.0.9"), &Place::Role(target(3))).targets,
+        targets(&[3]),
+        "a path from elsewhere has a silent node of its own"
     );
     assert_eq!(
         edge(
@@ -351,7 +361,7 @@ fn a_trace_that_went_silent_ends_in_a_silent_node_then_an_unmeasured_edge_to_the
     )]);
     let map = build(&all, &BTreeMap::new(), &traces);
     let silent = Place::Silent {
-        target: TargetId::new(1),
+        after: vec![router("10.9.0.1", 4)],
         ttl: ttl(5),
     };
     assert_eq!(

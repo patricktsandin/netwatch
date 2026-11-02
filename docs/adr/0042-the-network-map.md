@@ -44,8 +44,8 @@ UI lays it out and draws it, and decides nothing (ADR-0030).
 - **Trace hops:** each TTL past the last continuously measured hop, from the target's
   latest trace (routine or episode). Each responder is a router node, identified the
   same way. A TTL where several addresses answered (load balancing) gets one node
-  per address. A TTL where nobody answered gets a *silent* node of its own, for that
-  target only.
+  per address. A TTL where nobody answered gets a *silent* node. Paths that reach a
+  silent TTL from the same nodes share it, because nothing tells them apart there.
 - **Targets:** one node each, at the TTL where its trace reached it. Without a
   trace that reached it, a target sits one step past the last hop known.
 

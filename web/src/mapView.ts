@@ -38,7 +38,7 @@ function title(node: MapNode, words: MapWords): string {
     case "router":
       return hop;
     case "silent":
-      return `${hop} · no reply`;
+      return hop;
     case "role":
       return node.role === null ? node.id : words.role(node.role);
   }
@@ -138,7 +138,7 @@ export function renderMap(
         node.status === null ? "traced" : statusWord(node.status),
       ),
     );
-    const second = node.identity ?? (node.kind === "silent" ? "no hop answered" : "");
+    const second = node.identity ?? (node.kind === "silent" ? "no reply" : "");
     const third = node.name ?? sightingText(node, words);
     g.append(svg("text", { x: 10, y: 37, class: "line" }, fit(second, 28)));
     g.append(svg("text", { x: 10, y: 51, class: "line muted" }, fit(third, 30)));
