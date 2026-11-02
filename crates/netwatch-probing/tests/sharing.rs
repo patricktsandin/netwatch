@@ -104,3 +104,23 @@ proptest! {
         prop_assert_eq!(keys.len(), streams.len(), "no two streams for one role");
     }
 }
+
+#[test]
+fn a_shared_rows_status_is_the_worst_of_its_graded_members() {
+    use netwatch_probing::Health;
+    use netwatch_probing::sharing::row_health;
+    use netwatch_shared::Role;
+    use std::collections::BTreeMap;
+
+    let streams = plan(&[(t(1), ip("1.1.1.1")), (t(11), ip("1.1.1.1"))]);
+    let second = &at(&streams, HOP_TTLS[1])[0];
+    let hop = |id| Role::Hop {
+        target: t(id),
+        ttl: HOP_TTLS[1],
+    };
+    let grades = BTreeMap::from([(hop(1), Health::RateLimited), (hop(11), Health::Degraded)]);
+    assert_eq!(row_health(second, &grades), Some(Health::Degraded));
+    let one = BTreeMap::from([(hop(1), Health::Healthy)]);
+    assert_eq!(row_health(second, &one), Some(Health::Healthy));
+    assert_eq!(row_health(second, &BTreeMap::new()), None);
+}
