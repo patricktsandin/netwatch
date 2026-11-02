@@ -224,6 +224,16 @@ words are defined elsewhere in this file.
 - **Ticket details**: the customer's account number, service address, contact, ISP
   ticket reference, and description, typed in for one *incident report*. Never stored
   by the daemon (ADR-0040).
+- **Network map**: the *Map* tab's directed acyclic graph of every path from this host
+  to every *target*, built by the daemon from *statuses*, *hop* identities, and each
+  target's latest *path trace* (ADR-0042).
+- **Map node**: one place on the *network map*: a *layer*, a *radio role*, a router
+  (a *responding address* at one TTL, shared by every path through it), an unknown or
+  *silent* hop, or a *target*. Its *status* is the worst of the *roles* merged into it.
+  A node seen only by a trace has none.
+- **Map edge**: a step between consecutive positions on one or more *targets*' paths.
+  It is *probed*, *traced*, *unmeasured* (hops between its ends are unknown), or
+  *off-path* (a *radio role*'s).
 - **Incident band**: an *incident* drawn as a shaded period behind its *role*'s graph.
 - **Tooltip**: what the UI shows on hover: the value, *incidents*, and *event markers*
   at that time.

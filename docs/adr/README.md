@@ -47,3 +47,4 @@ to "Superseded".
 | [0039](0039-a-complete-noc-report.md) | A complete NOC report, and the facts it needs | Accepted |
 | [0040](0040-path-traces-router-names-and-ticket-details.md) | Path traces, router names, and ticket details | Accepted |
 | [0041](0041-installing-without-rpm-and-in-a-container.md) | Installing without RPM, and running in a container | Accepted |
+| [0042](0042-the-network-map.md) | The network map | Accepted |
