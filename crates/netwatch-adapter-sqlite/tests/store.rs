@@ -781,3 +781,22 @@ fn the_highest_target_id_outlives_the_raw_samples() {
         .unwrap();
     assert_eq!(store.highest_target_id().unwrap(), Some(TargetId::new(30)));
 }
+
+#[test]
+fn the_last_synchronized_clock_is_kept_across_a_flush() {
+    // It is a fact about the host, which decides whether pruning may trust the clock
+    // (ADR-0066), not history.
+    let mut store = Store::open(&fresh("last-synchronized")).unwrap();
+    assert_eq!(store.last_synchronized().unwrap(), None);
+    store
+        .set_last_synchronized(WallTime::from_unix_micros(10))
+        .unwrap();
+    store
+        .set_last_synchronized(WallTime::from_unix_micros(20))
+        .unwrap();
+    store.flush_history().unwrap();
+    assert_eq!(
+        store.last_synchronized().unwrap(),
+        Some(WallTime::from_unix_micros(20))
+    );
+}

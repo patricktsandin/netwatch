@@ -1,5 +1,5 @@
 // The SQLite schema (crates/netwatch-adapter-sqlite/migrations), as of migration
-// 0014. The database declares no foreign keys: the single writer (ADR-0006) keeps
+// 0015. The database declares no foreign keys: the single writer (ADR-0006) keeps
 // these relationships, and history is keyed by role and identity epoch (ADR-0003).
 // Render with `npm run diagrams` in web/.
 digraph erd {
@@ -41,6 +41,11 @@ digraph erd {
     <tr><td bgcolor="#dfe8f6" colspan="2"><b>rollup_progress</b></td></tr>
     <tr><td align="left"><b>tier</b></td><td align="left">minute | hour, PK</td></tr>
     <tr><td align="left">done_until_us</td><td align="left">INTEGER</td></tr></table>>];
+
+  facts [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
+    <tr><td bgcolor="#dfe8f6" colspan="2"><b>facts</b><br/><font point-size="9">about the host, kept across flushes</font></td></tr>
+    <tr><td align="left"><b>name</b></td><td align="left">TEXT, PK: last-synchronized</td></tr>
+    <tr><td align="left">value</td><td align="left">INTEGER</td></tr></table>>];
 
   readings [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e9c76">
     <tr><td bgcolor="#e1f1e7" colspan="2"><b>readings</b><br/><font point-size="9">7 days</font></td></tr>

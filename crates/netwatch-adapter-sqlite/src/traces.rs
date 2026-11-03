@@ -166,22 +166,25 @@ impl Store {
             .map(TracePath::from_stored))
     }
 
-    /// The `most` paths `role` was most recently traced on, newest first, `None`
-    /// standing for traces from before paths were recorded. Chosen here, so that a
-    /// host that has been on many networks doesn't load each one's traces only to
-    /// drop them.
+    /// The `most` paths `role` was most recently traced toward `destination` on,
+    /// newest first, `None` standing for traces from before paths were recorded.
+    /// Chosen here, so that a host that has been on many networks doesn't load each
+    /// one's traces only to drop them, and toward the target's address now, so that
+    /// paths traced only toward an address it no longer has don't crowd out one it
+    /// has (ADR-0035).
     pub fn trace_paths(
         &self,
         role: &Role,
+        destination: IpAddr,
         most: usize,
     ) -> Result<Vec<Option<TracePath>>, StoreError> {
         let mut query = self.connection.prepare_cached(
-            "SELECT path FROM traces WHERE role = ?1
-             GROUP BY path ORDER BY MAX(at_us) DESC LIMIT ?2",
+            "SELECT path FROM traces WHERE role = ?1 AND destination = ?2
+             GROUP BY path ORDER BY MAX(at_us) DESC LIMIT ?3",
         )?;
         let most = i64::try_from(most).unwrap_or(i64::MAX);
         let paths = query
-            .query_map(params![role.key(), most], |row| {
+            .query_map(params![role.key(), destination.to_string(), most], |row| {
                 row.get::<_, Option<String>>(0)
             })?
             .collect::<Result<Vec<_>, _>>()?;

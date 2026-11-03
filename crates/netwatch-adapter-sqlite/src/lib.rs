@@ -41,6 +41,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0012-trace-paths.sql"),
     include_str!("../migrations/0013-traces-by-role.sql"),
     include_str!("../migrations/0014-samples-by-time.sql"),
+    include_str!("../migrations/0015-clock-facts-and-rollups-by-time.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -260,12 +261,37 @@ impl Store {
         )?)
     }
 
-    /// When the newest sample was taken, if there is one.
-    pub fn newest_sample(&self) -> Result<Option<WallTime>, StoreError> {
-        let newest: Option<i64> =
-            self.connection
-                .query_row("SELECT MAX(at_us) FROM samples", [], |row| row.get(0))?;
-        Ok(newest.map(WallTime::from_unix_micros))
+    /// When the kernel last said the clock was synchronized, as that clock read then
+    /// (ADR-0066). `None` if it never has, on any run.
+    pub fn last_synchronized(&self) -> Result<Option<WallTime>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT value FROM facts WHERE name = 'last-synchronized'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .map(WallTime::from_unix_micros))
+    }
+
+    /// Records that the kernel says the clock, reading `now`, is synchronized.
+    pub fn set_last_synchronized(&mut self, now: WallTime) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO facts (name, value) VALUES ('last-synchronized', ?1)",
+            [now.as_unix_micros()],
+        )?;
+        Ok(())
+    }
+
+    /// The start of the latest minute rollup before `before`, if any.
+    pub fn latest_minute_before(&self, before: WallTime) -> Result<Option<WallTime>, StoreError> {
+        let latest: Option<i64> = self.connection.query_row(
+            "SELECT MAX(start_us) FROM rollups WHERE tier = 'minute' AND start_us < ?1",
+            [before.as_unix_micros()],
+            |row| row.get(0),
+        )?;
+        Ok(latest.map(WallTime::from_unix_micros))
     }
 
     /// Deletes raw samples and minute rollups past their retention, relative to `now`.

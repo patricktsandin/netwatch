@@ -1,9 +1,10 @@
 //! Trace conformance: `IncidentTracker` must behave exactly like
 //! `specs/incidents.qnt` (ADR-0016, ADR-0031).
 //!
-//! Quint generates traces, which this test replays against the tracker. Spec roles
-//! 0, 1, and 2 are hop 1 and hop 2 toward target 1, and target 1, so each is upstream
-//! of the ones after it in both. One tick is one second.
+//! Quint generates traces of both of the spec's instances, which this test replays
+//! against the tracker. Spec roles 0, 1, and 2 are hop 1 and hop 2 toward target 1,
+//! and target 1, so each is upstream of the ones after it in both. One tick is one
+//! second.
 //! - `advance` does nothing: time only labels the outcomes and gradings after it
 //! - `outcome` becomes `outcome(role, now, answered)`
 //! - `grade` becomes `grade(now, grades)`, and must return the spec's `updates`
@@ -31,9 +32,15 @@ const NONE: i64 = -1;
 
 #[derive(Debug, Deserialize)]
 struct SpecState {
-    #[serde(rename = "incidentsThree::incidents::now")]
+    #[serde(
+        rename = "incidentsTwo::incidents::now",
+        alias = "incidentsThree::incidents::now"
+    )]
     now: i64,
-    #[serde(rename = "incidentsThree::incidents::updates")]
+    #[serde(
+        rename = "incidentsTwo::incidents::updates",
+        alias = "incidentsThree::incidents::updates"
+    )]
     updates: Vec<SpecIncident>,
     #[serde(rename = "mbt::actionTaken")]
     action: String,
@@ -116,22 +123,15 @@ fn incident(spec: &SpecIncident) -> Incident {
     }
 }
 
-fn generate(dir: &Path) -> Vec<PathBuf> {
+fn generate(dir: &Path, main: &str) -> Vec<PathBuf> {
     std::fs::create_dir_all(dir).unwrap();
     for stale in std::fs::read_dir(dir).unwrap() {
         std::fs::remove_file(stale.unwrap().path()).unwrap();
     }
     let quint = std::env::var("QUINT").unwrap_or_else(|_| "quint".to_owned());
     let status = Command::new(&quint)
-        // The three-role instance, which tells the most upstream cause apart.
-        .args([
-            "run",
-            SPEC,
-            "--main=incidentsThree",
-            "--mbt",
-            "--max-steps=40",
-            "--seed=0x696e6364",
-        ])
+        .args(["run", SPEC, "--mbt", "--max-steps=40", "--seed=0x696e6364"])
+        .arg(format!("--main={main}"))
         .arg(format!("--n-traces={TRACES}"))
         .arg(format!("--max-samples={TRACES}"))
         .arg(format!(
@@ -188,20 +188,32 @@ fn replay(path: &Path) -> usize {
     updates_seen
 }
 
-#[test]
-fn incident_tracker_conforms_to_the_quint_spec() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("incident-traces");
-    let traces = generate(&dir);
+/// Replays one instance's traces, and requires them to exercise the tracker.
+fn conforms(main: &str) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("incident-traces-{main}"));
+    let traces = generate(&dir, main);
     assert!(
         traces.len() >= TRACES / 2,
-        "quint produced {} traces",
+        "quint produced {} traces of {main}",
         traces.len()
     );
     let updates: usize = traces.iter().map(|t| replay(t)).sum();
     // The traces must actually exercise the tracker.
     assert!(
         updates > TRACES,
-        "only {updates} updates in {} traces",
+        "only {updates} updates in {} traces of {main}",
         traces.len()
     );
+}
+
+/// Two roles over three ticks: the cause's grace, and reopening after a close.
+#[test]
+fn incident_tracker_conforms_to_the_two_role_spec() {
+    conforms("incidentsTwo");
+}
+
+/// Three roles: the most upstream cause.
+#[test]
+fn incident_tracker_conforms_to_the_three_role_spec() {
+    conforms("incidentsThree");
 }

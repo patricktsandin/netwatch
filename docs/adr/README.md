@@ -71,3 +71,4 @@ to "Superseded".
 | [0063](0063-the-trace-queue-owns-the-schedule.md) | The trace queue owns the schedule | Accepted |
 | [0064](0064-bounded-state-and-a-trusted-clock-for-pruning.md) | Bounded state, and a trusted clock for pruning | Accepted |
 | [0065](0065-recovering-from-a-wrong-clock.md) | Recovering from a wrong clock | Accepted |
+| [0066](0066-only-the-host-vouches-for-its-clock.md) | Only the host vouches for its clock | Accepted |

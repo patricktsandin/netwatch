@@ -125,7 +125,7 @@ disabled and reported, never fatal (ADR-0007). There are three ways to install
 ## Size and status
 
 - About 17,000 lines of Rust in 16 crates and 2,600 lines of TypeScript.
-- 65 architecture decision records, a glossary, and a context map.
+- 66 architecture decision records, a glossary, and a context map.
 - Working end to end and in daily use. The current feature list is the *Status*
   section of [CLAUDE.md](../CLAUDE.md).
 
