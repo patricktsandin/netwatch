@@ -26,7 +26,7 @@ use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::sharing;
-use netwatch_probing::trace::{Next, TracePath, TraceQueue, TraceSchedule, traced_target};
+use netwatch_probing::trace::{Start, TracePath, TraceQueue, TraceSchedule};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -316,8 +316,6 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030). Outcomes are timed on the
     // monotonic clock: a step of the wall clock mustn't make every role stale.
     let mut egress_watch = health::EgressWatch::default();
-    // Traces the schedule asked for, not yet started (ADR-0058, ADR-0059).
-    let mut trace_queue = TraceQueue::default();
     let mut recent: HashMap<Role, health::Outcomes> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
@@ -344,12 +342,13 @@ async fn main() -> anyhow::Result<()> {
     // a minute, for the egress path and the hops to be known.
     let names = names::Names::new(config.asn_lookups);
     names::follow_hops(names.clone(), current_tx.subscribe());
-    let mut traces = TraceSchedule::new(
+    // The trace schedule, with the queue its traces wait in (ADR-0063).
+    let mut traces = TraceQueue::new(TraceSchedule::new(
         destinations.keys().copied(),
         Time::new::<second>(600.0),
         Time::new::<second>(6.0 * 3600.0),
         clock.now().after(Time::new::<second>(30.0)),
-    );
+    ));
     // Each target's latest trace, for the network map (ADR-0042), and the flush
     // generation each one's write was sent in.
     let mut trace_generations: BTreeMap<(TargetId, Option<TracePath>), u64> = BTreeMap::new();
@@ -540,27 +539,12 @@ async fn main() -> anyhow::Result<()> {
                     // its trace would sweep the same path toward the same address, so
                     // only the owner's incidents ask for one (ADR-0043).
                     let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
-                    if !copy {
-                        match traces.incident(&incident, clock.now()) {
-                            Some(request) => trace_queue.push(request),
-                            // Held back behind a routine trace that is only queued: that
-                            // one becomes the episode trace (ADR-0061).
-                            None => {
-                                if let Some(target) = traced_target(&incident.role)
-                                    && traces.has_pending(target)
-                                {
-                                    trace_queue.upgrade(target);
-                                }
-                            }
-                        }
-                    }
+                    traces.incident(&incident, copy, clock.now());
                     recorder.incident(incident);
                 }
-                for request in traces.tick(clock.now()) {
-                    trace_queue.push(request);
-                }
-                trace_queue.path(current_path(&topology).as_ref(), clock.now());
-                dispatch_traces(&mut trace_queue, &mut traces, &topology, &destinations, &tracer, clock.now());
+                traces.tick(clock.now());
+                traces.path(current_path(&topology).as_ref(), clock.now());
+                start_traces(&mut traces, &topology, &destinations, &tracer, clock.now());
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
@@ -572,7 +556,7 @@ async fn main() -> anyhow::Result<()> {
                     *current = egress;
                     changed
                 });
-                trace_queue.path(current_path(&topology).as_ref(), clock.now());
+                traces.path(current_path(&topology).as_ref(), clock.now());
                 // The hops are on another path now (ADR-0054).
                 if changed {
                     let hops: Vec<Role> = topology.bindings().map(|(role, _)| role.clone()).filter(|role| matches!(role, Role::Hop { .. })).collect();
@@ -633,9 +617,8 @@ async fn main() -> anyhow::Result<()> {
                     let _ = writes.send(persist::Write::Trace(trace));
                     drop(generation);
                 }
-                trace_queue.finished(stored);
-                trace_queue.push_all(traces.finished(finished.target, clock.now()));
-                dispatch_traces(&mut trace_queue, &mut traces, &topology, &destinations, &tracer, clock.now());
+                traces.finished(stored, clock.now());
+                start_traces(&mut traces, &topology, &destinations, &tracer, clock.now());
             }
             Some(flushed) = history_flushed.recv() => {
                 // Traces written before the flush are gone; any written after it stay.
@@ -971,36 +954,22 @@ fn publish_gone(
     });
 }
 
-/// Starts what the trace queue says may run now (ADR-0059). A dropped request, or one
-/// that can't start after all, is finished at once, and what the schedule hands on
-/// for it is queued.
-fn dispatch_traces(
-    queue: &mut TraceQueue,
-    schedule: &mut TraceSchedule,
+/// Starts what the trace queue says may run now (ADR-0063). One that can't start
+/// after all, with no address or no pin, is finished at once.
+fn start_traces(
+    traces: &mut TraceQueue,
     topology: &Topology,
     destinations: &BTreeMap<TargetId, IpAddr>,
     tracer: &trace::Tracer,
     now: netwatch_shared::Instant,
 ) {
-    while let Some(next) = queue.next(now, |target| schedule.has_open(target)) {
-        let unrun = match next {
-            Next::Run(request, path) => {
-                match (destinations.get(&request.target), egress_pin(topology)) {
-                    (Some(&destination), Some(pin)) => {
-                        tracing::info!(target = request.target.get(), kind = ?request.kind, path = path.as_str(), "path trace");
-                        tracer.start(request, destination, pin.clone(), path);
-                        None
-                    }
-                    _ => {
-                        queue.finished(false);
-                        Some(request)
-                    }
-                }
+    while let Some(Start { request, path }) = traces.next(now) {
+        match (destinations.get(&request.target), egress_pin(topology)) {
+            (Some(&destination), Some(pin)) => {
+                tracing::info!(target = request.target.get(), kind = ?request.kind, path = path.as_str(), "path trace");
+                tracer.start(request, destination, pin.clone(), path);
             }
-            Next::Drop(request) => Some(request),
-        };
-        if let Some(request) = unrun {
-            queue.push_all(schedule.finished(request.target, now));
+            _ => traces.finished(false, now),
         }
     }
 }

@@ -19,6 +19,9 @@ const SIGNAL: &str = "org.freedesktop.ModemManager1.Modem.Signal";
 const PORT_NET: u32 = 2;
 /// How often ModemManager should refresh extended signal, in seconds.
 const SIGNAL_RATE_S: u32 = 5;
+/// How often extended signal may be asked for again while the modem isn't
+/// reporting it.
+const SIGNAL_ASK_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 type Properties = HashMap<String, OwnedValue>;
 type Objects = HashMap<OwnedObjectPath, HashMap<String, Properties>>;
@@ -36,10 +39,12 @@ pub struct Modem {
 /// A connection to ModemManager, kept open between readings.
 pub struct ModemManager {
     connection: zbus::Connection,
-    /// The modem object extended signal was asked of. A modem detected again (after
-    /// a suspend, a USB reset, or a ModemManager restart) is a new object, with its
-    /// signal reporting off again, so it is asked again.
-    signal_requested: Option<String>,
+    /// When extended signal was last asked for. It is asked whenever the modem says
+    /// it isn't reporting it (its `Rate` is 0), as after a ModemManager restart, a
+    /// suspend, or a USB reset, or when an earlier ask failed: at most once a
+    /// minute, and a refusal is logged once.
+    signal_asked: Option<std::time::Instant>,
+    signal_refused: bool,
 }
 
 impl ModemManager {
@@ -48,7 +53,8 @@ impl ModemManager {
     pub async fn connect() -> zbus::Result<Self> {
         Ok(Self {
             connection: zbus::Connection::system().await?,
-            signal_requested: None,
+            signal_asked: None,
+            signal_refused: false,
         })
     }
 
@@ -69,10 +75,14 @@ impl ModemManager {
         let mut modems: Vec<_> = objects.into_iter().collect();
         modems.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         let (path, interfaces) = modems.into_iter().find(|(_, i)| i.contains_key(MODEM))?;
-        if self.signal_requested.as_deref() != Some(path.as_str()) {
+        let rate: Option<u32> = get(interfaces.get(SIGNAL), "Rate");
+        let due = self
+            .signal_asked
+            .is_none_or(|asked| asked.elapsed() >= SIGNAL_ASK_EVERY);
+        if rate == Some(0) && due {
             // Extended signal (RSRP, RSRQ, SNR) is only reported after a client asks
             // for it. Without permission, quality alone is graphed (ADR-0036).
-            self.signal_requested = Some(path.as_str().to_owned());
+            self.signal_asked = Some(std::time::Instant::now());
             if let Err(error) = self
                 .connection
                 .call_method(
@@ -83,6 +93,7 @@ impl ModemManager {
                     &(SIGNAL_RATE_S,),
                 )
                 .await
+                && !std::mem::replace(&mut self.signal_refused, true)
             {
                 tracing::info!(%error, "the modem won't report extended signal; graphing quality only");
             }

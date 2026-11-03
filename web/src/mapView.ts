@@ -190,6 +190,9 @@ export function renderMap(
     const role = node.roles.find((r) => r.key === node.role)?.key ?? node.roles[0]?.key;
     if (role !== undefined) {
       const go = (): void => {
+        // The pointer leaves for the graphs without a mouseleave, so the node would
+        // stay lit on the next draw.
+        hovered = null;
         open(role);
       };
       g.addEventListener("click", go);

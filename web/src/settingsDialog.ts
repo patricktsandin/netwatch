@@ -115,19 +115,26 @@ export async function openSettings(onSaved: () => void): Promise<void> {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-Netwatch": "1" },
       body: JSON.stringify(payload(draft)),
-    }).then(async (r) => {
-      if (r.ok) {
-        status.textContent = "Saved. netwatch is restarting with the new targets…";
-        onSaved();
-        setTimeout(() => {
-          dialog.close();
-        }, 1500);
-      } else {
-        status.textContent = await r.text();
+    })
+      .then(async (r) => {
+        if (r.ok) {
+          status.textContent = "Saved. netwatch is restarting with the new targets…";
+          onSaved();
+          setTimeout(() => {
+            dialog.close();
+          }, 1500);
+        } else {
+          status.textContent = await r.text();
+          status.className = "hint error";
+          save.disabled = false;
+        }
+      })
+      .catch((error: unknown) => {
+        // The daemon couldn't be reached: say so, and let the user try again.
+        status.textContent = `Couldn't reach netwatch: ${String(error)}`;
         status.className = "hint error";
         save.disabled = false;
-      }
-    });
+      });
   });
 
   status.textContent = config.editable
@@ -150,11 +157,17 @@ export async function openSettings(onSaved: () => void): Promise<void> {
     void fetch("/api/history", {
       method: "DELETE",
       headers: { "Content-Type": "application/json", "X-Netwatch": "1" },
-    }).then(async (r) => {
-      flush.disabled = false;
-      flushStatus.textContent = r.ok ? "All history flushed. Graphs start over from now." : await r.text();
-      flushStatus.className = r.ok ? "hint" : "hint error";
-    });
+    })
+      .then(async (r) => {
+        flush.disabled = false;
+        flushStatus.textContent = r.ok ? "All history flushed. Graphs start over from now." : await r.text();
+        flushStatus.className = r.ok ? "hint" : "hint error";
+      })
+      .catch((error: unknown) => {
+        flush.disabled = false;
+        flushStatus.textContent = `Couldn't reach netwatch: ${String(error)}`;
+        flushStatus.className = "hint error";
+      });
   });
   const danger = el("div", { className: "danger-zone" });
   danger.append(

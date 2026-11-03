@@ -9,8 +9,9 @@
 //! - `tick` becomes `tick(now)`
 //! - `finish` becomes `finished(target, now)`
 //!
-//! Every step must return the spec's `started`. Needs `quint` on `PATH`, or set
-//! `QUINT`.
+//! Every step must return the spec's `started`, and leave `has_pending` and
+//! `has_open` agreeing with its `pending` and `open`, which the trace queue steers by
+//! (ADR-0063). Needs `quint` on `PATH`, or set `QUINT`.
 
 #![allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015), including in helpers.
 
@@ -33,6 +34,8 @@ const TRACES: usize = 200;
 struct SpecState {
     now: i64,
     started: Vec<SpecStart>,
+    pending: std::collections::BTreeMap<i64, bool>,
+    open: std::collections::BTreeMap<i64, std::collections::BTreeSet<String>>,
     #[serde(rename = "mbt::actionTaken")]
     action: String,
     #[serde(rename = "mbt::nondetPicks")]
@@ -162,6 +165,22 @@ fn replay(path: &Path) -> usize {
         let expected: Vec<TraceRequest> = state.started.iter().map(request).collect();
         started += expected.len();
         assert_eq!(actual, expected, "{}, step {step}", path.display());
+        for (t, pending) in &state.pending {
+            assert_eq!(
+                schedule.has_pending(target(*t)),
+                *pending,
+                "pending of {t}, {}, step {step}",
+                path.display()
+            );
+        }
+        for (t, open) in &state.open {
+            assert_eq!(
+                schedule.has_open(target(*t)),
+                !open.is_empty(),
+                "open of {t}, {}, step {step}",
+                path.display()
+            );
+        }
     }
     started
 }

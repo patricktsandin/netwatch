@@ -186,76 +186,92 @@ pub fn settle() -> Time {
     Time::new::<netwatch_shared::uom::si::time::second>(10.0)
 }
 
-/// The traces the schedule asked for, waiting to run, one at a time, on a path that
-/// has settled (ADR-0058, ADR-0059). A trace started without the whole path known
-/// couldn't run, or would record a path nothing matches; one started as a link
-/// recovers would trace the recovery; and one started long after it was asked for
-/// may no longer be wanted. So the checks are made when a trace starts.
-#[derive(Debug, Default)]
+/// The trace schedule, with the queue where the traces it asks for wait to run, one at
+/// a time, on a path that has settled (ADR-0058, ADR-0059, ADR-0063). The daemon gives
+/// it every incident and tick and the current path, starts what [`next`] hands out,
+/// and says when each has [`finished`]; the rules live here:
+/// - a trace starts only once the path has been the same for [`settle`], and only
+///   one at a time
+/// - an episode trace whose target has no incident open by then is dropped, and a
+///   routine trace waits while its target has one open, letting others go ahead: run
+///   during an outage, it would be taken for the normal path
+/// - an episode trace goes ahead of waiting routine traces
+/// - the schedule counts a queued trace as running, so it holds back the episode
+///   trace of an incident on a target whose routine trace is only queued; that one
+///   becomes the episode trace instead, and the one the schedule hands on once it
+///   finishes is dropped, if it stored a trace
+///
+/// [`next`]: Self::next
+/// [`finished`]: Self::finished
+#[derive(Debug)]
 pub struct TraceQueue {
+    schedule: TraceSchedule,
     waiting: std::collections::VecDeque<TraceRequest>,
-    /// Targets whose waiting routine trace became their episode trace, and those
-    /// whose upgraded trace stored a trace: the episode trace the schedule hands on
-    /// for them afterwards has already run (ADR-0061, ADR-0062).
-    upgraded: BTreeSet<TargetId>,
-    served: BTreeSet<TargetId>,
-    /// The upgraded trace running now, if the running one is.
-    running_upgraded: Option<TargetId>,
     /// The current path, and since when it has been the current one.
     path: Option<(TracePath, Instant)>,
-    running: bool,
+    /// The trace running now, and whether it stood in for a held-back episode trace.
+    running: Option<(TraceRequest, bool)>,
+    /// Targets whose waiting routine trace became their episode trace, and those
+    /// whose stand-in stored a trace, so the held-back one has already run.
+    upgraded: BTreeSet<TargetId>,
+    served: BTreeSet<TargetId>,
+    /// Incidents open on copies of shared hops (ADR-0043): they ask for no trace,
+    /// since the stream's owner's do, but their targets have incidents open.
+    copies: BTreeMap<Role, TargetId>,
 }
 
-/// What to do with the next request in a [`TraceQueue`].
+/// A trace to run now: what, and on which path.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Next {
-    /// Run it now, on this path.
-    Run(TraceRequest, TracePath),
-    /// It's an episode trace whose target has nothing open any more: it was for an
-    /// outage that is over. Tell the schedule it finished.
-    Drop(TraceRequest),
+pub struct Start {
+    /// The trace.
+    pub request: TraceRequest,
+    /// The path it runs on, which it records.
+    pub path: TracePath,
 }
 
 impl TraceQueue {
-    /// Adds a request the schedule asked for. An episode trace goes ahead of the
-    /// routine traces waiting, behind any episode traces: an incident is now, and
-    /// every target's routine trace comes due at once (ADR-0060).
-    pub fn push(&mut self, request: TraceRequest) {
-        let at = match request.kind {
-            TraceKind::Episode => self
-                .waiting
-                .iter()
-                .position(|waiting| waiting.kind == TraceKind::Routine)
-                .unwrap_or(self.waiting.len()),
-            TraceKind::Routine => self.waiting.len(),
-        };
-        self.waiting.insert(at, request);
-    }
-
-    /// An incident opened on `target` while its routine trace waits here, which the
-    /// schedule counts as running, so it holds the episode trace back
-    /// ([`TraceSchedule::has_pending`]); call this only then.
-    /// The waiting trace becomes the episode trace instead, and goes ahead: run as
-    /// routine during the outage, it would be taken for the normal path (ADR-0061).
-    pub fn upgrade(&mut self, target: TargetId) {
-        let Some(at) = self
-            .waiting
-            .iter()
-            .position(|r| r.target == target && r.kind == TraceKind::Routine)
-        else {
-            return;
-        };
-        if let Some(mut request) = self.waiting.remove(at) {
-            request.kind = TraceKind::Episode;
-            self.upgraded.insert(target);
-            self.push(request);
+    /// A queue over `schedule`, with nothing waiting and no path yet.
+    pub fn new(schedule: TraceSchedule) -> Self {
+        Self {
+            schedule,
+            waiting: std::collections::VecDeque::new(),
+            path: None,
+            running: None,
+            upgraded: BTreeSet::new(),
+            served: BTreeSet::new(),
+            copies: BTreeMap::new(),
         }
     }
 
-    /// Adds every request given, such as the one [`TraceSchedule::finished`] hands
-    /// on, if any.
-    pub fn push_all(&mut self, requests: impl IntoIterator<Item = TraceRequest>) {
-        for request in requests {
+    /// Takes one incident update at `now`. `copy` says it is a shared hop's copy for
+    /// a target other than the stream's owner.
+    pub fn incident(&mut self, incident: &Incident, copy: bool, now: Instant) {
+        if copy {
+            match traced_target(&incident.role) {
+                Some(target) if incident.ended.is_none() => {
+                    self.copies.insert(incident.role.clone(), target);
+                }
+                _ => {
+                    self.copies.remove(&incident.role);
+                }
+            }
+            return;
+        }
+        match self.schedule.incident(incident, now) {
+            Some(request) => self.push(request),
+            None => {
+                if let Some(target) = traced_target(&incident.role)
+                    && self.schedule.has_pending(target)
+                {
+                    self.upgrade(target);
+                }
+            }
+        }
+    }
+
+    /// Queues every routine trace due at `now`.
+    pub fn tick(&mut self, now: Instant) {
+        for request in self.schedule.tick(now) {
             self.push(request);
         }
     }
@@ -270,47 +286,83 @@ impl TraceQueue {
         }
     }
 
-    /// The next request at `now`, if none is running and the path has settled.
-    /// `open` says whether a target has an incident open, as
-    /// [`TraceSchedule::has_open`] does. A routine trace of a target with one open
-    /// waits, and those behind it go ahead: run during an outage, it would be taken
-    /// for the normal path (ADR-0062).
-    pub fn next(&mut self, now: Instant, open: impl Fn(TargetId) -> bool) -> Option<Next> {
-        if self.running {
+    /// The trace to start at `now`, if one may. The daemon must say when it has
+    /// [`finished`](Self::finished), even if it couldn't start it.
+    pub fn next(&mut self, now: Instant) -> Option<Start> {
+        if self.running.is_some() {
             return None;
         }
-        let (path, since) = self.path.as_ref()?;
-        if now.since(*since) < settle() {
+        let (path, since) = self.path.clone()?;
+        if now.since(since) < settle() {
             return None;
         }
-        let at = self
-            .waiting
-            .iter()
-            .position(|r| r.kind == TraceKind::Episode || !open(r.target))?;
-        let request = self.waiting.remove(at)?;
-        if request.kind == TraceKind::Episode
-            && (self.served.remove(&request.target) || !open(request.target))
-        {
-            self.upgraded.remove(&request.target);
-            return Some(Next::Drop(request));
+        loop {
+            let at = self
+                .waiting
+                .iter()
+                .position(|r| r.kind == TraceKind::Episode || !self.open(r.target))?;
+            let request = self.waiting.remove(at)?;
+            let episode = request.kind == TraceKind::Episode;
+            if episode && (self.served.remove(&request.target) || !self.open(request.target)) {
+                self.upgraded.remove(&request.target);
+                self.end(request.target, now);
+                continue;
+            }
+            let stand_in = self.upgraded.remove(&request.target);
+            self.running = Some((request, stand_in));
+            return Some(Start { request, path });
         }
-        self.running_upgraded = self
-            .upgraded
-            .remove(&request.target)
-            .then_some(request.target);
-        self.running = true;
-        Some(Next::Run(request, path.clone()))
     }
 
-    /// The running trace finished: `stored` if it produced a trace, not if it couldn't
-    /// run or was dropped. Only a stored trace serves the episode trace an upgraded
-    /// one stood in for.
-    pub fn finished(&mut self, stored: bool) {
-        self.running = false;
-        if let Some(target) = self.running_upgraded.take()
-            && stored
-        {
-            self.served.insert(target);
+    /// The running trace finished at `now`: `stored` if it produced a trace, not if
+    /// it couldn't start, couldn't run, or was dropped.
+    pub fn finished(&mut self, stored: bool, now: Instant) {
+        if let Some((request, stand_in)) = self.running.take() {
+            if stand_in && stored {
+                self.served.insert(request.target);
+            }
+            self.end(request.target, now);
+        }
+    }
+
+    /// Whether `target` has an incident open a trace can tell more about.
+    fn open(&self, target: TargetId) -> bool {
+        self.schedule.has_open(target) || self.copies.values().any(|&t| t == target)
+    }
+
+    /// Tells the schedule `target`'s trace finished, and queues what it hands on.
+    fn end(&mut self, target: TargetId, now: Instant) {
+        if let Some(request) = self.schedule.finished(target, now) {
+            self.push(request);
+        }
+    }
+
+    /// Queues a request: an episode trace ahead of the routine traces waiting.
+    fn push(&mut self, request: TraceRequest) {
+        let at = match request.kind {
+            TraceKind::Episode => self
+                .waiting
+                .iter()
+                .position(|waiting| waiting.kind == TraceKind::Routine)
+                .unwrap_or(self.waiting.len()),
+            TraceKind::Routine => self.waiting.len(),
+        };
+        self.waiting.insert(at, request);
+    }
+
+    /// Turns `target`'s waiting routine trace into its episode trace, ahead.
+    fn upgrade(&mut self, target: TargetId) {
+        let Some(at) = self
+            .waiting
+            .iter()
+            .position(|r| r.target == target && r.kind == TraceKind::Routine)
+        else {
+            return;
+        };
+        if let Some(mut request) = self.waiting.remove(at) {
+            request.kind = TraceKind::Episode;
+            self.upgraded.insert(target);
+            self.push(request);
         }
     }
 }

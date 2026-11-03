@@ -191,6 +191,15 @@ function addRow(key: RoleKey): Row {
 /** The row each role is drawn in, as the daemon's shared rows say. */
 const sharedRowOf = (role: RoleKey): RoleKey => rowOf(shared, role);
 
+/** Removes a row, letting its charts go: an orphaned chart would stay in the shared
+ *  cursor and keep its data. */
+function dropRow(key: RoleKey, row: Row): void {
+  row.chart.destroy();
+  for (const chart of row.gaugeCharts.values()) chart.destroy();
+  row.rowEl.remove();
+  rows.delete(key);
+}
+
 /** What every chart of a row shares: its incidents, markers, tooltip, and zoom. */
 function common(key: RoleKey, series: { points: Point[]; readings: Reading[] }) {
   return {
@@ -349,9 +358,8 @@ async function backfill(from: Micros): Promise<void> {
     fetchJson(`/api/incidents?since_us=${String(from)}`).then(parseIncidents),
   ]);
   if (stale()) return;
-  markers = markers.concat(
-    events.filter((e) => !markers.some((m) => m.at === e.at && m.kind === e.kind && m.epoch === e.epoch)),
-  );
+  const marked = new Set(markers.map((m) => `${String(m.at)}|${m.kind}|${String(m.epoch)}`));
+  markers = markers.concat(events.filter((e) => !marked.has(`${String(e.at)}|${e.kind}|${String(e.epoch)}`)));
   incidents = recorded.reduce(upsertIncident, incidents);
   for (const [key, report] of parseLayers(await fetchJson("/api/layers"))) {
     layers.set(key, report);
@@ -363,8 +371,7 @@ async function backfill(from: Micros): Promise<void> {
   // A row made for a role before its shared row was known goes.
   for (const [key, row] of rows) {
     if (rowOf(shared, key) !== key) {
-      row.rowEl.remove();
-      rows.delete(key);
+      dropRow(key, row);
     }
   }
   gauges = parseGauges(await fetchJson("/api/gauges"));
@@ -505,8 +512,7 @@ function connect(): void {
  *  theme changes, since charts take their colors when they're created. */
 function rebuild(): void {
   view += 1;
-  for (const row of rows.values()) row.rowEl.remove();
-  rows.clear();
+  for (const [key, row] of rows) dropRow(key, row);
   void backfill(parseMicros(nowMicros() - RANGES[range].spanUs)).catch(report);
 }
 
@@ -621,8 +627,7 @@ document.getElementById("open-settings")?.addEventListener("click", () => {
   // backfill brings the new targets' rows.
   void openSettings(() => {
     view += 1;
-    for (const row of rows.values()) row.rowEl.remove();
-    rows.clear();
+    for (const [key, row] of rows) dropRow(key, row);
   }).catch(report);
 });
 

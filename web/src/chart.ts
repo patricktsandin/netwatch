@@ -77,8 +77,12 @@ function overlay(points: () => readonly Point[], annotations: () => Annotations)
     hooks: {
       draw: (u: uPlot) => {
         const { ctx } = u;
-        const { top, height } = u.bbox;
+        const { left, top, width, height } = u.bbox;
         ctx.save();
+        // Ticks and markers just outside a zoomed window stay off the axis gutter.
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
         ctx.lineWidth = 2 * devicePixelRatio;
         ctx.strokeStyle = color("--loss");
         for (const p of points()) {
@@ -165,6 +169,8 @@ export interface Chart {
   update(): void;
   redraw(): void;
   setWindow(min: number, max: number): void;
+  /** Lets the chart go: out of the shared cursor and no longer watching its size. */
+  destroy(): void;
   readonly plot: uPlot;
 }
 
@@ -246,9 +252,10 @@ export function createChart(container: HTMLElement, sources: ChartSources): Char
     aligned(sources),
     container,
   );
-  new ResizeObserver(() => {
+  const resized = new ResizeObserver(() => {
     plot.setSize({ width: container.clientWidth, height: HEIGHT });
-  }).observe(container);
+  });
+  resized.observe(container);
   return {
     plot,
     update: () => {
@@ -259,6 +266,10 @@ export function createChart(container: HTMLElement, sources: ChartSources): Char
     },
     setWindow: (min, max) => {
       plot.setScale("x", { min, max });
+    },
+    destroy: () => {
+      resized.disconnect();
+      plot.destroy();
     },
   };
 }
