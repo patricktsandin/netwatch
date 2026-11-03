@@ -3,7 +3,7 @@
 # measures the container's network instead of the host's:
 #
 #   podman run -d --name netwatch --network host --uts host \
-#     --cap-drop all --cap-add NET_RAW,SYSLOG,BPF,PERFMON --device /dev/kmsg \
+#     --cap-drop all --cap-add SYSLOG,BPF,PERFMON --device /dev/kmsg \
 #     -v /run/systemd/resolve:/run/systemd/resolve:ro \
 #     -v netwatch-config:/etc/netwatch -v netwatch-data:/var/lib/netwatch netwatch
 #

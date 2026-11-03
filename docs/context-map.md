@@ -35,7 +35,7 @@ Shared by every domain context:
 flowchart TB
   subgraph OS["Linux / network (outside the domain)"]
     NL[rtnetlink · ethtool · nl80211 · tc]
-    SK[sockets: ICMP · UDP · AF_PACKET · DNS · HTTP]
+    SK[sockets: ICMP · UDP · DNS · HTTP]
     PF["/proc · /sys · PSI · adjtimex · /dev/kmsg"]
     BPF[eBPF maps]
     MM[ModemManager D-Bus]

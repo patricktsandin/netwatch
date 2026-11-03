@@ -72,3 +72,4 @@ to "Superseded".
 | [0064](0064-bounded-state-and-a-trusted-clock-for-pruning.md) | Bounded state, and a trusted clock for pruning | Accepted |
 | [0065](0065-recovering-from-a-wrong-clock.md) | Recovering from a wrong clock | Accepted |
 | [0066](0066-only-the-host-vouches-for-its-clock.md) | Only the host vouches for its clock | Accepted |
+| [0067](0067-no-cap-net-raw.md) | No CAP_NET_RAW | Accepted |

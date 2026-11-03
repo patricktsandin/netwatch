@@ -88,6 +88,7 @@ never finds the service's file or database by itself.
   one non-default workspace member). The capability test runs with `--ignored`.
 
 Deliberately left unbuilt for now:
+- gateway link-layer probes (ARP/NDP), which would need `CAP_NET_RAW` again (ADR-0067)
 - persisting and graphing HTTPS phase timings, and the `colo=` identity
 - IPv6 egress for the global roles (IPv6 targets are pinned to the IPv4 egress NIC)
 - ethtool driver stats and qdisc stats
@@ -114,8 +115,9 @@ rate limit, about one reply per second, so one of them sees hop 1 go silent.
   - Series are keyed by role. Every sample carries its identity and identity epoch.
   - Never aggregate across epochs.
   - rtnetlink is the source of truth. Never parse `ip` or `nmcli` output.
-- **Privileges** ([0007](docs/adr/0007-privileges-and-probe-sockets.md)):
-  - Only `CAP_NET_RAW`, `CAP_SYSLOG`, `CAP_BPF`, and `CAP_PERFMON`, and each one is
+- **Privileges** ([0007](docs/adr/0007-privileges-and-probe-sockets.md),
+  [0067](docs/adr/0067-no-cap-net-raw.md)):
+  - Only `CAP_SYSLOG`, `CAP_BPF`, and `CAP_PERFMON`, and each one is
     optional at runtime: if it's missing, disable the dependent source and record an
     event. Never fail to start.
   - Never add a capability without an ADR.

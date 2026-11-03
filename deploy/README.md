@@ -59,7 +59,7 @@ committed tree, with podman, or with docker if podman is missing
 ```sh
 ./packaging/build-container.sh
 sudo podman run -d --name netwatch --network host --uts host \
-  --cap-drop all --cap-add NET_RAW,SYSLOG,BPF,PERFMON --device /dev/kmsg \
+  --cap-drop all --cap-add SYSLOG,BPF,PERFMON --device /dev/kmsg \
   -v /run/systemd/resolve:/run/systemd/resolve:ro \
   -v netwatch-config:/etc/netwatch -v netwatch-data:/var/lib/netwatch \
   netwatch:latest
@@ -71,7 +71,7 @@ With docker, use the same options with `docker run`. Each option matters:
 |---|---|
 | `--network host` | Required. netwatch measures the network namespace it runs in, which must be the host's. The UI is then on the host's `127.0.0.1:8732`. |
 | `--uts host` | The report names the host by its real hostname. |
-| `--cap-drop all --cap-add …` | Only the four capabilities ADR-0007 allows. Any one may be left out, and its sources are then listed as disabled. |
+| `--cap-drop all --cap-add …` | Only the three capabilities ADR-0007 and ADR-0067 allow. Any one may be left out, and its sources are then listed as disabled. |
 | `--device /dev/kmsg` | Kernel log lines as event markers (needs `SYSLOG`). |
 | `-v …:/etc/netwatch` | The configuration, which the settings page rewrites. The first start copies the defaults in. |
 | `-v …:/var/lib/netwatch` | The history database. |

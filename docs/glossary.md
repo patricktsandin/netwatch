@@ -109,6 +109,7 @@ words are defined elsewhere in this file.
 - **Loopback probe**: an ICMP echo or UDP echo through `lo`, giving the *kernel layer*
   baseline.
 - **Link-layer probe**: an ARP request (IPv4) or neighbor solicitation (IPv6) to the *gateway*.
+  Not built: it would need `CAP_NET_RAW`, which netwatch isn't granted (ADR-0067).
 - **Hop probe**: a TTL-limited probe toward a *target*, answered by the router at that
   *hop*.
 - **Echo probe**: an ICMP or ICMPv6 echo request to a *target*.
