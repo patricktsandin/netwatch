@@ -194,7 +194,11 @@ export function renderMap(
       };
       g.addEventListener("click", go);
       g.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") go();
+        if (event.key === "Enter" || event.key === " ") {
+          // Space would also scroll the page, away from the row just scrolled to.
+          event.preventDefault();
+          go();
+        }
       });
     }
   }

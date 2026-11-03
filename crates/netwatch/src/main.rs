@@ -624,6 +624,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     _ => finished,
                 };
+                let stored = finished.trace.is_some();
                 if let Some(trace) = finished.trace {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
                     let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -632,7 +633,7 @@ async fn main() -> anyhow::Result<()> {
                     let _ = writes.send(persist::Write::Trace(trace));
                     drop(generation);
                 }
-                trace_queue.finished();
+                trace_queue.finished(stored);
                 trace_queue.push_all(traces.finished(finished.target, clock.now()));
                 dispatch_traces(&mut trace_queue, &mut traces, &topology, &destinations, &tracer, clock.now());
             }
@@ -991,7 +992,7 @@ fn dispatch_traces(
                         None
                     }
                     _ => {
-                        queue.finished();
+                        queue.finished(false);
                         Some(request)
                     }
                 }

@@ -618,7 +618,6 @@ async fn build_report(
             let mut starts: Vec<WallTime> = all.iter().map(|e| e.started).collect();
             starts.sort_unstable();
             for episode in all {
-                let next_started = starts.iter().copied().find(|&s| s > episode.started);
                 let start = episode.started.max(from);
                 let end = episode.ended.unwrap_or(until).min(until);
                 let on_path = report::roles_on_paths(&episode.affected, &known);
@@ -694,10 +693,11 @@ async fn build_report(
                 let ended = end.max(episode.started);
                 let late =
                     WallTime::from_unix_micros(ended.as_unix_micros() + EPISODE_TRACE_LATE_US);
-                let traced_until = match next_started {
-                    Some(next) if next > ended => late.min(next),
-                    _ => late,
-                };
+                let traced_until = starts
+                    .iter()
+                    .copied()
+                    .find(|&s| s > ended)
+                    .map_or(late, |next| late.min(next));
                 let traces: Vec<_> = store
                     .traces(episode.started, traced_until)?
                     .into_iter()

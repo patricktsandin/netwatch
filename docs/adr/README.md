@@ -67,3 +67,4 @@ to "Superseded".
 | [0059](0059-the-trace-queue-is-a-domain-type.md) | The trace queue is a domain type | Accepted |
 | [0060](0060-one-address-per-probe-and-traces-of-one-path.md) | One address per probe, and traces of one path | Accepted |
 | [0061](0061-a-waiting-routine-trace-becomes-the-episode-trace.md) | A waiting routine trace becomes the episode trace | Accepted |
+| [0062](0062-routine-traces-wait-out-incidents.md) | Routine traces wait out incidents | Accepted |

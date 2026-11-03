@@ -180,11 +180,11 @@ fn routine() -> TraceRequest {
 fn a_queued_trace_waits_for_the_path_to_settle_and_runs_on_it() {
     let mut queue = TraceQueue::default();
     queue.push(routine());
-    assert_eq!(queue.next(at(0), |_| true), None, "no path yet");
+    assert_eq!(queue.next(at(0), |_| false), None, "no path yet");
     queue.path(Some(&path("192.0.2.20")), at(1));
-    assert_eq!(queue.next(at(10), |_| true), None, "not settled");
+    assert_eq!(queue.next(at(10), |_| false), None, "not settled");
     assert_eq!(
-        queue.next(at(11), |_| true),
+        queue.next(at(11), |_| false),
         Some(Next::Run(routine(), path("192.0.2.20")))
     );
 }
@@ -197,8 +197,8 @@ fn any_change_of_path_starts_the_settling_afresh() {
     queue.path(Some(&path("192.0.2.20")), at(30));
     queue.path(Some(&path("10.20.0.7")), at(31));
     queue.push(routine());
-    assert_eq!(queue.next(at(40), |_| true), None);
-    assert!(queue.next(at(41), |_| true).is_some());
+    assert_eq!(queue.next(at(40), |_| false), None);
+    assert!(queue.next(at(41), |_| false).is_some());
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn traces_run_one_at_a_time_and_each_is_checked_when_it_starts() {
     queue.push(episode().unwrap());
     assert!(matches!(queue.next(at(10), |_| true), Some(Next::Run(..))));
     assert_eq!(queue.next(at(11), |_| true), None, "one is running");
-    queue.finished();
+    queue.finished(true);
     // By the time the second could start, the incident it was for has ended.
     assert_eq!(
         queue.next(at(20), |_| false),
@@ -275,11 +275,60 @@ fn an_incident_on_a_target_whose_routine_trace_waits_makes_it_the_episode_trace(
         first,
         Some(Next::Run(episode().unwrap(), path("192.0.2.20")))
     );
-    queue.finished();
+    queue.finished(true);
     // The schedule hands on the pending episode trace: it already ran.
     queue.push_all(schedule.finished(T1, at(20)));
     assert_eq!(
         queue.next(at(20), |t| schedule.has_open(t)),
         Some(Next::Drop(episode().unwrap()))
+    );
+}
+
+#[test]
+fn a_routine_trace_waits_while_its_target_has_an_incident_open() {
+    // In its cooldown, an incident gets no episode trace; the routine trace mustn't
+    // run during it and be taken for the normal path (ADR-0062). Others go ahead.
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    let two = TraceRequest {
+        target: TargetId::new(2),
+        kind: TraceKind::Routine,
+    };
+    queue.push_all([routine(), two]);
+    let target_one_open = |t: TargetId| t == T1;
+    assert_eq!(
+        queue.next(at(10), target_one_open),
+        Some(Next::Run(two, path("192.0.2.20")))
+    );
+    queue.finished(true);
+    assert_eq!(queue.next(at(11), target_one_open), None, "target 1 waits");
+    assert_eq!(
+        queue.next(at(12), |_| false),
+        Some(Next::Run(routine(), path("192.0.2.20")))
+    );
+}
+
+#[test]
+fn an_upgraded_trace_that_stored_nothing_leaves_the_episode_trace_to_run() {
+    let mut schedule = schedule();
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    queue.push_all(schedule.tick(at(0)));
+    let hop3 = Role::Hop {
+        target: T1,
+        ttl: ttl(3),
+    };
+    schedule.incident(&incident(hop3, true), at(1));
+    queue.upgrade(T1);
+    assert!(matches!(
+        queue.next(at(10), |t| schedule.has_open(t)),
+        Some(Next::Run(..))
+    ));
+    // The path changed under it, and it was dropped (ADR-0060).
+    queue.finished(false);
+    queue.push_all(schedule.finished(T1, at(20)));
+    assert_eq!(
+        queue.next(at(20), |t| schedule.has_open(t)),
+        Some(Next::Run(episode().unwrap(), path("192.0.2.20")))
     );
 }

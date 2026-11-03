@@ -161,7 +161,8 @@ words are defined elsewhere in this file.
   *trace queue*, and records its *trace path*.
 - **Trace queue**: where traces wait to run, one at a time, until the *trace path* has
   been the same for 10 s. An *episode trace* whose target has no *incident* open by
-  the time it would start is dropped (ADR-0058, ADR-0059).
+  the time it would start is dropped, and a *routine trace* waits while its target
+  has one open (ADR-0058, ADR-0059, ADR-0062).
 - **Trace path**: the path a *path trace* ran on: the egress interface and the local
   address. The network map draws only traces of the current one (ADR-0056).
 - **Trace schedule**: decides when each *target* is traced: routine traces, episode

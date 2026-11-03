@@ -36,7 +36,10 @@ pub struct Modem {
 /// A connection to ModemManager, kept open between readings.
 pub struct ModemManager {
     connection: zbus::Connection,
-    signal_requested: bool,
+    /// The modem object extended signal was asked of. A modem detected again (after
+    /// a suspend, a USB reset, or a ModemManager restart) is a new object, with its
+    /// signal reporting off again, so it is asked again.
+    signal_requested: Option<String>,
 }
 
 impl ModemManager {
@@ -45,7 +48,7 @@ impl ModemManager {
     pub async fn connect() -> zbus::Result<Self> {
         Ok(Self {
             connection: zbus::Connection::system().await?,
-            signal_requested: false,
+            signal_requested: None,
         })
     }
 
@@ -66,10 +69,10 @@ impl ModemManager {
         let mut modems: Vec<_> = objects.into_iter().collect();
         modems.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
         let (path, interfaces) = modems.into_iter().find(|(_, i)| i.contains_key(MODEM))?;
-        if !self.signal_requested {
+        if self.signal_requested.as_deref() != Some(path.as_str()) {
             // Extended signal (RSRP, RSRQ, SNR) is only reported after a client asks
             // for it. Without permission, quality alone is graphed (ADR-0036).
-            self.signal_requested = true;
+            self.signal_requested = Some(path.as_str().to_owned());
             if let Err(error) = self
                 .connection
                 .call_method(

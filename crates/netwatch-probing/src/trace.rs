@@ -195,10 +195,12 @@ pub fn settle() -> Time {
 pub struct TraceQueue {
     waiting: std::collections::VecDeque<TraceRequest>,
     /// Targets whose waiting routine trace became their episode trace, and those
-    /// whose upgraded trace has started: the episode trace the schedule hands on for
-    /// them afterwards has already run (ADR-0061).
+    /// whose upgraded trace stored a trace: the episode trace the schedule hands on
+    /// for them afterwards has already run (ADR-0061, ADR-0062).
     upgraded: BTreeSet<TargetId>,
     served: BTreeSet<TargetId>,
+    /// The upgraded trace running now, if the running one is.
+    running_upgraded: Option<TargetId>,
     /// The current path, and since when it has been the current one.
     path: Option<(TracePath, Instant)>,
     running: bool,
@@ -269,8 +271,10 @@ impl TraceQueue {
     }
 
     /// The next request at `now`, if none is running and the path has settled.
-    /// `open` says whether a target still has an incident open, as
-    /// [`TraceSchedule::has_open`] does.
+    /// `open` says whether a target has an incident open, as
+    /// [`TraceSchedule::has_open`] does. A routine trace of a target with one open
+    /// waits, and those behind it go ahead: run during an outage, it would be taken
+    /// for the normal path (ADR-0062).
     pub fn next(&mut self, now: Instant, open: impl Fn(TargetId) -> bool) -> Option<Next> {
         if self.running {
             return None;
@@ -279,23 +283,35 @@ impl TraceQueue {
         if now.since(*since) < settle() {
             return None;
         }
-        let request = self.waiting.pop_front()?;
+        let at = self
+            .waiting
+            .iter()
+            .position(|r| r.kind == TraceKind::Episode || !open(r.target))?;
+        let request = self.waiting.remove(at)?;
         if request.kind == TraceKind::Episode
             && (self.served.remove(&request.target) || !open(request.target))
         {
             self.upgraded.remove(&request.target);
             return Some(Next::Drop(request));
         }
-        if self.upgraded.remove(&request.target) {
-            self.served.insert(request.target);
-        }
+        self.running_upgraded = self
+            .upgraded
+            .remove(&request.target)
+            .then_some(request.target);
         self.running = true;
         Some(Next::Run(request, path.clone()))
     }
 
-    /// The running trace finished, whether or not it could run.
-    pub fn finished(&mut self) {
+    /// The running trace finished: `stored` if it produced a trace, not if it couldn't
+    /// run or was dropped. Only a stored trace serves the episode trace an upgraded
+    /// one stood in for.
+    pub fn finished(&mut self, stored: bool) {
         self.running = false;
+        if let Some(target) = self.running_upgraded.take()
+            && stored
+        {
+            self.served.insert(target);
+        }
     }
 }
 
