@@ -26,7 +26,7 @@ use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::sharing;
-use netwatch_probing::trace::{TraceRequest, TraceSchedule};
+use netwatch_probing::trace::{TracePath, TraceRequest, TraceSchedule};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -316,8 +316,11 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030). Outcomes are timed on the
     // monotonic clock: a step of the wall clock mustn't make every role stale.
     let mut egress_watch = health::EgressWatch::default();
-    // Incidents not yet given to the trace schedule, because there was no way out.
-    let mut held_back: BTreeMap<Role, netwatch_probing::incident::Incident> = BTreeMap::new();
+    // Traces the schedule asked for, not yet started (ADR-0058); the incidents open
+    // now, by role; and since when the whole path has been known.
+    let mut waiting: Vec<TraceRequest> = Vec::new();
+    let mut open_incidents: BTreeMap<Role, Incident> = BTreeMap::new();
+    let mut path_known_since: Option<netwatch_shared::Instant> = None;
     let mut recent: HashMap<Role, health::Outcomes> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
@@ -366,7 +369,7 @@ async fn main() -> anyhow::Result<()> {
     };
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
     // The path traces run on (ADR-0056): kept current from the topology below.
-    let (path_tx, path_rx) = watch::channel(None::<String>);
+    let (path_tx, path_rx) = watch::channel(None::<TracePath>);
     let tracer = trace::Tracer::new(pin.clone(), path_rx, names.clone(), clock, traced_tx);
     let start_trace = |request: TraceRequest| {
         if let Some(&destination) = destinations.get(&request.target) {
@@ -542,38 +545,38 @@ async fn main() -> anyhow::Result<()> {
                 let no_way_out = egress_watch
                     .observe(egress_pin(&topology).is_some(), clock.now());
                 let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), no_way_out, &live, &current_tx);
-                // Incidents held back while there was no way out go to the trace
-                // schedule once there is one, as if they had just opened (ADR-0057).
-                if !no_way_out {
-                    for incident in std::mem::take(&mut held_back).into_values() {
-                        if let Some(request) = traces.incident(&incident, clock.now()) {
-                            start_trace(request);
-                        }
-                    }
-                }
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     // A member's copy of a shared hop has the owner's incidents too, and
                     // its trace would sweep the same path toward the same address, so
                     // only the owner's incidents ask for one (ADR-0043).
                     let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
-                    // With no way out, a trace can't run, and asking would spend the
-                    // target's cooldown on nothing (ADR-0057): the incident is held back,
-                    // in its latest state, and one that has ended needs no trace.
-                    if !copy && no_way_out {
-                        if incident.ended.is_none() {
-                            held_back.insert(incident.role.clone(), incident.clone());
-                        } else {
-                            held_back.remove(&incident.role);
-                        }
-                    } else if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
-                        start_trace(request);
+                    if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
+                        waiting.push(request);
+                    }
+                    if incident.ended.is_none() {
+                        open_incidents.insert(incident.role.clone(), incident.clone());
+                    } else {
+                        open_incidents.remove(&incident.role);
                     }
                     recorder.incident(incident);
                 }
-                // A routine trace that comes due with no way out waits for one.
-                if !no_way_out {
-                    for request in traces.tick(clock.now()) {
+                waiting.extend(traces.tick(clock.now()));
+                // Traces wait for the whole path to have been back a while (ADR-0058):
+                // one run without it couldn't run or would record a path nothing
+                // matches, and one run as the link recovers would trace the recovery.
+                // An episode trace whose target has nothing open by then was for the
+                // outage itself, and is dropped: the schedule hears it finished.
+                path_known_since = current_path(&topology).map(|_| path_known_since.unwrap_or(clock.now()));
+                let settled = path_known_since.is_some_and(|since| clock.now().since(since).get::<second>() >= TRACE_SETTLE_S);
+                while settled && let Some(request) = waiting.pop() {
+                    let open = open_incidents.keys().any(|role| match role {
+                        Role::Target(t) | Role::Hop { target: t, .. } => *t == request.target,
+                        _ => false,
+                    });
+                    if request.kind == netwatch_probing::trace::TraceKind::Episode && !open {
+                        waiting.extend(traces.finished(request.target, clock.now()));
+                    } else {
                         start_trace(request);
                     }
                 }
@@ -616,16 +619,17 @@ async fn main() -> anyhow::Result<()> {
                     };
                     log_sample(&sample);
                     let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
-                    incidents.outcome(&sample.role, sample.at, answered);
-                    // A target's outcome is graded only if it went by the current pin: a
-                    // stream retired by a change still resolves what it sent before, and
-                    // that measured a path no longer graded (ADR-0057). Its sample is
-                    // still kept. A hop's samples are already only the current path's.
+                    // A target's outcome counts, for its grade and its incidents' times,
+                    // only if it went by the current pin: a stream retired by a change
+                    // still resolves what it sent before, and that measured a path no
+                    // longer graded (ADR-0057). Its sample is still kept. A hop's samples
+                    // are already only the current path's.
                     let current = match sample.role {
                         Role::Target(_) => egress_pin(&topology).is_some_and(|pin| pin.epoch == sample.epoch),
                         _ => true,
                     };
                     if current {
+                        incidents.outcome(&sample.role, sample.at, answered);
                         recent.entry(sample.role.clone()).or_default().observe(sample.epoch, clock.now(), answered);
                     }
                     let _ = live.send(LiveMessage::from(&sample));
@@ -637,17 +641,15 @@ async fn main() -> anyhow::Result<()> {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
                     let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trace_generations.insert(finished.target, *generation);
-                    latest_traces.insert(finished.target, trace.clone());
+                    latest_traces.insert((finished.target, trace.path.clone()), trace.clone());
                     let _ = writes.send(persist::Write::Trace(trace));
                     drop(generation);
                 }
-                if let Some(request) = traces.finished(finished.target, clock.now()) {
-                    start_trace(request);
-                }
+                waiting.extend(traces.finished(finished.target, clock.now()));
             }
             Some(flushed) = history_flushed.recv() => {
                 // Traces written before the flush are gone; any written after it stay.
-                latest_traces.retain(|target, _| trace_generations.get(target).is_some_and(|&g| g >= flushed));
+                latest_traces.retain(|(target, _), _| trace_generations.get(target).is_some_and(|&g| g >= flushed));
             }
             Some((role, reason)) = disabled_rx.recv() => {
                 match reason {
@@ -788,19 +790,18 @@ fn handle(
     }
 }
 
-/// The path this host's probes take out, as traces record it (ADR-0056): the egress
-/// interface and the local address, such as `wlan0 from 192.168.1.20`. Another
-/// network is another path, even on the same interface. `None` with no way out.
-fn current_path(topology: &Topology) -> Option<String> {
+/// The path this host's probes take out, as traces record it (ADR-0056). `None`
+/// until both the egress interface and the local address are known: a trace then
+/// would record a path nothing could match (ADR-0058).
+fn current_path(topology: &Topology) -> Option<TracePath> {
     let interface = match &egress_pin(topology)?.identity {
         Identity::Interface { name, .. } => name.to_string(),
         Identity::Address(address) => address.to_string(),
     };
-    let local = match topology.binding(&Role::LocalInterface).map(|b| &b.identity) {
-        Some(Identity::Address(address)) => address.to_string(),
-        _ => "an unknown address".to_owned(),
-    };
-    Some(format!("{interface} from {local}"))
+    match topology.binding(&Role::LocalInterface).map(|b| &b.identity) {
+        Some(Identity::Address(local)) => Some(TracePath::new(&interface, *local)),
+        _ => None,
+    }
 }
 
 /// The binding probes are pinned to: the tunnel if there is one, otherwise the NIC
@@ -983,6 +984,9 @@ fn publish_gone(
     });
 }
 
+/// How long the whole path must have been known before a trace runs (ADR-0058).
+const TRACE_SETTLE_S: f64 = 10.0;
+
 /// How often the system's resolver is read again, for `dns = "system"`.
 const RESOLVER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -997,7 +1001,7 @@ fn publish_current(
     layers: &BTreeMap<Role, Health>,
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
-    traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
+    traces: &persist::LatestTraces,
     hop_streams: &[sharing::HopStream],
     destinations: &BTreeMap<TargetId, IpAddr>,
     now: netwatch_shared::Instant,
@@ -1117,7 +1121,7 @@ fn network_map(
     grades: &BTreeMap<Role, Health>,
     topology: &Topology,
     names: &HashMap<IpAddr, String>,
-    traces: &BTreeMap<TargetId, netwatch_adapter_sqlite::StoredTrace>,
+    traces: &persist::LatestTraces,
     destinations: &BTreeMap<TargetId, IpAddr>,
     hop_streams: &[sharing::HopStream],
     bindings: &BTreeMap<String, BindingView>,
@@ -1129,12 +1133,18 @@ fn network_map(
             _ => None,
         })
         .collect();
+    // Each target's trace of the current path, or else one from before paths were
+    // recorded.
     let path = current_path(topology);
-    let traces: BTreeMap<TargetId, &netwatch_adapter_sqlite::StoredTrace> = traces
-        .iter()
-        .filter(|(_, stored)| stored.path.is_none() || stored.path == path)
-        .map(|(&target, stored)| (target, stored))
-        .collect();
+    let mut chosen: BTreeMap<TargetId, &netwatch_adapter_sqlite::StoredTrace> = BTreeMap::new();
+    for ((target, traced_on), stored) in traces {
+        if traced_on.is_none() && !chosen.contains_key(target)
+            || traced_on.is_some() && *traced_on == path
+        {
+            chosen.insert(*target, stored);
+        }
+    }
+    let traces = chosen;
     let latest: BTreeMap<TargetId, &netwatch_probing::trace::PathTrace> = traces
         .iter()
         .map(|(&target, stored)| (target, &stored.trace))
@@ -1322,7 +1332,10 @@ mod tests {
             current_path(&topology)
         };
         let home = local("192.168.1.20");
-        assert_eq!(home.as_deref(), Some("wlan0 from 192.168.1.20"));
+        assert_eq!(
+            home.as_ref().map(TracePath::as_str),
+            Some("wlan0 from 192.168.1.20")
+        );
         assert_ne!(local("10.20.0.7"), home);
     }
 }

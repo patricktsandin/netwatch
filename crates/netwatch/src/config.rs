@@ -1,8 +1,10 @@
 //! Configuration: a TOML file, parsed once into validated values (ADR-0014).
 //!
-//! The daemon reads the file named by `NETWATCH_CONFIG`, or
-//! `/etc/netwatch/netwatch.toml` if it exists, or else the built-in defaults
-//! (`deploy/netwatch.toml`). `NETWATCH_DB` and `NETWATCH_LISTEN` override the file.
+//! The daemon reads the file named by `NETWATCH_CONFIG` (the installed service's unit
+//! names `/etc/netwatch/netwatch.toml`), or else the built-in defaults
+//! (`deploy/netwatch.toml`). Nothing else is found implicitly, so a development build
+//! never touches the service's file or database (ADR-0057). `NETWATCH_DB` and
+//! `NETWATCH_LISTEN` override the file.
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};

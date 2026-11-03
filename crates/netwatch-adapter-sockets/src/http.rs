@@ -84,6 +84,9 @@ enum Families {
     Ipv4,
 }
 
+/// How long a connection attempt may take when another address is left to try.
+const CONNECT_BEFORE_NEXT: Duration = Duration::from_secs(2);
+
 /// How much of the body is read while checking for the expected text. A longer body
 /// is not an error: the rest is left unread.
 pub const BODY_LIMIT: usize = 16 * 1024;
@@ -173,7 +176,8 @@ async fn fetch(
         io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
     );
     let mut connection = None;
-    for address in addresses {
+    let last = addresses.len().saturating_sub(1);
+    for (n, address) in addresses.into_iter().enumerate() {
         let socket = if address.is_ipv4() {
             TcpSocket::new_v4()
         } else {
@@ -189,7 +193,16 @@ async fn fetch(
                 continue;
             }
         };
-        match socket.connect(address).await {
+        // An address that drops the handshake silently mustn't use up the whole
+        // probe while another is left to try.
+        let attempt = if n < last {
+            tokio::time::timeout(CONNECT_BEFORE_NEXT, socket.connect(address))
+                .await
+                .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "no answer")))
+        } else {
+            socket.connect(address).await
+        };
+        match attempt {
             Ok(tcp) => {
                 connection = Some(tcp);
                 break;

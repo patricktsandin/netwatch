@@ -436,7 +436,7 @@ mod flush {
 #[test]
 fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
     use netwatch_adapter_sqlite::StoredTrace;
-    use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind};
+    use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind, TracePath};
     use netwatch_shared::{HopTtl, Role, TargetId, WallTime};
     use std::num::NonZeroU8;
     let mut store = Store::open(&fresh("traces.db")).unwrap();
@@ -461,7 +461,7 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
             silent_from: Some(HopTtl::new(NonZeroU8::new(6).unwrap())),
         },
         names: [(router, "ae1.example.net · AS64500".to_owned())].into(),
-        path: Some("wlan0 from 192.0.2.20".to_owned()),
+        path: Some(TracePath::new("wlan0", "192.0.2.20".parse().unwrap())),
     };
     store.write_trace(&trace(10, TraceKind::Routine)).unwrap();
     store.write_trace(&trace(20, TraceKind::Episode)).unwrap();
@@ -488,21 +488,30 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
     );
     // On another network, the routine trace of this one is no baseline (ADR-0056).
     let office = StoredTrace {
-        path: Some("wlan0 from 10.20.0.7".to_owned()),
+        path: Some(TracePath::new("wlan0", "10.20.0.7".parse().unwrap())),
         ..trace(40, TraceKind::Episode)
     };
     store.write_trace(&office).unwrap();
     let at = WallTime::from_unix_micros(50);
     assert_eq!(
-        store.latest_path(&role, at).unwrap().as_deref(),
+        store
+            .latest_path(&role, at)
+            .unwrap()
+            .as_ref()
+            .map(TracePath::as_str),
         Some("wlan0 from 10.20.0.7")
     );
     let office_routine = store
-        .latest_trace(&role, TraceKind::Routine, at, Some("wlan0 from 10.20.0.7"))
+        .latest_trace(&role, TraceKind::Routine, at, office.path.as_ref())
         .unwrap();
     assert_eq!(office_routine, None);
     let home_routine = store
-        .latest_trace(&role, TraceKind::Routine, at, Some("wlan0 from 192.0.2.20"))
+        .latest_trace(
+            &role,
+            TraceKind::Routine,
+            at,
+            trace(10, TraceKind::Routine).path.as_ref(),
+        )
         .unwrap();
     assert_eq!(home_routine, Some(trace(10, TraceKind::Routine)));
     store.flush_history().unwrap();

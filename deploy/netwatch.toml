@@ -1,5 +1,6 @@
 # netwatch configuration. These are the built-in defaults (ADR-0009); the daemon
-# reads /etc/netwatch/netwatch.toml, or the file named by NETWATCH_CONFIG, instead.
+# reads the file named by NETWATCH_CONFIG instead, which the installed service's unit
+# sets to /etc/netwatch/netwatch.toml.
 #
 # Every target needs a stable `id`: history is keyed by it, so never renumber a
 # target, and never reuse the id of one you removed.

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use netwatch_adapter_sockets::ProbeSocket;
 use netwatch_adapter_sqlite::StoredTrace;
-use netwatch_probing::trace::{TraceProbe, TraceRequest, assemble};
+use netwatch_probing::trace::{TracePath, TraceProbe, TraceRequest, assemble};
 use netwatch_probing::{ProbeIndex, ProbeSequence, ReplyKind};
 use netwatch_shared::{HopTtl, Identity, Role, TargetId};
 use netwatch_topology::Binding;
@@ -38,7 +38,7 @@ pub struct Finished {
 #[derive(Clone)]
 pub struct Tracer {
     pin: watch::Receiver<Option<Binding>>,
-    path: watch::Receiver<Option<String>>,
+    path: watch::Receiver<Option<TracePath>>,
     names: Names,
     clock: Clock,
     done: mpsc::Sender<Finished>,
@@ -51,7 +51,7 @@ impl Tracer {
     /// finished trace to `done`.
     pub fn new(
         pin: watch::Receiver<Option<Binding>>,
-        path: watch::Receiver<Option<String>>,
+        path: watch::Receiver<Option<TracePath>>,
         names: Names,
         clock: Clock,
         done: mpsc::Sender<Finished>,
@@ -94,7 +94,7 @@ async fn run(
     request: TraceRequest,
     destination: IpAddr,
     pin: Option<Binding>,
-    path: Option<String>,
+    path: Option<TracePath>,
     names: &Names,
     clock: Clock,
 ) -> Option<StoredTrace> {

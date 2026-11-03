@@ -63,3 +63,4 @@ to "Superseded".
 | [0055](0055-refinements-to-no-way-out-and-new-paths.md) | Refinements to no way out, new paths, and the system resolver | Accepted |
 | [0056](0056-grades-need-evidence-and-traces-know-their-path.md) | Grades need evidence, and traces know their path | Accepted |
 | [0057](0057-follow-the-current-pin-and-touch-no-real-state.md) | Follow the current pin, and touch no real state | Accepted |
+| [0058](0058-traces-wait-for-a-settled-path.md) | Traces wait for a settled path | Accepted |

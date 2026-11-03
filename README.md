@@ -16,12 +16,14 @@ that path, and graphs it live and historically:
 
 ```sh
 (cd web && npm ci && npm run build)
-cargo run -p netwatch            # then open http://127.0.0.1:8732
+NETWATCH_LISTEN=127.0.0.1:8733 cargo run -p netwatch   # then open http://127.0.0.1:8733
 ```
 
-Targets live in the file named by `NETWATCH_CONFIG` (the installed service's is
-`/etc/netwatch/netwatch.toml`), or else in the built-in `deploy/netwatch.toml`. To install it as a service, from
-an RPM, with the install script on other distros, or as a container, see
+Port 8733 keeps a development build clear of an installed service on 8732, and is
+where `npm run dev` in `web/` proxies to. Targets live in the file named by
+`NETWATCH_CONFIG` (the installed service's is `/etc/netwatch/netwatch.toml`), or else
+in the built-in `deploy/netwatch.toml`. To install it as a service, from an RPM, with
+the install script on other distros, or as a container, see
 [deploy/README.md](deploy/README.md).
 
 ![netwatch's main screen](docs/images/dashboard.png)

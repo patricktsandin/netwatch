@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::num::NonZeroU8;
 
-use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind};
+use netwatch_probing::trace::{PathTrace, TraceHop, TraceKind, TracePath};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::microsecond;
 use netwatch_shared::{HopTtl, Role, WallTime};
@@ -30,7 +30,7 @@ pub struct StoredTrace {
     /// The path it ran on: the egress interface and the local address, such as
     /// `wlan0 from 192.168.1.20` (ADR-0056). `None` for traces from before it was
     /// kept.
-    pub path: Option<String>,
+    pub path: Option<TracePath>,
 }
 
 fn kind_text(kind: TraceKind) -> &'static str {
@@ -63,7 +63,7 @@ impl Store {
                 trace.destination.to_string(),
                 trace.trace.reached,
                 trace.trace.silent_from.map(|t| t.get().get()),
-                trace.path,
+                trace.path.as_ref().map(TracePath::as_str),
             ],
         )?;
         let id = transaction.last_insert_rowid();
@@ -124,7 +124,7 @@ impl Store {
         role: &Role,
         kind: TraceKind,
         before: WallTime,
-        path: Option<&str>,
+        path: Option<&TracePath>,
     ) -> Result<Option<StoredTrace>, StoreError> {
         let id: Option<i64> = self
             .connection
@@ -132,7 +132,12 @@ impl Store {
                 "SELECT id FROM traces WHERE role = ?1 AND kind = ?2 AND at_us < ?3
                  AND (?4 IS NULL OR path IS NULL OR path = ?4)
                  ORDER BY at_us DESC LIMIT 1",
-                params![role.key(), kind_text(kind), before.as_unix_micros(), path],
+                params![
+                    role.key(),
+                    kind_text(kind),
+                    before.as_unix_micros(),
+                    path.map(TracePath::as_str)
+                ],
                 |row| row.get(0),
             )
             .optional()?;
@@ -144,7 +149,11 @@ impl Store {
 
     /// The path `role` was last traced on before `before`, by a trace of either kind:
     /// the path it took then (ADR-0056). `None` if it has no trace that recorded one.
-    pub fn latest_path(&self, role: &Role, before: WallTime) -> Result<Option<String>, StoreError> {
+    pub fn latest_path(
+        &self,
+        role: &Role,
+        before: WallTime,
+    ) -> Result<Option<TracePath>, StoreError> {
         Ok(self
             .connection
             .query_row(
@@ -153,7 +162,23 @@ impl Store {
                 params![role.key(), before.as_unix_micros()],
                 |row| row.get(0),
             )
-            .optional()?)
+            .optional()?
+            .map(TracePath::from_stored))
+    }
+
+    /// Every path `role` has a trace of, besides traces from before paths were
+    /// recorded (`None`).
+    pub fn trace_paths(&self, role: &Role) -> Result<Vec<Option<TracePath>>, StoreError> {
+        let mut query = self
+            .connection
+            .prepare_cached("SELECT DISTINCT path FROM traces WHERE role = ?1")?;
+        let paths = query
+            .query_map([role.key()], |row| row.get::<_, Option<String>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(paths
+            .into_iter()
+            .map(|p| p.map(TracePath::from_stored))
+            .collect())
     }
 
     /// One trace by its row id. `None` if its row no longer parses.
@@ -240,7 +265,7 @@ impl Store {
                 silent_from: silent_from.and_then(ttl),
             },
             names,
-            path,
+            path: path.map(TracePath::from_stored),
         }))
     }
 }

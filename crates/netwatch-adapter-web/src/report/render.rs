@@ -599,8 +599,8 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
         ),
     ]));
     // One row per target. Probes and availability are counts, which add up across its
-    // epochs; a median doesn't, so the RTTs are those of the path it was probed on
-    // most (ADR-0057).
+    // epochs. A median doesn't: the RTTs are of the path it was probed on most, over
+    // all that path's epochs, and of that path's largest epoch (ADR-0057, ADR-0058).
     let mut targets: BTreeMap<Role, Vec<&PathStats>> = BTreeMap::new();
     for s in report
         .summary
@@ -622,7 +622,15 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
             rows: targets
                 .iter()
                 .filter_map(|(role, epochs)| {
-                    let main = epochs.iter().max_by_key(|s| s.sent)?;
+                    let mut by_path: BTreeMap<Option<&String>, u64> = BTreeMap::new();
+                    for s in epochs {
+                        *by_path.entry(s.identity.as_ref()).or_default() += s.sent;
+                    }
+                    let (&main_path, _) = by_path.iter().max_by_key(|&(_, &sent)| sent)?;
+                    let main = epochs
+                        .iter()
+                        .filter(|s| s.identity.as_ref() == main_path)
+                        .max_by_key(|s| s.sent)?;
                     let sent: u64 = epochs.iter().map(|s| s.sent).sum();
                     let lost: u64 = epochs.iter().map(|s| s.lost).sum();
                     let availability = if sent == 0 {
@@ -631,9 +639,9 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
                         format!("{:.3}%", 100.0 - lost as f64 * 100.0 / sent as f64)
                     };
                     let path = main.identity.clone().unwrap_or_else(|| "–".to_owned());
-                    let others = match epochs.len() - 1 {
+                    let others = match by_path.len() - 1 {
                         0 => String::new(),
-                        n => format!(" (and {n} more)"),
+                        n => format!(" (and {n} other path(s))"),
                     };
                     Some((
                         vec![

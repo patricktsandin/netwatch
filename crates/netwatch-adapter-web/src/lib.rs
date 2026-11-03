@@ -683,16 +683,20 @@ async fn build_report(
                     .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
                     .collect();
                 // Each target's baseline is a routine trace of the path its episode
-                // trace ran on: another path's would read as a change (ADR-0057).
+                // trace ran on, or else of the path it was last traced on before the
+                // episode: another path's would read as a change (ADR-0057).
                 let mut baselines = BTreeMap::new();
                 for role in &traced {
-                    let path = traces
-                        .iter()
-                        .find(|t| &t.role == role)
-                        .and_then(|t| t.path.as_deref());
-                    if let Some(trace) =
-                        store.latest_trace(role, TraceKind::Routine, episode.started, path)?
-                    {
+                    let path = match traces.iter().find(|t| &t.role == role) {
+                        Some(trace) => trace.path.clone(),
+                        None => store.latest_path(role, episode.started)?,
+                    };
+                    if let Some(trace) = store.latest_trace(
+                        role,
+                        TraceKind::Routine,
+                        episode.started,
+                        path.as_ref(),
+                    )? {
                         baselines.insert(role.clone(), trace);
                     }
                 }
@@ -719,7 +723,7 @@ async fn build_report(
                     role,
                     TraceKind::Routine,
                     until,
-                    path.as_deref(),
+                    path.as_ref(),
                 )?);
             }
             let history = history_between(store, from, until, now, None)?;

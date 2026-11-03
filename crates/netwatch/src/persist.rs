@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use netwatch_adapter_sqlite::Store;
 use netwatch_history::{self as history, Reading, Sample, Tier};
+use netwatch_probing::trace::TracePath;
 use netwatch_shared::WallTime;
 use netwatch_topology::TopologyEvent;
 
@@ -219,30 +220,37 @@ pub fn last_epoch(path: &std::path::Path) -> anyhow::Result<Option<u64>> {
         .and_then(|e| u64::try_from(e).ok()))
 }
 
-/// Each of `targets`' latest trace stored at `path`, routine or episode, for the
-/// network map (ADR-0042). A trace toward another address than the target's own is
-/// a path the target no longer takes, since its address was edited (ADR-0035), so
-/// it is left out.
+/// The traces the map draws from (ADR-0042): each target's latest trace on each path
+/// it was traced on (ADR-0056), keyed by both, `None` for traces from before paths
+/// were recorded.
+pub type LatestTraces = std::collections::BTreeMap<
+    (netwatch_shared::TargetId, Option<TracePath>),
+    netwatch_adapter_sqlite::StoredTrace,
+>;
+
+/// [`LatestTraces`] as stored at `path`, routine or episode. A trace toward another
+/// address than the target's own is a path the target no longer takes, since its
+/// address was edited (ADR-0035), so it is left out.
 pub fn latest_traces(
     path: &std::path::Path,
     targets: &std::collections::BTreeMap<netwatch_shared::TargetId, std::net::IpAddr>,
-) -> anyhow::Result<
-    std::collections::BTreeMap<netwatch_shared::TargetId, netwatch_adapter_sqlite::StoredTrace>,
-> {
+) -> anyhow::Result<LatestTraces> {
     use netwatch_probing::trace::TraceKind;
     let store = Store::open(path)?;
     let end = netwatch_shared::WallTime::from_unix_micros(i64::MAX);
-    let mut latest = std::collections::BTreeMap::new();
+    let mut latest = LatestTraces::new();
     for (&target, &destination) in targets {
         let role = netwatch_shared::Role::Target(target);
-        let routine = store.latest_trace(&role, TraceKind::Routine, end, None)?;
-        let episode = store.latest_trace(&role, TraceKind::Episode, end, None)?;
-        let newest = [routine, episode]
-            .into_iter()
-            .flatten()
-            .max_by_key(|t| t.at.as_unix_micros());
-        if let Some(trace) = newest.filter(|t| t.destination == destination) {
-            latest.insert(target, trace);
+        for path in store.trace_paths(&role)? {
+            let routine = store.latest_trace(&role, TraceKind::Routine, end, path.as_ref())?;
+            let episode = store.latest_trace(&role, TraceKind::Episode, end, path.as_ref())?;
+            let newest = [routine, episode]
+                .into_iter()
+                .flatten()
+                .max_by_key(|t| t.at.as_unix_micros());
+            if let Some(trace) = newest.filter(|t| t.destination == destination) {
+                latest.insert((target, trace.path.clone()), trace);
+            }
         }
     }
     Ok(latest)

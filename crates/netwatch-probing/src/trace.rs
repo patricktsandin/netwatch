@@ -199,6 +199,30 @@ pub struct TraceHop {
     pub median: Option<Time>,
 }
 
+/// The path a trace ran on (glossary: *trace path*): the egress interface and the
+/// local address, such as `wlan0 from 192.168.1.20` (ADR-0056). Another network is
+/// another path, even on the same interface. Its text is what is stored, and two
+/// paths are the same exactly when their texts are.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TracePath(String);
+
+impl TracePath {
+    /// The path out by `interface`, from the local address `local`.
+    pub fn new(interface: &str, local: IpAddr) -> Self {
+        Self(format!("{interface} from {local}"))
+    }
+
+    /// A path as it was stored.
+    pub fn from_stored(text: String) -> Self {
+        Self(text)
+    }
+
+    /// The path's text, as it is stored and shown.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// A trace's hops, in TTL order (glossary: *path trace*).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathTrace {
