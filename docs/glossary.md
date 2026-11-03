@@ -67,6 +67,9 @@ words are defined elsewhere in this file.
   after a *resync*.
 - **Egress path**: what the kernel resolves for a destination: egress interface,
   *gateway*, source address, and *tunnel* (if any), as `RTM_GETROUTE` reports it.
+- **No way out**: no *egress path* at all, for at least 5 s: nothing can be sent, so
+  the local interface and every *target* and *hop* are `Failing` (ADR-0053, ADR-0055).
+  The report states the *time without a way out*: the local interface's own outages.
 - **Egress interface**: the interface an *egress path* leaves through.
 - **NIC**: the physical device under the current *egress path*. If a *tunnel* is
   involved, the NIC is the device that carries the tunnel's traffic.

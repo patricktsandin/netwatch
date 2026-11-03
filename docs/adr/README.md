@@ -62,3 +62,4 @@ to "Superseded".
 | [0054](0054-a-new-way-out-is-a-new-path.md) | A new way out is a new path | Accepted |
 | [0055](0055-refinements-to-no-way-out-and-new-paths.md) | Refinements to no way out, new paths, and the system resolver | Accepted |
 | [0056](0056-grades-need-evidence-and-traces-know-their-path.md) | Grades need evidence, and traces know their path | Accepted |
+| [0057](0057-follow-the-current-pin-and-touch-no-real-state.md) | Follow the current pin, and touch no real state | Accepted |

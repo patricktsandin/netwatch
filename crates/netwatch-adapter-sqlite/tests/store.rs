@@ -477,10 +477,34 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
     );
     assert_eq!(
         store
-            .latest_trace(&role, TraceKind::Routine, WallTime::from_unix_micros(30))
+            .latest_trace(
+                &role,
+                TraceKind::Routine,
+                WallTime::from_unix_micros(30),
+                None
+            )
             .unwrap(),
         Some(trace(10, TraceKind::Routine))
     );
+    // On another network, the routine trace of this one is no baseline (ADR-0056).
+    let office = StoredTrace {
+        path: Some("wlan0 from 10.20.0.7".to_owned()),
+        ..trace(40, TraceKind::Episode)
+    };
+    store.write_trace(&office).unwrap();
+    let at = WallTime::from_unix_micros(50);
+    assert_eq!(
+        store.latest_path(&role, at).unwrap().as_deref(),
+        Some("wlan0 from 10.20.0.7")
+    );
+    let office_routine = store
+        .latest_trace(&role, TraceKind::Routine, at, Some("wlan0 from 10.20.0.7"))
+        .unwrap();
+    assert_eq!(office_routine, None);
+    let home_routine = store
+        .latest_trace(&role, TraceKind::Routine, at, Some("wlan0 from 192.0.2.20"))
+        .unwrap();
+    assert_eq!(home_routine, Some(trace(10, TraceKind::Routine)));
     store.flush_history().unwrap();
     assert!(
         store

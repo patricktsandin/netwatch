@@ -40,18 +40,20 @@ fn at(s: u64) -> Instant {
 }
 
 #[test]
-fn outcomes_start_afresh_with_a_new_epoch_and_ignore_an_older_one() {
+fn outcomes_start_afresh_with_any_other_epoch() {
     let mut outcomes = Outcomes::default();
     for s in 0..5 {
-        outcomes.observe(epoch(1), at(s), false);
+        outcomes.observe(epoch(7), at(s), false);
     }
     assert_eq!(outcomes.grade(at(5)), Health::Failing);
-    // A failover: the new path's first probe is answered...
+    // A tunnel goes down and the pin is the NIC's again, an older epoch: its
+    // outcomes are graded, and on their own (ADR-0057).
     outcomes.observe(epoch(2), at(6), true);
     assert_eq!(outcomes.grade(at(6)), Health::Healthy);
-    // ...and the retired stream's last probe on the old path times out late.
-    outcomes.observe(epoch(1), at(7), false);
-    assert_eq!(outcomes.grade(at(7)), Health::Healthy);
+    outcomes.observe(epoch(2), at(7), false);
+    assert_eq!(outcomes.grade(at(7)), Health::Degraded, "1 of 2 lost");
+    outcomes.observe(epoch(2), at(8), false);
+    assert_eq!(outcomes.grade(at(8)), Health::Failing, "2 of 3 lost");
 }
 
 #[test]

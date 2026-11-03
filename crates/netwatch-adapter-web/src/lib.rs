@@ -619,9 +619,20 @@ async fn build_report(
                     WallTime::from_unix_micros(episode.started.as_unix_micros() - HOUR_US);
                 let before =
                     history_between(store, before_from, episode.started, now, Some(&on_path))?;
-                let before = report::path_stats(&before, &identities)
+                // Of several epochs with one identity (a restart starts a new one),
+                // the one with the most probes is the baseline: medians don't merge.
+                let mut most: BTreeMap<(Role, Option<String>), (u64, f64)> = BTreeMap::new();
+                for s in report::path_stats(&before, &identities) {
+                    if let Some(median) = s.median_ms {
+                        let best = most.entry((s.role, s.identity)).or_insert((s.sent, median));
+                        if s.sent > best.0 {
+                            *best = (s.sent, median);
+                        }
+                    }
+                }
+                let before = most
                     .into_iter()
-                    .filter_map(|s| Some(((s.role, s.identity), s.median_ms?)))
+                    .map(|(key, (_, median))| (key, median))
                     .collect();
                 let raw = start.as_unix_micros() >= raw_since;
                 let step_us =
@@ -671,10 +682,16 @@ async fn build_report(
                     .into_iter()
                     .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
                     .collect();
+                // Each target's baseline is a routine trace of the path its episode
+                // trace ran on: another path's would read as a change (ADR-0057).
                 let mut baselines = BTreeMap::new();
                 for role in &traced {
+                    let path = traces
+                        .iter()
+                        .find(|t| &t.role == role)
+                        .and_then(|t| t.path.as_deref());
                     if let Some(trace) =
-                        store.latest_trace(role, TraceKind::Routine, episode.started)?
+                        store.latest_trace(role, TraceKind::Routine, episode.started, path)?
                     {
                         baselines.insert(role.clone(), trace);
                     }
@@ -694,8 +711,16 @@ async fn build_report(
                 });
             }
             let mut normal_paths = Vec::new();
+            // The normal path is the routine trace of the path each target was last
+            // traced on in the span, not of whatever network it was on before.
             for role in known.iter().filter(|r| matches!(r, Role::Target(_))) {
-                normal_paths.extend(store.latest_trace(role, TraceKind::Routine, until)?);
+                let path = store.latest_path(role, until)?;
+                normal_paths.extend(store.latest_trace(
+                    role,
+                    TraceKind::Routine,
+                    until,
+                    path.as_deref(),
+                )?);
             }
             let history = history_between(store, from, until, now, None)?;
             let summary = report::path_stats(&history, &identities);

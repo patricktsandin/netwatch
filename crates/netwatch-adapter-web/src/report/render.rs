@@ -598,40 +598,62 @@ pub fn compose(report: &Report, label: Label<'_>) -> Vec<Block> {
             ),
         ),
     ]));
-    let targets: Vec<&PathStats> = report
+    // One row per target. Probes and availability are counts, which add up across its
+    // epochs; a median doesn't, so the RTTs are those of the path it was probed on
+    // most (ADR-0057).
+    let mut targets: BTreeMap<Role, Vec<&PathStats>> = BTreeMap::new();
+    for s in report
         .summary
         .iter()
         .filter(|s| matches!(s.role, Role::Target(_)))
-        .collect();
+    {
+        targets.entry(s.role.clone()).or_default().push(s);
+    }
     if !targets.is_empty() {
         blocks.push(Block::Table {
-            head: strings(["Target", "Path", "Probes", "Availability", "Median", "p95"]),
+            head: strings([
+                "Target",
+                "Main path",
+                "Probes",
+                "Availability",
+                "Median",
+                "p95",
+            ]),
             rows: targets
                 .iter()
-                .map(|s| {
-                    let availability = if s.sent == 0 {
+                .filter_map(|(role, epochs)| {
+                    let main = epochs.iter().max_by_key(|s| s.sent)?;
+                    let sent: u64 = epochs.iter().map(|s| s.sent).sum();
+                    let lost: u64 = epochs.iter().map(|s| s.lost).sum();
+                    let availability = if sent == 0 {
                         "–".to_owned()
                     } else {
-                        format!("{:.3}%", 100.0 - s.loss_percent())
+                        format!("{:.3}%", 100.0 - lost as f64 * 100.0 / sent as f64)
                     };
-                    (
+                    let path = main.identity.clone().unwrap_or_else(|| "–".to_owned());
+                    let others = match epochs.len() - 1 {
+                        0 => String::new(),
+                        n => format!(" (and {n} more)"),
+                    };
+                    Some((
                         vec![
-                            label(&s.role),
-                            s.identity.clone().unwrap_or_else(|| "–".to_owned()),
-                            s.sent.to_string(),
+                            label(role),
+                            format!("{path}{others}"),
+                            sent.to_string(),
                             availability,
-                            ms(s.median_ms),
-                            ms(s.p95_ms),
+                            ms(main.median_ms),
+                            ms(main.p95_ms),
                         ],
-                        s.lost > 0,
-                    )
+                        lost > 0,
+                    ))
                 })
                 .collect(),
             numeric: 2,
         });
         blocks.push(Block::Para(
-            "Availability is the share of probes answered, on each path separately. Time \
-             without a way out isn't in it: no probe could be sent then."
+            "Availability is the share of probes answered. Time without a way out isn't in \
+             it: no probe could be sent then. Median and p95 are of the target's main path: \
+             a median across paths would describe none of them."
                 .to_owned(),
         ));
     }

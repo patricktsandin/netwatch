@@ -19,8 +19,8 @@ that path, and graphs it live and historically:
 cargo run -p netwatch            # then open http://127.0.0.1:8732
 ```
 
-Targets live in `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`, or
-the file named by `NETWATCH_CONFIG`. To install it as a service, from
+Targets live in the file named by `NETWATCH_CONFIG` (the installed service's is
+`/etc/netwatch/netwatch.toml`), or else in the built-in `deploy/netwatch.toml`. To install it as a service, from
 an RPM, with the install script on other distros, or as a container, see
 [deploy/README.md](deploy/README.md).
 

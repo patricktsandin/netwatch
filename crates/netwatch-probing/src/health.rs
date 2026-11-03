@@ -64,10 +64,11 @@ pub fn grade(recent: &[bool], fresh: bool) -> Health {
     }
 }
 
-/// A role's recent outcomes, from which it is graded: those of its newest epoch
-/// only, so that a grade never mixes two identities (ADR-0055). An outcome of an
-/// older epoch, such as a stream retired by a failover resolving a late probe, is
-/// left out: it measured a path that is no longer graded.
+/// A role's recent outcomes, from which it is graded: those of one epoch only, so
+/// that a grade never mixes two identities (ADR-0055, ADR-0057). An outcome of
+/// another epoch starts the window afresh. Epoch numbers say nothing about which
+/// is current (a target's pin can go back to the NIC's older epoch when a tunnel
+/// goes down), so the caller leaves out outcomes that aren't of the current one.
 #[derive(Debug, Clone, Default)]
 pub struct Outcomes {
     epoch: Option<IdentityEpoch>,
@@ -77,13 +78,9 @@ pub struct Outcomes {
 impl Outcomes {
     /// Adds an outcome (`answered` or not) of `epoch`, which arrived at `at`.
     pub fn observe(&mut self, epoch: IdentityEpoch, at: Instant, answered: bool) {
-        match self.epoch {
-            Some(current) if epoch < current => return,
-            Some(current) if epoch == current => {}
-            _ => {
-                self.epoch = Some(epoch);
-                self.recent.clear();
-            }
+        if self.epoch != Some(epoch) {
+            self.epoch = Some(epoch);
+            self.recent.clear();
         }
         self.recent.push_back((at, answered));
         if self.recent.len() > WINDOW {

@@ -5,7 +5,7 @@
 // Needs `quint` on PATH, or set QUINT.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,47 +57,51 @@ const times = (ps: readonly Point[]): number[] => ps.map((p) => p.at);
 describe("live stream and backfill conform to specs/live_backfill.qnt", () => {
   it("replays generated traces against merge and latest", () => {
     const dir = mkdtempSync(join(tmpdir(), "netwatch-traces-"));
-    execFileSync(
-      process.env["QUINT"] ?? "quint",
-      [
-        "run",
-        SPEC,
-        "--mbt",
-        "--max-steps=30",
-        "--n-traces=100",
-        "--max-samples=100",
-        "--seed=0x6c697665",
-        `--out-itf=${dir}/trace_{seq}.itf.json`,
-      ],
-      { stdio: "ignore" },
-    );
-    const files = readdirSync(dir);
-    expect(files.length).toBeGreaterThan(50);
+    try {
+      execFileSync(
+        process.env["QUINT"] ?? "quint",
+        [
+          "run",
+          SPEC,
+          "--mbt",
+          "--max-steps=30",
+          "--n-traces=100",
+          "--max-samples=100",
+          "--seed=0x6c697665",
+          `--out-itf=${dir}/trace_{seq}.itf.json`,
+        ],
+        { stdio: "ignore" },
+      );
+      const files = readdirSync(dir);
+      expect(files.length).toBeGreaterThan(50);
 
-    let backfills = 0;
-    for (const file of files) {
-      const trace: unknown = JSON.parse(readFileSync(join(dir, file), "utf8"));
-      const states = list(field(trace, "states")).map(state);
-      let client: Point[] = [];
-      states.slice(1).forEach((after, i) => {
-        const before = states[i];
-        if (before === undefined) return;
-        switch (after.action) {
-          case "deliverLive":
-            client = merge(client, [point(before.inbox[0] ?? -1)]);
-            break;
-          case "deliverBackfill":
-            client = merge(client, (before.response[0] ?? []).sort((a, b) => a - b).map(point));
-            backfills++;
-            break;
-          case "reconnect":
-            // The client asks for everything since its latest sample, or from the start.
-            expect([latest(client) ?? 0]).toEqual(after.request);
-            break;
-        }
-        expect(times(client), `${file} step ${String(i + 1)}: ${after.action}`).toEqual(after.points);
-      });
+      let backfills = 0;
+      for (const file of files) {
+        const trace: unknown = JSON.parse(readFileSync(join(dir, file), "utf8"));
+        const states = list(field(trace, "states")).map(state);
+        let client: Point[] = [];
+        states.slice(1).forEach((after, i) => {
+          const before = states[i];
+          if (before === undefined) return;
+          switch (after.action) {
+            case "deliverLive":
+              client = merge(client, [point(before.inbox[0] ?? -1)]);
+              break;
+            case "deliverBackfill":
+              client = merge(client, (before.response[0] ?? []).sort((a, b) => a - b).map(point));
+              backfills++;
+              break;
+            case "reconnect":
+              // The client asks for everything since its latest sample, or from the start.
+              expect([latest(client) ?? 0]).toEqual(after.request);
+              break;
+          }
+          expect(times(client), `${file} step ${String(i + 1)}: ${after.action}`).toEqual(after.points);
+        });
+      }
+      expect(backfills).toBeGreaterThan(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    expect(backfills).toBeGreaterThan(0);
   });
 });

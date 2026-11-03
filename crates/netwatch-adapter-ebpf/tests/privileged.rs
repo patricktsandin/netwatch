@@ -1,6 +1,8 @@
 //! The drop-reason program, loaded for real. Needs CAP_BPF and CAP_PERFMON, so it is
 //! ignored by default, like the netns tests: run it with
-//! `sudo -E cargo test -p netwatch-adapter-ebpf -- --ignored`.
+//! `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test -p
+//! netwatch-adapter-ebpf --test privileged -- --ignored`, which builds as you and runs
+//! only the test binary as root, so that nothing in `target/` becomes root's.
 
 #![allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015), including in helpers.
 

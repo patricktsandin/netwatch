@@ -235,8 +235,8 @@ pub fn latest_traces(
     let mut latest = std::collections::BTreeMap::new();
     for (&target, &destination) in targets {
         let role = netwatch_shared::Role::Target(target);
-        let routine = store.latest_trace(&role, TraceKind::Routine, end)?;
-        let episode = store.latest_trace(&role, TraceKind::Episode, end)?;
+        let routine = store.latest_trace(&role, TraceKind::Routine, end, None)?;
+        let episode = store.latest_trace(&role, TraceKind::Episode, end, None)?;
         let newest = [routine, episode]
             .into_iter()
             .flatten()

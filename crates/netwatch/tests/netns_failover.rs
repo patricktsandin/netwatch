@@ -17,8 +17,14 @@ fn ip(ns: &str, args: &str) {
     assert!(status.success(), "ip -n {ns} {args}");
 }
 
-/// Deletes the namespace (and everything in it) even if the test fails.
+/// Deletes the namespace (and everything in it), and the daemon's database, even if
+/// the test fails.
 struct Namespace(&'static str, Option<Child>);
+
+/// The daemon's own database for namespace `ns`, outside the installed service's.
+fn database(ns: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("{ns}-{}.db", std::process::id()))
+}
 
 impl Drop for Namespace {
     fn drop(&mut self) {
@@ -30,6 +36,12 @@ impl Drop for Namespace {
         }
         let _ = Command::new("sudo")
             .args(["-n", "ip", "netns", "del", self.0])
+            .status();
+        // The daemon ran as root, so its files are root's.
+        let database = database(self.0).display().to_string();
+        let _ = Command::new("sudo")
+            .args(["-n", "rm", "-f"])
+            .args(["", "-wal", "-shm"].map(|suffix| format!("{database}{suffix}")))
             .status();
     }
 }
@@ -55,7 +67,7 @@ fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String>
     // and write into its database: it gets the example configuration and a database
     // of its own instead.
     let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/netwatch.toml");
-    let database = std::env::temp_dir().join(format!("{ns}-{}.db", std::process::id()));
+    let database = database(ns);
     let daemon = Command::new("sudo")
         .args([
             "-n",
@@ -87,10 +99,7 @@ fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String>
     let mut log = String::new();
     std::io::Read::read_to_string(daemon.stdout.as_mut().unwrap(), &mut log).unwrap();
     let _ = daemon.wait();
-    let _ = Command::new("sudo")
-        .args(["-n", "rm", "-f"])
-        .args(["", "-wal", "-shm"].map(|suffix| format!("{}{suffix}", database.display())))
-        .status();
+    drop(namespace);
     log.lines()
         .filter(|line| line.contains("epoch started") && line.contains("role=Nic"))
         .map(|line| {

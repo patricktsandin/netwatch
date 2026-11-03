@@ -164,22 +164,31 @@ async fn fetch(
         .collect();
     let resolved = Instant::now();
 
-    // In the resolver's order, the next address when one can't be connected to,
-    // such as an IPv6 address on an egress with no IPv6 route.
+    // In the resolver's order, the next address when one can't be used: an IPv6
+    // address on an egress with no IPv6 route, or on a host with IPv6 turned off. A
+    // failure to connect says more than one to make a socket, so it is what's
+    // reported if every address fails.
     let mut failed = (
         Some(ExchangeStage::Resolve),
         io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
     );
     let mut connection = None;
     for address in addresses {
-        let local = |error| (None, error);
         let socket = if address.is_ipv4() {
             TcpSocket::new_v4()
         } else {
             TcpSocket::new_v6()
         }
-        .map_err(local)?;
-        socket.bind_device(Some(pin.as_bytes())).map_err(local)?;
+        .and_then(|socket| socket.bind_device(Some(pin.as_bytes())).map(|()| socket));
+        let socket = match socket {
+            Ok(socket) => socket,
+            Err(error) => {
+                if failed.0 != Some(ExchangeStage::Connect) {
+                    failed = (None, error);
+                }
+                continue;
+            }
+        };
         match socket.connect(address).await {
             Ok(tcp) => {
                 connection = Some(tcp);

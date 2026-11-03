@@ -14,7 +14,6 @@ use netwatch_shared::TargetId;
 use serde::Deserialize;
 
 const DEFAULTS: &str = include_str!("../../../deploy/netwatch.toml");
-const SYSTEM_PATH: &str = "/etc/netwatch/netwatch.toml";
 
 #[derive(Debug)]
 pub struct Config {
@@ -72,8 +71,10 @@ struct RawTarget {
     expect_body: Option<String>,
 }
 
-/// Loads the configuration from wherever it lives, then applies the environment's
-/// overrides.
+/// Loads the configuration from the file `NETWATCH_CONFIG` names, or else the built-in
+/// defaults, then applies the environment's overrides. The installed service names
+/// its file; nothing else finds it implicitly, so that a development build, even one
+/// run as root, never uses the service's database or rewrites its file (ADR-0057).
 pub fn load() -> anyhow::Result<Config> {
     let (text, origin, source) = match std::env::var_os("NETWATCH_CONFIG") {
         Some(path) => (
@@ -81,11 +82,6 @@ pub fn load() -> anyhow::Result<Config> {
                 .with_context(|| format!("reading {}", path.display()))?,
             PathBuf::from(&path).display().to_string(),
             Some(PathBuf::from(path)),
-        ),
-        None if std::path::Path::new(SYSTEM_PATH).exists() => (
-            std::fs::read_to_string(SYSTEM_PATH).context("reading /etc/netwatch/netwatch.toml")?,
-            SYSTEM_PATH.to_owned(),
-            Some(PathBuf::from(SYSTEM_PATH)),
         ),
         None => (DEFAULTS.to_owned(), "built-in defaults".to_owned(), None),
     };

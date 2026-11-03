@@ -100,9 +100,10 @@ sudo sysctl --system
 
 ## Configuration
 
-Targets, the listen address, and the database path come from
-`/etc/netwatch/netwatch.toml` (or the file named by `NETWATCH_CONFIG`). Without one,
-the built-in defaults in `deploy/netwatch.toml` apply: copy that file to start from.
+Targets, the listen address, and the database path come from the file named by
+`NETWATCH_CONFIG`, which the service's unit sets to `/etc/netwatch/netwatch.toml`.
+Without it, the built-in defaults in `deploy/netwatch.toml` apply: copy that file to
+start from.
 Every target needs a stable `id`, because history is keyed by it.
 
 ```sh

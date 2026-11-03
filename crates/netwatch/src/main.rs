@@ -316,6 +316,8 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030). Outcomes are timed on the
     // monotonic clock: a step of the wall clock mustn't make every role stale.
     let mut egress_watch = health::EgressWatch::default();
+    // Incidents not yet given to the trace schedule, because there was no way out.
+    let mut held_back: BTreeMap<Role, netwatch_probing::incident::Incident> = BTreeMap::new();
     let mut recent: HashMap<Role, health::Outcomes> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
@@ -540,19 +542,40 @@ async fn main() -> anyhow::Result<()> {
                 let no_way_out = egress_watch
                     .observe(egress_pin(&topology).is_some(), clock.now());
                 let grades = publish_current(&recent, &layer_health, &topology, &names.known(), &latest_traces, &hop_streams, &destinations, clock.now(), no_way_out, &live, &current_tx);
+                // Incidents held back while there was no way out go to the trace
+                // schedule once there is one, as if they had just opened (ADR-0057).
+                if !no_way_out {
+                    for incident in std::mem::take(&mut held_back).into_values() {
+                        if let Some(request) = traces.incident(&incident, clock.now()) {
+                            start_trace(request);
+                        }
+                    }
+                }
                 for incident in incidents.grade(now, &grades) {
                     tracing::info!(role = ?incident.role, severity = ?incident.severity, cause = ?incident.cause, ended = incident.ended.is_some(), "incident");
                     // A member's copy of a shared hop has the owner's incidents too, and
                     // its trace would sweep the same path toward the same address, so
                     // only the owner's incidents ask for one (ADR-0043).
                     let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
-                    if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
+                    // With no way out, a trace can't run, and asking would spend the
+                    // target's cooldown on nothing (ADR-0057): the incident is held back,
+                    // in its latest state, and one that has ended needs no trace.
+                    if !copy && no_way_out {
+                        if incident.ended.is_none() {
+                            held_back.insert(incident.role.clone(), incident.clone());
+                        } else {
+                            held_back.remove(&incident.role);
+                        }
+                    } else if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
                         start_trace(request);
                     }
                     recorder.incident(incident);
                 }
-                for request in traces.tick(clock.now()) {
-                    start_trace(request);
+                // A routine trace that comes due with no way out waits for one.
+                if !no_way_out {
+                    for request in traces.tick(clock.now()) {
+                        start_trace(request);
+                    }
                 }
             }
             Some(observation) = observations.recv() => {
@@ -594,7 +617,17 @@ async fn main() -> anyhow::Result<()> {
                     log_sample(&sample);
                     let answered = matches!(sample.measurement, Measurement::RoundTrip(_));
                     incidents.outcome(&sample.role, sample.at, answered);
-                    recent.entry(sample.role.clone()).or_default().observe(sample.epoch, clock.now(), answered);
+                    // A target's outcome is graded only if it went by the current pin: a
+                    // stream retired by a change still resolves what it sent before, and
+                    // that measured a path no longer graded (ADR-0057). Its sample is
+                    // still kept. A hop's samples are already only the current path's.
+                    let current = match sample.role {
+                        Role::Target(_) => egress_pin(&topology).is_some_and(|pin| pin.epoch == sample.epoch),
+                        _ => true,
+                    };
+                    if current {
+                        recent.entry(sample.role.clone()).or_default().observe(sample.epoch, clock.now(), answered);
+                    }
                     let _ = live.send(LiveMessage::from(&sample));
                     let _ = writes.send(persist::Write::Sample(sample));
                 }

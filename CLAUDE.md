@@ -11,9 +11,11 @@ the ADRs.
 
 ## Status (keep this current)
 
-Working end to end: `cargo run -p netwatch`, then open <http://127.0.0.1:8732>.
-Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`, or
-`NETWATCH_CONFIG`.
+Working end to end: `NETWATCH_LISTEN=127.0.0.1:8733 cargo run -p netwatch`, then open
+<http://127.0.0.1:8733> (8732 is the installed service's).
+Configuration: the file `NETWATCH_CONFIG` names (the service's unit sets
+`/etc/netwatch/netwatch.toml`), or else the built-in `deploy/netwatch.toml`. A dev build
+never finds the service's file or database by itself.
 - **Topology:** NIC, tunnel, and local interface followed via rtnetlink, with resync
   after `ENOBUFS`. Epochs persist across restarts.
 - **Probing:**
@@ -45,7 +47,7 @@ Configuration: `deploy/netwatch.toml` (built in), `/etc/netwatch/netwatch.toml`,
   - episodes along cause links, with path evidence and router names, baselines, loss
     reasons, loss bursts and jitter, link load, path traces beside the routine trace,
     and timelines
-  - loss and RTT by hour, normal paths, events, and the method
+  - loss by hour, the time without a way out, normal paths, events, and the method
 - **Path traces** (ADR-0040): TTLs 4–30 toward every ICMP and DNS target, as a
   routine trace every 6 h and an episode trace when an incident opens beyond hop 1
   (10-minute cooldown), stored forever. `specs/traces.qnt` holds the schedule.
@@ -232,11 +234,13 @@ Toolchains are installed on the dev host, user-local, in `~/.cargo/bin` and `~/.
 ./scripts/check.sh                                 # everything below, failing fast (~6 min)
 cargo build
 cargo test                                         # unprivileged tests
-sudo -E cargo test -- --ignored                    # netns integration tests (by design #[ignore]d)
+cargo test -p netwatch --test netns_failover -- --ignored   # netns tests; they sudo -n themselves
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
+  cargo test -p netwatch-adapter-ebpf --test privileged -- --ignored   # built as you, run as root
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cd web && npm ci && npm run build                  # needed before a release build embeds it
-cd web && npm run dev                              # proxies /api and /ws to the daemon
+cd web && npm run dev                              # proxies /api to a dev daemon on 8733
 cd web && npm run diagrams                         # docs/diagrams/*.dot → *.svg
 cd web && npx tsc --noEmit && npx vitest run && npx eslint .
 ./scripts/check-specs.sh                           # every spec: typecheck, simulate, exhaustive TLC (~1 min)

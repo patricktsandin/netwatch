@@ -116,19 +116,23 @@ impl Store {
         Ok(traces)
     }
 
-    /// The latest trace of `role` of `kind` that started before `before`.
+    /// The latest trace of `role` of `kind` that started before `before`, and, given
+    /// a `path`, ran on it (ADR-0056). A trace from before paths were recorded may
+    /// have run on any.
     pub fn latest_trace(
         &self,
         role: &Role,
         kind: TraceKind,
         before: WallTime,
+        path: Option<&str>,
     ) -> Result<Option<StoredTrace>, StoreError> {
         let id: Option<i64> = self
             .connection
             .query_row(
                 "SELECT id FROM traces WHERE role = ?1 AND kind = ?2 AND at_us < ?3
+                 AND (?4 IS NULL OR path IS NULL OR path = ?4)
                  ORDER BY at_us DESC LIMIT 1",
-                params![role.key(), kind_text(kind), before.as_unix_micros()],
+                params![role.key(), kind_text(kind), before.as_unix_micros(), path],
                 |row| row.get(0),
             )
             .optional()?;
@@ -136,6 +140,20 @@ impl Store {
             Some(id) => self.trace(id),
             None => Ok(None),
         }
+    }
+
+    /// The path `role` was last traced on before `before`, by a trace of either kind:
+    /// the path it took then (ADR-0056). `None` if it has no trace that recorded one.
+    pub fn latest_path(&self, role: &Role, before: WallTime) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT path FROM traces WHERE role = ?1 AND at_us < ?2 AND path IS NOT NULL
+                 ORDER BY at_us DESC LIMIT 1",
+                params![role.key(), before.as_unix_micros()],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// One trace by its row id. `None` if its row no longer parses.
