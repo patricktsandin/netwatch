@@ -202,15 +202,27 @@ pub enum Next {
 }
 
 impl TraceQueue {
-    /// Adds a request the schedule asked for.
+    /// Adds a request the schedule asked for. An episode trace goes ahead of the
+    /// routine traces waiting, behind any episode traces: an incident is now, and
+    /// every target's routine trace comes due at once (ADR-0060).
     pub fn push(&mut self, request: TraceRequest) {
-        self.waiting.push_back(request);
+        let at = match request.kind {
+            TraceKind::Episode => self
+                .waiting
+                .iter()
+                .position(|waiting| waiting.kind == TraceKind::Routine)
+                .unwrap_or(self.waiting.len()),
+            TraceKind::Routine => self.waiting.len(),
+        };
+        self.waiting.insert(at, request);
     }
 
     /// Adds every request given, such as the one [`TraceSchedule::finished`] hands
     /// on, if any.
     pub fn push_all(&mut self, requests: impl IntoIterator<Item = TraceRequest>) {
-        self.waiting.extend(requests);
+        for request in requests {
+            self.push(request);
+        }
     }
 
     /// The current path at `now`, if the whole of it is known. Any change, even

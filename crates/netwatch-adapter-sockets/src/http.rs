@@ -84,10 +84,6 @@ enum Families {
     Ipv4,
 }
 
-/// How long each address has to connect before the next one is tried alongside it
-/// (RFC 8305's connection attempt delay).
-const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
-
 /// How much of the body is read while checking for the expected text. A longer body
 /// is not an error: the rest is left unread.
 pub const BODY_LIMIT: usize = 16 * 1024;
@@ -134,46 +130,40 @@ pub async fn probe(target: HttpsTarget, pin: InterfaceName) -> HttpsResult {
     }
 }
 
-/// Connects through `pin` to the first of `addresses` that answers, as a client
-/// would (RFC 8305): each address gets [`ATTEMPT_DELAY`] before the next is tried
-/// alongside it. An address that silently drops the handshake, such as IPv6 on an
-/// egress with a broken IPv6 route, then costs a probe at most that delay rather than
-/// all of it. If every address fails, a failure to connect is what's reported, since
-/// it says more than a failure to make a socket (on a host with IPv6 turned off).
+/// Connects through `pin` to the first of `addresses`, in the resolver's order, that
+/// can be connected to. The next is tried only when one fails, not raced: one
+/// target's samples then all measure the address the system prefers, never a mix of
+/// two paths (ADR-0060). One that drops the handshake silently makes the probe time
+/// out, which is what it does to anything on this host that uses it. If every
+/// address fails, a failure to connect is what's reported, since it says more than a
+/// failure to make a socket (on a host with IPv6 turned off).
 async fn connect(
     addresses: Vec<std::net::SocketAddr>,
     pin: &InterfaceName,
 ) -> Result<tokio::net::TcpStream, Failure> {
-    let mut attempts = tokio::task::JoinSet::new();
-    for (n, address) in addresses.into_iter().enumerate() {
-        let pin = *pin;
-        let delay = ATTEMPT_DELAY * u32::try_from(n).unwrap_or(u32::MAX);
-        attempts.spawn(async move {
-            tokio::time::sleep(delay).await;
-            let socket = if address.is_ipv4() {
-                TcpSocket::new_v4()
-            } else {
-                TcpSocket::new_v6()
-            }
-            .and_then(|socket| socket.bind_device(Some(pin.as_bytes())).map(|()| socket))
-            .map_err(|error| (None, error))?;
-            socket
-                .connect(address)
-                .await
-                .map_err(|error| (Some(ExchangeStage::Connect), error))
-        });
-    }
     let mut failed = (
         Some(ExchangeStage::Resolve),
         io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
     );
-    while let Some(attempt) = attempts.join_next().await {
-        match attempt {
-            Ok(Ok(tcp)) => return Ok(tcp),
-            Ok(Err(error)) if error.0.is_some() || failed.0 != Some(ExchangeStage::Connect) => {
-                failed = error;
+    for address in addresses {
+        let socket = if address.is_ipv4() {
+            TcpSocket::new_v4()
+        } else {
+            TcpSocket::new_v6()
+        }
+        .and_then(|socket| socket.bind_device(Some(pin.as_bytes())).map(|()| socket));
+        let socket = match socket {
+            Ok(socket) => socket,
+            Err(error) => {
+                if failed.0 != Some(ExchangeStage::Connect) {
+                    failed = (None, error);
+                }
+                continue;
             }
-            Ok(Err(_)) | Err(_) => {}
+        };
+        match socket.connect(address).await {
+            Ok(tcp) => return Ok(tcp),
+            Err(error) => failed = (Some(ExchangeStage::Connect), error),
         }
     }
     Err(failed)

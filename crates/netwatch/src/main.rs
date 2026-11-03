@@ -602,6 +602,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Some(finished) = traced.recv() => {
+                // A trace the path changed under measured half of each, through
+                // sockets pinned to an interface no longer used: it is no trace of
+                // either (ADR-0060).
+                let current = current_path(&topology);
+                let finished = match finished.trace {
+                    Some(trace) if trace.path != current => {
+                        tracing::info!(target = finished.target.get(), "path trace dropped: the path changed while it ran");
+                        trace::Finished { trace: None, ..finished }
+                    }
+                    _ => finished,
+                };
                 if let Some(trace) = finished.trace {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
                     let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -425,11 +425,14 @@ fn episode_blocks(r: &EpisodeReport, report: &Report, label: Label<'_>) -> Vec<B
             label,
         ));
     }
-    if r.traces.is_empty() {
-        for baseline in r.baselines.values() {
-            blocks.push(Block::Para(
-                "No episode trace ran during it. The path before it:".to_owned(),
-            ));
+    // A target no episode trace ran for, such as one in its cooldown, still shows the
+    // path it had before.
+    for ((role, _), baseline) in &r.baselines {
+        if !r.traces.iter().any(|t| &t.role == role) {
+            blocks.push(Block::Para(format!(
+                "No episode trace ran for {} during it. Its path before it:",
+                label(role)
+            )));
             blocks.extend(trace_blocks(baseline, None, report.utc_offset_s, label));
         }
     }

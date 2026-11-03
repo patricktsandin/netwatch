@@ -228,3 +228,22 @@ fn the_schedule_says_whether_a_target_has_an_incident_open() {
     schedule.incident(&incident(hop(3), false), at(5));
     assert!(!schedule.has_open(T1));
 }
+
+#[test]
+fn an_episode_trace_goes_ahead_of_waiting_routine_traces() {
+    // Every target's routine trace comes due at once; an incident's trace shouldn't
+    // wait behind them all (ADR-0060).
+    let other = |n| TraceRequest {
+        target: TargetId::new(n),
+        kind: TraceKind::Routine,
+    };
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    queue.push_all([other(2), other(3)]);
+    queue.push(episode().unwrap());
+    let first = queue.next(at(10), |_| true);
+    assert_eq!(
+        first,
+        Some(Next::Run(episode().unwrap(), path("192.0.2.20")))
+    );
+}

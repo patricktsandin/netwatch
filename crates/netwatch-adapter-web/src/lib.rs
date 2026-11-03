@@ -612,7 +612,12 @@ async fn build_report(
             let mut episodes = Vec::new();
             let incidents = store.incidents(from, until)?;
             let without_a_way_out_us = analysis::time_without_a_way_out(&incidents, from, until);
-            for episode in report::episodes(&incidents) {
+            let all = report::episodes(&incidents);
+            // When the next episode began: a trace started after it is that one's.
+            let mut starts: Vec<WallTime> = all.iter().map(|e| e.started).collect();
+            starts.sort_unstable();
+            for episode in all {
+                let next_started = starts.iter().copied().find(|&s| s > episode.started);
                 let start = episode.started.max(from);
                 let end = episode.ended.unwrap_or(until).min(until);
                 let on_path = report::roles_on_paths(&episode.affected, &known);
@@ -682,9 +687,10 @@ async fn build_report(
                     .collect();
                 // An episode trace waits for the path to settle, and for the traces
                 // before it (ADR-0059), so it can start after a short episode ends.
-                let traced_until = WallTime::from_unix_micros(
+                let late = WallTime::from_unix_micros(
                     end.max(episode.started).as_unix_micros() + EPISODE_TRACE_LATE_US,
                 );
+                let traced_until = next_started.map_or(late, |next| late.min(next));
                 let traces: Vec<_> = store
                     .traces(episode.started, traced_until)?
                     .into_iter()
@@ -703,6 +709,8 @@ async fn build_report(
                 {
                     wanted.push((role.clone(), store.latest_path(role, episode.started)?));
                 }
+                wanted.sort();
+                wanted.dedup();
                 let mut baselines = BTreeMap::new();
                 for (role, path) in wanted {
                     if let Some(trace) = store.latest_trace(

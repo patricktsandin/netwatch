@@ -27,7 +27,10 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 /// A trace that has finished: the stored result, or `None` if it couldn't run.
 #[derive(Debug)]
 pub struct Finished {
+    /// Whose path was traced.
     pub target: TargetId,
+    /// What it found, or `None` if it couldn't run (no interface to pin to, or a
+    /// socket that wouldn't open) or was dropped.
     pub trace: Option<StoredTrace>,
 }
 
@@ -77,20 +80,27 @@ async fn run(
         return None;
     };
     let at = clock.wall_now();
-    let mut sweeps = Vec::new();
+    // Every socket opens before any sweep starts, and the sweeps are dropped, and so
+    // aborted, with this trace if it gives up: no probe of it outlives it, to overlap
+    // the next trace (ADR-0059).
+    let mut sockets = Vec::new();
     for raw in FIRST_TTL..=LAST_TTL {
         let ttl = HopTtl::new(NonZeroU8::new(raw)?);
         match ProbeSocket::open(destination, index.get(), Some(ttl)) {
-            Ok(socket) => sweeps.push(tokio::spawn(sweep(socket, ttl, clock))),
+            Ok(socket) => sockets.push((socket, ttl)),
             Err(error) => {
                 tracing::warn!(%error, %destination, "cannot open a path trace socket");
                 return None;
             }
         }
     }
+    let mut sweeps = tokio::task::JoinSet::new();
+    for (socket, ttl) in sockets {
+        sweeps.spawn(sweep(socket, ttl, clock));
+    }
     let mut probes = Vec::new();
-    for sweep in sweeps {
-        probes.extend(sweep.await.ok()?);
+    while let Some(swept) = sweeps.join_next().await {
+        probes.extend(swept.ok()?);
     }
     let trace = assemble(&probes);
     let mut named = std::collections::BTreeMap::new();
@@ -185,6 +195,10 @@ pub fn summary(trace: &StoredTrace) -> String {
         trace.trace.hops.last(),
         trace.trace.silent_from,
     ) {
+        // Answered at the first TTL traced, it may be nearer: hops before it aren't swept.
+        (true, Some(last), _) if last.ttl.get().get() == FIRST_TTL => {
+            format!("{} within {FIRST_TTL} hops", trace.destination)
+        }
         (true, Some(last), _) => format!("{} hops to {}", last.ttl.get(), trace.destination),
         (_, _, Some(from)) => format!("no answer from hop {} on", from.get()),
         _ => format!("toward {}", trace.destination),

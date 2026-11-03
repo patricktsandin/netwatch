@@ -17,13 +17,19 @@ use serde::Deserialize;
 
 const DEFAULTS: &str = include_str!("../../../deploy/netwatch.toml");
 
+/// The daemon's configuration, parsed once: every value is valid by the time it is
+/// read (ADR-0014).
 #[derive(Debug)]
 pub struct Config {
     /// The file it was read from, or `None` for the built-in defaults. The settings
     /// page edits this file (ADR-0035).
     pub source: Option<PathBuf>,
+    /// Where the UI is served: loopback by default, since remote access is out of
+    /// scope (ADR-0010).
     pub listen: SocketAddr,
+    /// The SQLite database holding all history.
     pub database: PathBuf,
+    /// The targets this run probes, with unique ids, in the file's order.
     pub targets: Vec<Target>,
     /// Whether router names include Team Cymru's origin AS (ADR-0040).
     pub asn_lookups: bool,
@@ -36,17 +42,25 @@ pub struct Config {
     pub left_out: Vec<String>,
 }
 
+/// One target, as the configuration names it.
 #[derive(Debug, Clone)]
 pub struct Target {
+    /// Its id, which keys its history, so it is never reused (ADR-0009).
     pub id: TargetId,
+    /// How it is called in the UI and reports.
     pub name: String,
+    /// What is sent to it.
     pub probe: TargetProbe,
 }
 
+/// How a target is probed.
 #[derive(Debug, Clone)]
 pub enum TargetProbe {
+    /// ICMP echo to this address.
     Echo(IpAddr),
+    /// DNS queries to this server, already resolved if it was `system`.
     Dns(IpAddr),
+    /// HTTPS requests, checked against the expected response (ADR-0028).
     Https(HttpsTarget),
 }
 
