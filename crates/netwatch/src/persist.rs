@@ -38,8 +38,17 @@ const BATCH: usize = 256;
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 const ROLL_UP_EVERY: Duration = Duration::from_secs(60);
-/// How long a run must have been up before pruning trusts an unsynchronized clock.
+/// How long the host must have been up before pruning trusts an unsynchronized clock.
 const TRUST_CLOCK_AFTER: Duration = Duration::from_secs(24 * 3600);
+
+/// Whether the wall clock reads `now` truly enough to prune by (ADR-0065).
+fn clock_trusted(now: WallTime, newest_before: Option<WallTime>) -> bool {
+    let retention_us = netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * 3600 * 1_000_000;
+    netwatch_adapter_procfs::clock_state().is_some_and(|c| c.synchronized)
+        || netwatch_adapter_procfs::since_boot().is_some_and(|up| up >= TRUST_CLOCK_AFTER)
+        || newest_before
+            .is_none_or(|newest| now.as_unix_micros() - newest.as_unix_micros() < retention_us)
+}
 /// A minute is rolled up only this long after it ends, so that samples still in a
 /// write batch aren't missed.
 const SETTLE_US: i64 = 2 * 60 * 1_000_000;
@@ -51,17 +60,20 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     let settled = WallTime::from_unix_micros(now.as_unix_micros() - SETTLE_US);
     let minutes_done = Tier::Minute.start_of(settled);
     let hour = Tier::Hour.interval_us();
-    // Progress past now came from a clock that was stepped forward and back again:
-    // rolling up resumes from now, or nothing would be rolled up until that time.
-    let first_minute = store
-        .rollup_progress(Tier::Minute)?
-        .unwrap_or_else(|| {
-            WallTime::from_unix_micros(
-                minutes_done.as_unix_micros()
-                    - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * hour,
-            )
-        })
-        .min(minutes_done);
+    let retained = WallTime::from_unix_micros(
+        minutes_done.as_unix_micros() - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * hour,
+    );
+    // Progress past now was recorded by a clock that was stepped forward, and back
+    // since: nothing would be rolled up until the clock caught up with it, and what
+    // was rolled up meanwhile was done by a wrong clock. So everything still kept raw
+    // is rolled up again (ADR-0065); a rollup replaces the one before it.
+    let mut first_minute = store.rollup_progress(Tier::Minute)?.unwrap_or(retained);
+    if first_minute > minutes_done {
+        tracing::warn!("roll-up progress is ahead of the clock; rolling up again");
+        first_minute = retained;
+        store.set_rollup_progress(Tier::Minute, first_minute)?;
+        store.set_rollup_progress(Tier::Hour, Tier::Hour.start_of(first_minute))?;
+    }
     let mut from = first_minute;
     while from < minutes_done {
         let until = WallTime::from_unix_micros(
@@ -77,8 +89,7 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     let hours_done = Tier::Hour.start_of(minutes_done);
     let mut from = store
         .rollup_progress(Tier::Hour)?
-        .unwrap_or(Tier::Hour.start_of(first_minute))
-        .min(hours_done);
+        .unwrap_or(Tier::Hour.start_of(first_minute));
     while from < hours_done {
         let until = WallTime::from_unix_micros(from.as_unix_micros() + hour);
         let minutes = store.rollups_between(Tier::Minute, from, until, None)?;
@@ -130,7 +141,8 @@ pub fn spawn(
             let mut readings: Vec<Reading> = Vec::with_capacity(BATCH);
             let mut flushed = Instant::now();
             let mut pruned = Instant::now() - PRUNE_EVERY;
-            let started = Instant::now();
+            // The newest sample before this start, to judge the clock by.
+            let newest_before = store.newest_sample().unwrap_or(None);
             let mut rolled = Instant::now() - ROLL_UP_EVERY;
             loop {
                 let next = rx.recv_timeout(FLUSH_EVERY);
@@ -197,13 +209,14 @@ pub fn spawn(
                     }
                     rolled = Instant::now();
                 }
-                // Pruning by a wall clock that is wrong deletes what it shouldn't: a
-                // clock a year ahead at boot would delete every sample. So it waits
-                // until the kernel says the clock is synchronized, or the run has been
-                // up a day, as on a host without NTP.
-                let trusted = started.elapsed() >= TRUST_CLOCK_AFTER
-                    || netwatch_adapter_procfs::clock_state().is_some_and(|c| c.synchronized);
-                if pruned.elapsed() >= PRUNE_EVERY && trusted {
+                // Pruning by a wall clock far ahead deletes what it shouldn't: a clock
+                // a year ahead at boot would delete every sample. It is trusted when
+                // the kernel says it is synchronized, when the host has been up a day
+                // (by the boot clock, which restarts and suspends don't reset), or when
+                // it is within the retention of the newest sample stored before this
+                // start (ADR-0065).
+                if pruned.elapsed() >= PRUNE_EVERY && clock_trusted(clock.wall_now(), newest_before)
+                {
                     match store.prune(clock.wall_now()) {
                         Ok(removed) if removed > 0 => tracing::info!(removed, "pruned raw samples"),
                         Ok(_) => {}
@@ -277,7 +290,7 @@ pub fn latest_traces(
         let role = netwatch_shared::Role::Target(target);
         // Traces from before paths were recorded matter only to a target that has no
         // other: looked up without a path, the lookup would find any path's.
-        let paths = store.trace_paths(&role)?;
+        let paths = store.trace_paths(&role, PATHS_KEPT)?;
         let recorded = paths.iter().any(Option::is_some);
         for path in paths.into_iter().filter(|p| p.is_some() || !recorded) {
             let routine = store.latest_trace(&role, TraceKind::Routine, end, path.as_ref())?;

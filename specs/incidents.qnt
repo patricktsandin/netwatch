@@ -7,9 +7,15 @@
  *
  * ## What is modeled
  *
- * Two roles on one path: role 0 is upstream of role 1 (think hop 1 and its
- * target). Time advances in whole ticks. Within a tick, any number of these
- * happen, in any order:
+ * Roles on one path, each upstream of the ones after it (think hops 1 and 2 and
+ * their target). The spec is checked twice, exhaustively: two roles over three
+ * ticks, for long histories, and three roles over one tick and the next, so that
+ * the most upstream cause can be told from merely an upstream one
+ * (`incidentsTwo`, `incidentsThree` at the end of this file). Three roles over
+ * more ticks is too many states.
+ *
+ * Time advances in whole ticks. Within a tick, any number of these happen, in any
+ * order:
  *
  * - **An outcome**: one of a role's probes is answered or lost.
  * - **A grading**: the daemon grades both roles (each second, ADR-0030). The
@@ -36,8 +42,11 @@
  */
 module incidents {
 
-  pure val ROLES = [0, 1]
-  pure val MAX_TIME = 3
+  /// The roles, upstream first.
+  const ROLES: List[int]
+  /// The last tick.
+  const MAX_TIME: int
+  pure val ROLE_SET: Set[int] = ROLES.foldl(Set(), (s, r) => s.union(Set(r)))
   /// "No time", for optional times. Times are never negative.
   pure val NONE = -1
   /// The tracker treats every calm grade (healthy, rate-limited, unknown) alike, so
@@ -115,7 +124,7 @@ module incidents {
 
   /// One of a role's probes resolves now.
   action outcome = {
-    nondet r = Set(0, 1).oneOf()
+    nondet r = ROLE_SET.oneOf()
     nondet answered = Bool.oneOf()
     all {
       lastLoss' = if (answered) lastLoss else lastLoss.set(r, now),
@@ -164,9 +173,7 @@ module incidents {
           and opened.get(u) <= opened.get(r) + CAUSE_GRACE) u else best)
 
   action grade = {
-    nondet h0 = HEALTHS.oneOf()
-    nondet h1 = HEALTHS.oneOf()
-    val health = Map(0 -> h0, 1 -> h1)
+    nondet health = ROLE_SET.setOfMaps(HEALTHS).oneOf()
     val steps = ROLES.foldl(Map(), (m, r) => m.put(r,
       roleStep(r, health.get(r), now, isOpen.get(r), current.get(r), probed.get(r),
                lastLoss.get(r), recovered.get(r), lastCalm.get(r))))
@@ -209,7 +216,7 @@ module incidents {
   /// lifetime hasn't ended: `closedAt` is NONE).
   val lifetimes: Set[Lifetime] =
     indices(closed).map(i => closed[i]).union(
-      Set(0, 1).filter(r => isOpen.get(r)).map(r =>
+      ROLE_SET.filter(r => isOpen.get(r)).map(r =>
         { inc: current.get(r), openedAt: openedAt.get(r), closedAt: NONE, gradedFailing: gradedFailing.get(r) }))
 
   pure def during(l: Lifetime, t: int): bool =
@@ -232,7 +239,7 @@ module incidents {
   /// The latest grading of a role, if bad, is within the lifetime of an incident.
   /// (Lifetimes change only at gradings, so this covers every bad grading.)
   val badGradingsAreCovered: bool =
-    Set(0, 1).forall(r => bad(lastHealth.get(r)) implies isOpen.get(r))
+    ROLE_SET.forall(r => bad(lastHealth.get(r)) implies isOpen.get(r))
 
   /// An incident is an outage exactly when it was graded failing during its lifetime.
   val outageMeansFailing: bool =
@@ -250,7 +257,28 @@ module incidents {
       o.inc.role == l.inc.cause and o.openedAt <= l.openedAt + CAUSE_GRACE
         and (during(o, l.openedAt) or during(l, o.openedAt))))
 
+  /// An open incident's probable cause is the most upstream role with an incident
+  /// open that opened no later than the grace after it did: no such role is further
+  /// upstream than its cause, and one without a cause has none upstream (ADR-0034).
+  val causeIsMostUpstream: bool =
+    ROLE_SET.filter(r => isOpen.get(r)).forall(r =>
+      val c = current.get(r).cause
+      ROLE_SET.forall(u =>
+        (isOpen.get(u) and upstreamOf(u, r) and openedAt.get(u) <= openedAt.get(r) + CAUSE_GRACE)
+          implies (c != NONE and not(upstreamOf(u, c)))))
+
   val invariants: bool =
     bandWithinReason and noOverlap and badGradingsAreCovered and outageMeansFailing
-      and causeIsUpstreamAndOverlaps and causeBeganFirst
+      and causeIsUpstreamAndOverlaps and causeBeganFirst and causeIsMostUpstream
+}
+
+/// Two roles over three ticks: the longer histories.
+module incidentsTwo {
+  import incidents(ROLES = [0, 1], MAX_TIME = 3).*
+}
+
+/// Three roles over one tick and the next: within the grace, a cause can still be
+/// moved upstream, which is what the most upstream cause needs.
+module incidentsThree {
+  import incidents(ROLES = [0, 1, 2], MAX_TIME = 1).*
 }

@@ -102,7 +102,7 @@ Correctness is checked in layers (ADR-0016), all of it run by one command,
 | **Model checking** (Quint specs, run exhaustively with TLC) | The five core state machines: following topology, probing, live updates with backfill, incidents, and trace scheduling. Every reachable state of a bounded model is checked against invariants. |
 | **Trace conformance** | Random runs of each spec are replayed against the real Rust (and TypeScript) code, which must make the same decisions step for step. |
 | **Proof** (Verus) | Four algorithms are proven correct for all inputs: identity epoch advancement, sequence-number wraparound in reply matching, counter wraparound and resets, and the rollup merge algebra. |
-| **Bounded proof** (Kani) | Every parser of bytes from the network or kernel (13 harnesses) is proven never to panic or read out of bounds. |
+| **Bounded proof** (Kani) | Every parser of bytes from the network or kernel (17 harnesses) is proven never to panic or read out of bounds. |
 | **Tests** | 180+ Rust tests and the frontend's Vitest and fast-check property tests, all test-first and through public interfaces (ADR-0017). Network-namespace integration tests run with root. |
 | **Static checks** | `rustfmt`, `clippy -D warnings`, strict TypeScript (no `any`, no unchecked casts), and ESLint. |
 
@@ -125,7 +125,7 @@ disabled and reported, never fatal (ADR-0007). There are three ways to install
 ## Size and status
 
 - About 17,000 lines of Rust in 16 crates and 2,600 lines of TypeScript.
-- 42 architecture decision records, a glossary, and a context map.
+- 65 architecture decision records, a glossary, and a context map.
 - Working end to end and in daily use. The current feature list is the *Status*
   section of [CLAUDE.md](../CLAUDE.md).
 

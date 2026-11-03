@@ -6,6 +6,11 @@ cd "$(dirname "$0")/../specs"
 for spec in *.qnt; do
   echo "== $spec"
   quint typecheck "$spec"
-  quint run "$spec" --invariant=invariants --max-samples=20000 --max-steps=40 --seed=1
-  quint verify "$spec" --backend=tlc --invariant=invariants
+  # A spec with constants is checked through each instance after its first module.
+  mains=$(grep -oP '^module \K\w+' "$spec" | tail -n +2)
+  for main in ${mains:-$(basename "$spec" .qnt)}; do
+    echo "-- $main"
+    quint run "$spec" --main="$main" --invariant=invariants --max-samples=20000 --max-steps=40 --seed=1
+    quint verify "$spec" --main="$main" --backend=tlc --invariant=invariants
+  done
 done

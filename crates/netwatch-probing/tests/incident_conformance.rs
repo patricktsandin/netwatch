@@ -1,9 +1,9 @@
 //! Trace conformance: `IncidentTracker` must behave exactly like
 //! `specs/incidents.qnt` (ADR-0016, ADR-0031).
 //!
-//! Quint generates traces, which this test replays against the tracker. Spec role 0
-//! is hop 1 toward target 1, and role 1 is target 1, so role 0 is upstream of role 1
-//! in both. One tick is one second.
+//! Quint generates traces, which this test replays against the tracker. Spec roles
+//! 0, 1, and 2 are hop 1 and hop 2 toward target 1, and target 1, so each is upstream
+//! of the ones after it in both. One tick is one second.
 //! - `advance` does nothing: time only labels the outcomes and gradings after it
 //! - `outcome` becomes `outcome(role, now, answered)`
 //! - `grade` becomes `grade(now, grades)`, and must return the spec's `updates`
@@ -31,7 +31,9 @@ const NONE: i64 = -1;
 
 #[derive(Debug, Deserialize)]
 struct SpecState {
+    #[serde(rename = "incidentsThree::incidents::now")]
     now: i64,
+    #[serde(rename = "incidentsThree::incidents::updates")]
     updates: Vec<SpecIncident>,
     #[serde(rename = "mbt::actionTaken")]
     action: String,
@@ -43,8 +45,7 @@ struct SpecState {
 struct Picks {
     r: SpecOption<i64>,
     answered: SpecOption<bool>,
-    h0: SpecOption<String>,
-    h1: SpecOption<String>,
+    health: SpecOption<BTreeMap<i64, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,7 +80,11 @@ fn role(spec: i64) -> Role {
             target,
             ttl: HopTtl::new(NonZeroU8::MIN),
         },
-        1 => Role::Target(target),
+        1 => Role::Hop {
+            target,
+            ttl: HopTtl::new(NonZeroU8::new(2).unwrap()),
+        },
+        2 => Role::Target(target),
         other => panic!("the spec has no role {other}"),
     }
 }
@@ -118,7 +123,15 @@ fn generate(dir: &Path) -> Vec<PathBuf> {
     }
     let quint = std::env::var("QUINT").unwrap_or_else(|_| "quint".to_owned());
     let status = Command::new(&quint)
-        .args(["run", SPEC, "--mbt", "--max-steps=40", "--seed=0x696e6364"])
+        // The three-role instance, which tells the most upstream cause apart.
+        .args([
+            "run",
+            SPEC,
+            "--main=incidentsThree",
+            "--mbt",
+            "--max-steps=40",
+            "--seed=0x696e6364",
+        ])
         .arg(format!("--n-traces={TRACES}"))
         .arg(format!("--max-samples={TRACES}"))
         .arg(format!(
@@ -153,10 +166,13 @@ fn replay(path: &Path) -> usize {
                 );
             }
             "grade" => {
-                let grades = BTreeMap::from([
-                    (role(0), health(&state.picks.h0.get())),
-                    (role(1), health(&state.picks.h1.get())),
-                ]);
+                let grades: BTreeMap<Role, Health> = state
+                    .picks
+                    .health
+                    .get()
+                    .iter()
+                    .map(|(&r, h)| (role(r), health(h)))
+                    .collect();
                 let expected: Vec<Incident> = state.updates.iter().map(incident).collect();
                 updates_seen += expected.len();
                 assert_eq!(

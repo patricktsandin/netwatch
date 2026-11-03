@@ -1,5 +1,5 @@
 // The SQLite schema (crates/netwatch-adapter-sqlite/migrations), as of migration
-// 0007. The database declares no foreign keys: the single writer (ADR-0006) keeps
+// 0014. The database declares no foreign keys: the single writer (ADR-0006) keeps
 // these relationships, and history is keyed by role and identity epoch (ADR-0003).
 // Render with `npm run diagrams` in web/.
 digraph erd {
@@ -24,7 +24,7 @@ digraph erd {
     <tr><td align="left" port="epoch">epoch</td><td align="left">INTEGER</td></tr>
     <tr><td align="left">at_us</td><td align="left">INTEGER</td></tr>
     <tr><td align="left">rtt_us</td><td align="left">INTEGER, NULL if lost</td></tr>
-    <tr><td align="left">loss</td><td align="left">timed-out | unreachable | refused |<br/>unexpected-response | send-failed</td></tr>
+    <tr><td align="left">loss</td><td align="left">timed-out | unreachable | time-exceeded |<br/>refused | unexpected-response |<br/>exchange-failed | send-failed</td></tr>
     <tr><td align="left">loss_code</td><td align="left">INTEGER</td></tr></table>>];
 
   rollups [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#5e7fb8">
@@ -82,7 +82,8 @@ digraph erd {
     <tr><td align="left">kind</td><td align="left">routine | episode</td></tr>
     <tr><td align="left">destination</td><td align="left">TEXT: an IP address</td></tr>
     <tr><td align="left">reached</td><td align="left">INTEGER (boolean)</td></tr>
-    <tr><td align="left">silent_from</td><td align="left">INTEGER: a TTL</td></tr></table>>];
+    <tr><td align="left">silent_from</td><td align="left">INTEGER: a TTL</td></tr>
+    <tr><td align="left">path</td><td align="left">TEXT: interface and local address</td></tr></table>>];
 
   trace_hops [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="5" color="#7a5eb8">
     <tr><td bgcolor="#e8e1f6" colspan="2"><b>trace_hops</b></td></tr>

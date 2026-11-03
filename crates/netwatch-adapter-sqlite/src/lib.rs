@@ -260,6 +260,14 @@ impl Store {
         )?)
     }
 
+    /// When the newest sample was taken, if there is one.
+    pub fn newest_sample(&self) -> Result<Option<WallTime>, StoreError> {
+        let newest: Option<i64> =
+            self.connection
+                .query_row("SELECT MAX(at_us) FROM samples", [], |row| row.get(0))?;
+        Ok(newest.map(WallTime::from_unix_micros))
+    }
+
     /// Deletes raw samples and minute rollups past their retention, relative to `now`.
     /// Returns how many rows were removed.
     pub fn prune(&mut self, now: WallTime) -> Result<usize, StoreError> {

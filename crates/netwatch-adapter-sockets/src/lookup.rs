@@ -200,6 +200,28 @@ fn record_at(packet: &[u8], offset: usize) -> Option<Record> {
     })
 }
 
+/// Where the answers start: after `questions` questions, from the header on.
+/// `None` if a question runs past the packet.
+fn after_questions(packet: &[u8], questions: u16) -> Option<usize> {
+    let mut at = HEADER;
+    for _ in 0..questions {
+        at = skip_name(packet, at)?.checked_add(4)?;
+    }
+    Some(at)
+}
+
+/// A TXT record's character strings, joined. `None` if one runs past the data.
+fn txt_strings(data: &[u8]) -> Option<Vec<u8>> {
+    let mut text = Vec::new();
+    let mut i = 0;
+    while i < data.len() {
+        let length = usize::from(data[i]);
+        text.extend_from_slice(data.get(i + 1..i + 1 + length)?);
+        i += 1 + length;
+    }
+    Some(text)
+}
+
 /// Parses a response to [`query`] with `id`: every answer of type `kind`, as text
 /// (a PTR's name, or a TXT record's strings joined). `None` if it isn't a response
 /// to that query, or is malformed. A response with no such answers (NXDOMAIN, say)
@@ -212,10 +234,7 @@ pub fn parse_response(packet: &[u8], id: u16, kind: RecordType) -> Option<Vec<St
     }
     let questions = u16::from_be_bytes([header[4], header[5]]);
     let answers = u16::from_be_bytes([header[6], header[7]]);
-    let mut at = HEADER;
-    for _ in 0..questions {
-        at = skip_name(packet, at)? + 4;
-    }
+    let mut at = after_questions(packet, questions)?;
     let mut texts = Vec::new();
     for _ in 0..answers {
         let record = record_at(packet, at)?;
@@ -228,14 +247,7 @@ pub fn parse_response(packet: &[u8], id: u16, kind: RecordType) -> Option<Vec<St
                     texts.push(String::from_utf8_lossy(&name[..length]).into_owned());
                 }
                 RecordType::Txt => {
-                    let mut text = Vec::new();
-                    let mut i = 0;
-                    while i < data.len() {
-                        let length = usize::from(data[i]);
-                        text.extend_from_slice(data.get(i + 1..i + 1 + length)?);
-                        i += 1 + length;
-                    }
-                    texts.push(String::from_utf8_lossy(&text).into_owned());
+                    texts.push(String::from_utf8_lossy(&txt_strings(data)?).into_owned());
                 }
             }
         }
@@ -301,6 +313,34 @@ mod proofs {
         if let Some((written, after)) = read_name(&buffer[..length], offset, &mut out) {
             assert!(written <= out.len());
             assert!(after <= length);
+        }
+    }
+
+    /// Skipping questions never panics, for up to three over a packet of up to 16
+    /// bytes, and stops at most a question's fixed fields past the packet. With
+    /// `reading_a_name_never_panics` and `finding_a_record_never_panics`, every
+    /// loop `parse_response` runs over the network's bytes is proven; the rest of it
+    /// is bounds-checked slicing.
+    #[kani::proof]
+    #[kani::unwind(18)]
+    fn skipping_questions_never_panics() {
+        let buffer: [u8; 16] = kani::any();
+        let length: usize = kani::any_where(|&l| l <= 16);
+        let questions: u16 = kani::any_where(|&q| q <= 3);
+        if let Some(at) = after_questions(&buffer[..length], questions) {
+            assert!(questions == 0 || at <= length + 4);
+        }
+    }
+
+    /// Joining a TXT record's strings never panics, for any data of up to 8 bytes,
+    /// and never yields more bytes than it was given.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn joining_txt_strings_never_panics() {
+        let buffer: [u8; 8] = kani::any();
+        let length: usize = kani::any_where(|&l| l <= 8);
+        if let Some(text) = txt_strings(&buffer[..length]) {
+            assert!(text.len() <= length);
         }
     }
 
