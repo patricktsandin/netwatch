@@ -111,6 +111,7 @@ export async function openSettings(onSaved: () => void): Promise<void> {
   save.addEventListener("click", () => {
     save.disabled = true;
     status.textContent = "Saving…";
+    status.className = "hint";
     void fetch("/api/config", {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-Netwatch": "1" },
@@ -154,6 +155,7 @@ export async function openSettings(onSaved: () => void): Promise<void> {
     }
     flush.disabled = true;
     flushStatus.textContent = "Flushing…";
+    flushStatus.className = "hint";
     void fetch("/api/history", {
       method: "DELETE",
       headers: { "Content-Type": "application/json", "X-Netwatch": "1" },

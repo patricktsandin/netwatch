@@ -38,6 +38,8 @@ const BATCH: usize = 256;
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 const ROLL_UP_EVERY: Duration = Duration::from_secs(60);
+/// How long a run must have been up before pruning trusts an unsynchronized clock.
+const TRUST_CLOCK_AFTER: Duration = Duration::from_secs(24 * 3600);
 /// A minute is rolled up only this long after it ends, so that samples still in a
 /// write batch aren't missed.
 const SETTLE_US: i64 = 2 * 60 * 1_000_000;
@@ -49,11 +51,17 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     let settled = WallTime::from_unix_micros(now.as_unix_micros() - SETTLE_US);
     let minutes_done = Tier::Minute.start_of(settled);
     let hour = Tier::Hour.interval_us();
-    let first_minute = store.rollup_progress(Tier::Minute)?.unwrap_or_else(|| {
-        WallTime::from_unix_micros(
-            minutes_done.as_unix_micros() - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * hour,
-        )
-    });
+    // Progress past now came from a clock that was stepped forward and back again:
+    // rolling up resumes from now, or nothing would be rolled up until that time.
+    let first_minute = store
+        .rollup_progress(Tier::Minute)?
+        .unwrap_or_else(|| {
+            WallTime::from_unix_micros(
+                minutes_done.as_unix_micros()
+                    - netwatch_adapter_sqlite::RAW_RETENTION_DAYS * 24 * hour,
+            )
+        })
+        .min(minutes_done);
     let mut from = first_minute;
     while from < minutes_done {
         let until = WallTime::from_unix_micros(
@@ -69,7 +77,8 @@ fn roll_up(store: &mut Store, now: WallTime) -> Result<(), netwatch_adapter_sqli
     let hours_done = Tier::Hour.start_of(minutes_done);
     let mut from = store
         .rollup_progress(Tier::Hour)?
-        .unwrap_or(Tier::Hour.start_of(first_minute));
+        .unwrap_or(Tier::Hour.start_of(first_minute))
+        .min(hours_done);
     while from < hours_done {
         let until = WallTime::from_unix_micros(from.as_unix_micros() + hour);
         let minutes = store.rollups_between(Tier::Minute, from, until, None)?;
@@ -121,6 +130,7 @@ pub fn spawn(
             let mut readings: Vec<Reading> = Vec::with_capacity(BATCH);
             let mut flushed = Instant::now();
             let mut pruned = Instant::now() - PRUNE_EVERY;
+            let started = Instant::now();
             let mut rolled = Instant::now() - ROLL_UP_EVERY;
             loop {
                 let next = rx.recv_timeout(FLUSH_EVERY);
@@ -187,7 +197,13 @@ pub fn spawn(
                     }
                     rolled = Instant::now();
                 }
-                if pruned.elapsed() >= PRUNE_EVERY {
+                // Pruning by a wall clock that is wrong deletes what it shouldn't: a
+                // clock a year ahead at boot would delete every sample. So it waits
+                // until the kernel says the clock is synchronized, or the run has been
+                // up a day, as on a host without NTP.
+                let trusted = started.elapsed() >= TRUST_CLOCK_AFTER
+                    || netwatch_adapter_procfs::clock_state().is_some_and(|c| c.synchronized);
+                if pruned.elapsed() >= PRUNE_EVERY && trusted {
                     match store.prune(clock.wall_now()) {
                         Ok(removed) if removed > 0 => tracing::info!(removed, "pruned raw samples"),
                         Ok(_) => {}
@@ -228,7 +244,25 @@ pub type LatestTraces = std::collections::BTreeMap<
     netwatch_adapter_sqlite::StoredTrace,
 >;
 
-/// [`LatestTraces`] as stored at `path`, routine or episode. A trace toward another
+/// How many paths' traces the map keeps per target: a host that roams, or whose
+/// address changes, would otherwise keep one per path it was ever on.
+pub const PATHS_KEPT: usize = 4;
+
+/// Keeps `target`'s traces on its [`PATHS_KEPT`] most recently traced paths.
+pub fn keep_recent_paths(latest: &mut LatestTraces, target: netwatch_shared::TargetId) {
+    let mut times: Vec<(i64, Option<TracePath>)> = latest
+        .iter()
+        .filter(|((t, _), _)| *t == target)
+        .map(|((_, path), trace)| (trace.at.as_unix_micros(), path.clone()))
+        .collect();
+    times.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    for (_, path) in times.into_iter().skip(PATHS_KEPT) {
+        latest.remove(&(target, path));
+    }
+}
+
+/// [`LatestTraces`] as stored at `path`, routine or episode, on each target's
+/// [`PATHS_KEPT`] most recent paths. A trace toward another
 /// address than the target's own is a path the target no longer takes, since its
 /// address was edited (ADR-0035), so it is left out.
 pub fn latest_traces(
@@ -256,6 +290,7 @@ pub fn latest_traces(
                 latest.insert((target, trace.path.clone()), trace);
             }
         }
+        keep_recent_paths(&mut latest, target);
     }
     Ok(latest)
 }

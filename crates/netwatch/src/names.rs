@@ -45,8 +45,12 @@ impl Names {
         }
         let name = self.look_up(address).await.text();
         let keep = if name.is_some() { KEEP } else { KEEP_MISSING };
-        self.cache()
-            .insert(address, (name.clone(), Instant::now() + keep));
+        let now = Instant::now();
+        let mut cache = self.cache();
+        cache.insert(address, (name.clone(), now + keep));
+        // A name not looked up again within a further KEEP is for a router no longer
+        // on any path: let it go, or the cache grows for good as paths change.
+        cache.retain(|_, (_, expires)| *expires + KEEP > now);
         name
     }
 

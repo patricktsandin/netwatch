@@ -413,8 +413,12 @@ async fn main() -> anyhow::Result<()> {
     let mut resolver_checked = std::time::Instant::now();
     let mut restarting = false;
     // systemd stops the service with SIGTERM; a terminal with SIGINT.
+    // Each listener is made once: one made anew on every pass of the loop would miss a
+    // signal that came while another arm ran.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("listening for SIGTERM")?;
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .context("listening for SIGINT")?;
     loop {
         tokio::select! {
             _ = kernel_tick.tick() => {
@@ -451,7 +455,9 @@ async fn main() -> anyhow::Result<()> {
                     recorder.note("clock-jump", Role::Kernel, format!("wall clock jumped by {jump_s:+.1} s"));
                 }
                 last_clocks = clocks;
-                let sysctls = netwatch_adapter_procfs::sysctls();
+                // Off the runtime that times every probe: a slow read here would add
+                // its time to every RTT measured meanwhile (ADR-0004).
+                let sysctls = tokio::task::spawn_blocking(netwatch_adapter_procfs::sysctls).await.unwrap_or_default();
                 for (name, value) in &sysctls {
                     if let Some(before) = last_sysctls.get(name).filter(|before| *before != value) {
                         tracing::warn!(%name, %before, %value, "network sysctl changed");
@@ -508,10 +514,16 @@ async fn main() -> anyhow::Result<()> {
                         }
                         // Link facts (ADR-0039): notes on the row, and carrier changes as a
                         // counter, so a flap grades the NIC.
-                        let facts = topology.binding(&Role::Nic).and_then(|b| match &b.identity {
-                            Identity::Interface { name, .. } => Some(netwatch_adapter_procfs::link_facts(name.as_str())),
+                        // The speed and duplex reads go to the driver under the rtnl lock,
+                        // which can take milliseconds: off the runtime, like the counters.
+                        let nic_name = topology.binding(&Role::Nic).and_then(|b| match &b.identity {
+                            Identity::Interface { name, .. } => Some(*name),
                             Identity::Address(_) => None,
                         });
+                        let facts = match nic_name {
+                            Some(name) => tokio::task::spawn_blocking(move || netwatch_adapter_procfs::link_facts(name.as_str())).await.ok(),
+                            None => None,
+                        };
                         let mut counters = counters;
                         if let Some(changes) = facts.as_ref().and_then(|f| f.carrier_changes) {
                             counters.insert("Link.CarrierChanges".to_owned(), changes);
@@ -614,6 +626,8 @@ async fn main() -> anyhow::Result<()> {
                     let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     trace_generations.insert((finished.target, trace.path.clone()), *generation);
                     latest_traces.insert((finished.target, trace.path.clone()), trace.clone());
+                    persist::keep_recent_paths(&mut latest_traces, finished.target);
+                    trace_generations.retain(|key, _| latest_traces.contains_key(key));
                     let _ = writes.send(persist::Write::Trace(trace));
                     drop(generation);
                 }
@@ -623,6 +637,7 @@ async fn main() -> anyhow::Result<()> {
             Some(flushed) = history_flushed.recv() => {
                 // Traces written before the flush are gone; any written after it stay.
                 latest_traces.retain(|key, _| trace_generations.get(key).is_some_and(|&g| g >= flushed));
+                trace_generations.retain(|key, _| latest_traces.contains_key(key));
             }
             Some((role, reason)) = disabled_rx.recv() => {
                 match reason {
@@ -712,7 +727,7 @@ async fn main() -> anyhow::Result<()> {
                     recorder.note("kernel-log", role, line.message);
                 }
             }
-            _ = tokio::signal::ctrl_c() => break,
+            _ = interrupt.recv() => break,
             _ = terminate.recv() => break,
         }
     }

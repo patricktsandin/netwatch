@@ -40,6 +40,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011-time-exceeded-loss.sql"),
     include_str!("../migrations/0012-trace-paths.sql"),
     include_str!("../migrations/0013-traces-by-role.sql"),
+    include_str!("../migrations/0014-samples-by-time.sql"),
 ];
 
 /// How long raw samples are kept (ADR-0006).
@@ -470,22 +471,33 @@ impl Store {
 
     /// Every role that has samples or readings, with the time of its latest one.
     pub fn roles(&self) -> Result<Vec<(Role, WallTime)>, StoreError> {
-        let mut query = self.connection.prepare_cached(
-            "SELECT role, MAX(at_us) FROM
-                   (SELECT role, at_us FROM samples UNION ALL SELECT role, at_us FROM readings)
-                 GROUP BY role ORDER BY role",
-        )?;
-        let rows = query.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?;
-        let mut roles = Vec::new();
-        for row in rows {
-            let (key, at) = row?;
-            if let Some(role) = Role::from_key(&key) {
-                roles.push((role, WallTime::from_unix_micros(at)));
+        // A loose index scan of each table's (role, at_us) index: one seek per role,
+        // rather than reading every sample, as GROUP BY would, on every backfill.
+        let mut latest: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+        for table in ["samples", "readings"] {
+            let mut query = self.connection.prepare_cached(&format!(
+                "WITH RECURSIVE roles(role) AS (
+                     SELECT MIN(role) FROM {table}
+                     UNION ALL
+                     SELECT (SELECT MIN(role) FROM {table} WHERE role > roles.role)
+                     FROM roles WHERE roles.role IS NOT NULL
+                 )
+                 SELECT role, (SELECT MAX(at_us) FROM {table} WHERE {table}.role = roles.role)
+                 FROM roles WHERE role IS NOT NULL"
+            ))?;
+            let rows = query.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (key, at) = row?;
+                let newest = latest.entry(key).or_insert(at);
+                *newest = (*newest).max(at);
             }
         }
-        Ok(roles)
+        Ok(latest
+            .into_iter()
+            .filter_map(|(key, at)| Some((Role::from_key(&key)?, WallTime::from_unix_micros(at))))
+            .collect())
     }
 
     /// The highest target id anywhere in the store: in samples and readings, and in

@@ -334,3 +334,26 @@ fn the_schedule_says_whether_a_target_has_an_incident_open_or_a_trace_held_back(
     schedule.incident(&incident(hop(3), false), at(5));
     assert!(!schedule.has_open(T1));
 }
+
+#[test]
+fn in_the_cooldown_a_routine_trace_waits_out_an_incident_and_others_go_ahead() {
+    // No episode trace is coming for the second incident, since target 1 was traced
+    // less than a cooldown ago; its routine trace still mustn't run during it
+    // (ADR-0062).
+    let mut queue = queue();
+    queue.incident(&incident(hop(3), true), false, at(1));
+    assert_eq!(queue.next(at(10)), start(of(1, TraceKind::Episode)));
+    queue.finished(true, at(14));
+    queue.incident(&incident(hop(3), false), false, at(15));
+    queue.tick(at(15));
+    queue.incident(&incident(hop(2), true), false, at(16));
+    assert_eq!(
+        queue.next(at(16)),
+        start(of(2, TraceKind::Routine)),
+        "target 2 goes ahead"
+    );
+    queue.finished(true, at(20));
+    assert_eq!(queue.next(at(20)), None, "target 1's routine trace waits");
+    queue.incident(&incident(hop(2), false), false, at(30));
+    assert_eq!(queue.next(at(30)), start(routine()));
+}
