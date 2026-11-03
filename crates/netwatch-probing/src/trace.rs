@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 use netwatch_shared::uom::si::f64::Time;
-use netwatch_shared::{HopTtl, Instant, Role, TargetId};
+use netwatch_shared::{HopTtl, Identity, Instant, Role, TargetId};
 
 use crate::incident::Incident;
 
@@ -61,7 +61,7 @@ struct Track {
 /// The target whose path a trace measures, if an incident on `role` is one a trace
 /// can tell more about: the target itself, or a hop beyond hop 1. Hop 1 and the
 /// host's own layers are before the part of the path a trace measures.
-fn traced_target(role: &Role) -> Option<TargetId> {
+pub fn traced_target(role: &Role) -> Option<TargetId> {
     match role {
         Role::Target(target) => Some(*target),
         Role::Hop { target, ttl } if ttl.get().get() > 1 => Some(*target),
@@ -156,6 +156,12 @@ impl TraceSchedule {
             .is_some_and(|track| !track.open.is_empty())
     }
 
+    /// Whether `target` has an episode trace held back until its running (or
+    /// queued) trace finishes.
+    pub fn has_pending(&self, target: TargetId) -> bool {
+        self.targets.get(&target).is_some_and(|track| track.pending)
+    }
+
     /// Records that `target`'s running trace finished at `now`. Returns the episode
     /// trace that was waiting for it, if any.
     pub fn finished(&mut self, target: TargetId, now: Instant) -> Option<TraceRequest> {
@@ -176,7 +182,9 @@ impl TraceSchedule {
 }
 
 /// How long the path must have been the same before a trace runs on it (ADR-0058).
-pub const SETTLE_S: f64 = 10.0;
+pub fn settle() -> Time {
+    Time::new::<netwatch_shared::uom::si::time::second>(10.0)
+}
 
 /// The traces the schedule asked for, waiting to run, one at a time, on a path that
 /// has settled (ADR-0058, ADR-0059). A trace started without the whole path known
@@ -186,6 +194,11 @@ pub const SETTLE_S: f64 = 10.0;
 #[derive(Debug, Default)]
 pub struct TraceQueue {
     waiting: std::collections::VecDeque<TraceRequest>,
+    /// Targets whose waiting routine trace became their episode trace, and those
+    /// whose upgraded trace has started: the episode trace the schedule hands on for
+    /// them afterwards has already run (ADR-0061).
+    upgraded: BTreeSet<TargetId>,
+    served: BTreeSet<TargetId>,
     /// The current path, and since when it has been the current one.
     path: Option<(TracePath, Instant)>,
     running: bool,
@@ -217,6 +230,26 @@ impl TraceQueue {
         self.waiting.insert(at, request);
     }
 
+    /// An incident opened on `target` while its routine trace waits here, which the
+    /// schedule counts as running, so it holds the episode trace back
+    /// ([`TraceSchedule::has_pending`]); call this only then.
+    /// The waiting trace becomes the episode trace instead, and goes ahead: run as
+    /// routine during the outage, it would be taken for the normal path (ADR-0061).
+    pub fn upgrade(&mut self, target: TargetId) {
+        let Some(at) = self
+            .waiting
+            .iter()
+            .position(|r| r.target == target && r.kind == TraceKind::Routine)
+        else {
+            return;
+        };
+        if let Some(mut request) = self.waiting.remove(at) {
+            request.kind = TraceKind::Episode;
+            self.upgraded.insert(target);
+            self.push(request);
+        }
+    }
+
     /// Adds every request given, such as the one [`TraceSchedule::finished`] hands
     /// on, if any.
     pub fn push_all(&mut self, requests: impl IntoIterator<Item = TraceRequest>) {
@@ -243,16 +276,18 @@ impl TraceQueue {
             return None;
         }
         let (path, since) = self.path.as_ref()?;
-        if now
-            .since(*since)
-            .get::<netwatch_shared::uom::si::time::second>()
-            < SETTLE_S
-        {
+        if now.since(*since) < settle() {
             return None;
         }
         let request = self.waiting.pop_front()?;
-        if request.kind == TraceKind::Episode && !open(request.target) {
+        if request.kind == TraceKind::Episode
+            && (self.served.remove(&request.target) || !open(request.target))
+        {
+            self.upgraded.remove(&request.target);
             return Some(Next::Drop(request));
+        }
+        if self.upgraded.remove(&request.target) {
+            self.served.insert(request.target);
         }
         self.running = true;
         Some(Next::Run(request, path.clone()))
@@ -304,9 +339,13 @@ pub struct TraceHop {
 pub struct TracePath(String);
 
 impl TracePath {
-    /// The path out by `interface`, from the local address `local`.
-    pub fn new(interface: &str, local: IpAddr) -> Self {
-        Self(format!("{interface} from {local}"))
+    /// The path out by the egress `egress` (an interface, by name), from the local
+    /// address `local`.
+    pub fn new(egress: &Identity, local: IpAddr) -> Self {
+        match egress {
+            Identity::Interface { name, .. } => Self(format!("{name} from {local}")),
+            Identity::Address(address) => Self(format!("{address} from {local}")),
+        }
     }
 
     /// A path as it was stored.

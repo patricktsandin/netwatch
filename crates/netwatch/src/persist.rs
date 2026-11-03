@@ -241,7 +241,11 @@ pub fn latest_traces(
     let mut latest = LatestTraces::new();
     for (&target, &destination) in targets {
         let role = netwatch_shared::Role::Target(target);
-        for path in store.trace_paths(&role)? {
+        // Traces from before paths were recorded matter only to a target that has no
+        // other: looked up without a path, the lookup would find any path's.
+        let paths = store.trace_paths(&role)?;
+        let recorded = paths.iter().any(Option::is_some);
+        for path in paths.into_iter().filter(|p| p.is_some() || !recorded) {
             let routine = store.latest_trace(&role, TraceKind::Routine, end, path.as_ref())?;
             let episode = store.latest_trace(&role, TraceKind::Episode, end, path.as_ref())?;
             let newest = [routine, episode]

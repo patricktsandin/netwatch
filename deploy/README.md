@@ -107,5 +107,9 @@ start from.
 Every target needs a stable `id`, because history is keyed by it.
 
 ```sh
-sudo install -D -m 0644 deploy/netwatch.toml /etc/netwatch/netwatch.toml
+# The database goes in the service's state directory, and the netwatch group may
+# rewrite the file, as the settings page does (ADR-0035), as the RPM and
+# install.sh set it up.
+sed 's|^database = .*|database = "/var/lib/netwatch/netwatch.db"|' deploy/netwatch.toml |
+    sudo install -D -o root -g netwatch -m 0664 /dev/stdin /etc/netwatch/netwatch.toml
 ```

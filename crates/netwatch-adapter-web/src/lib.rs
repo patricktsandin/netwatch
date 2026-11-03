@@ -613,7 +613,8 @@ async fn build_report(
             let incidents = store.incidents(from, until)?;
             let without_a_way_out_us = analysis::time_without_a_way_out(&incidents, from, until);
             let all = report::episodes(&incidents);
-            // When the next episode began: a trace started after it is that one's.
+            // When the next episode began: a trace started after this one ended, and
+            // after that one began, is that one's.
             let mut starts: Vec<WallTime> = all.iter().map(|e| e.started).collect();
             starts.sort_unstable();
             for episode in all {
@@ -687,10 +688,16 @@ async fn build_report(
                     .collect();
                 // An episode trace waits for the path to settle, and for the traces
                 // before it (ADR-0059), so it can start after a short episode ends.
-                let late = WallTime::from_unix_micros(
-                    end.max(episode.started).as_unix_micros() + EPISODE_TRACE_LATE_US,
-                );
-                let traced_until = next_started.map_or(late, |next| late.min(next));
+                // The grace after it ends stops where a later episode begins, whose
+                // traces those would be; an episode that overlaps this one leaves its
+                // span as it is.
+                let ended = end.max(episode.started);
+                let late =
+                    WallTime::from_unix_micros(ended.as_unix_micros() + EPISODE_TRACE_LATE_US);
+                let traced_until = match next_started {
+                    Some(next) if next > ended => late.min(next),
+                    _ => late,
+                };
                 let traces: Vec<_> = store
                     .traces(episode.started, traced_until)?
                     .into_iter()

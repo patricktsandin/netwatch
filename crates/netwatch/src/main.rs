@@ -26,7 +26,7 @@ use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::sharing;
-use netwatch_probing::trace::{Next, TracePath, TraceQueue, TraceSchedule};
+use netwatch_probing::trace::{Next, TracePath, TraceQueue, TraceSchedule, traced_target};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -540,8 +540,19 @@ async fn main() -> anyhow::Result<()> {
                     // its trace would sweep the same path toward the same address, so
                     // only the owner's incidents ask for one (ADR-0043).
                     let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
-                    if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
-                        trace_queue.push(request);
+                    if !copy {
+                        match traces.incident(&incident, clock.now()) {
+                            Some(request) => trace_queue.push(request),
+                            // Held back behind a routine trace that is only queued: that
+                            // one becomes the episode trace (ADR-0061).
+                            None => {
+                                if let Some(target) = traced_target(&incident.role)
+                                    && traces.has_pending(target)
+                                {
+                                    trace_queue.upgrade(target);
+                                }
+                            }
+                        }
                     }
                     recorder.incident(incident);
                 }
@@ -772,12 +783,9 @@ fn handle(
 /// until both the egress interface and the local address are known: a trace then
 /// would record a path nothing could match (ADR-0058).
 fn current_path(topology: &Topology) -> Option<TracePath> {
-    let interface = match &egress_pin(topology)?.identity {
-        Identity::Interface { name, .. } => name.to_string(),
-        Identity::Address(address) => address.to_string(),
-    };
+    let egress = &egress_pin(topology)?.identity;
     match topology.binding(&Role::LocalInterface).map(|b| &b.identity) {
-        Some(Identity::Address(local)) => Some(TracePath::new(&interface, *local)),
+        Some(Identity::Address(local)) => Some(TracePath::new(egress, *local)),
         _ => None,
     }
 }

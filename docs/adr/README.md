@@ -66,3 +66,4 @@ to "Superseded".
 | [0058](0058-traces-wait-for-a-settled-path.md) | Traces wait for a settled path | Accepted |
 | [0059](0059-the-trace-queue-is-a-domain-type.md) | The trace queue is a domain type | Accepted |
 | [0060](0060-one-address-per-probe-and-traces-of-one-path.md) | One address per probe, and traces of one path | Accepted |
+| [0061](0061-a-waiting-routine-trace-becomes-the-episode-trace.md) | A waiting routine trace becomes the episode trace | Accepted |

@@ -461,7 +461,13 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
             silent_from: Some(HopTtl::new(NonZeroU8::new(6).unwrap())),
         },
         names: [(router, "ae1.example.net · AS64500".to_owned())].into(),
-        path: Some(TracePath::new("wlan0", "192.0.2.20".parse().unwrap())),
+        path: Some(TracePath::new(
+            &netwatch_shared::Identity::Interface {
+                index: netwatch_shared::InterfaceIndex::new(std::num::NonZeroU32::new(3).unwrap()),
+                name: netwatch_shared::InterfaceName::parse(b"wlan0").unwrap(),
+            },
+            "192.0.2.20".parse().unwrap(),
+        )),
     };
     store.write_trace(&trace(10, TraceKind::Routine)).unwrap();
     store.write_trace(&trace(20, TraceKind::Episode)).unwrap();
@@ -488,7 +494,13 @@ fn path_traces_round_trip_with_their_router_names_and_flush_with_history() {
     );
     // On another network, the routine trace of this one is no baseline (ADR-0056).
     let office = StoredTrace {
-        path: Some(TracePath::new("wlan0", "10.20.0.7".parse().unwrap())),
+        path: Some(TracePath::new(
+            &netwatch_shared::Identity::Interface {
+                index: netwatch_shared::InterfaceIndex::new(std::num::NonZeroU32::new(3).unwrap()),
+                name: netwatch_shared::InterfaceName::parse(b"wlan0").unwrap(),
+            },
+            "10.20.0.7".parse().unwrap(),
+        )),
         ..trace(40, TraceKind::Episode)
     };
     store.write_trace(&office).unwrap();

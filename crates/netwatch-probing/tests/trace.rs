@@ -160,7 +160,13 @@ fn silent_hops_after_the_last_answer_collapse_into_where_silence_began() {
 }
 
 fn path(local: &str) -> TracePath {
-    TracePath::new("wlan0", local.parse().unwrap())
+    TracePath::new(
+        &netwatch_shared::Identity::Interface {
+            index: netwatch_shared::InterfaceIndex::new(std::num::NonZeroU32::new(3).unwrap()),
+            name: netwatch_shared::InterfaceName::parse(b"wlan0").unwrap(),
+        },
+        local.parse().unwrap(),
+    )
 }
 
 fn routine() -> TraceRequest {
@@ -245,5 +251,35 @@ fn an_episode_trace_goes_ahead_of_waiting_routine_traces() {
     assert_eq!(
         first,
         Some(Next::Run(episode().unwrap(), path("192.0.2.20")))
+    );
+}
+
+#[test]
+fn an_incident_on_a_target_whose_routine_trace_waits_makes_it_the_episode_trace() {
+    // The schedule counts the waiting routine trace as running, so the incident's
+    // trace would come only after it, and the routine trace would measure the outage
+    // as the normal path (ADR-0061).
+    let mut schedule = schedule();
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    queue.push_all(schedule.tick(at(0)));
+    let hop3 = Role::Hop {
+        target: T1,
+        ttl: ttl(3),
+    };
+    assert_eq!(schedule.incident(&incident(hop3, true), at(1)), None);
+    assert!(schedule.has_pending(T1));
+    queue.upgrade(T1);
+    let first = queue.next(at(10), |t| schedule.has_open(t));
+    assert_eq!(
+        first,
+        Some(Next::Run(episode().unwrap(), path("192.0.2.20")))
+    );
+    queue.finished();
+    // The schedule hands on the pending episode trace: it already ran.
+    queue.push_all(schedule.finished(T1, at(20)));
+    assert_eq!(
+        queue.next(at(20), |t| schedule.has_open(t)),
+        Some(Next::Drop(episode().unwrap()))
     );
 }

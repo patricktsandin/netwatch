@@ -103,9 +103,21 @@ async fn run(
         probes.extend(swept.ok()?);
     }
     let trace = assemble(&probes);
+    // Every responder is named at once: one after another, a trace through a
+    // dozen routers with an unanswering resolver would hold the queue for minutes.
+    let mut lookups = tokio::task::JoinSet::new();
+    let responders: std::collections::BTreeSet<IpAddr> = trace
+        .hops
+        .iter()
+        .flat_map(|h| h.responders.iter().copied())
+        .collect();
+    for address in responders {
+        let names = names.clone();
+        lookups.spawn(async move { (address, names.name(address).await) });
+    }
     let mut named = std::collections::BTreeMap::new();
-    for address in trace.hops.iter().flat_map(|h| h.responders.iter().copied()) {
-        if let Some(name) = names.name(address).await {
+    while let Some(looked_up) = lookups.join_next().await {
+        if let Ok((address, Some(name))) = looked_up {
             named.insert(address, name);
         }
     }
