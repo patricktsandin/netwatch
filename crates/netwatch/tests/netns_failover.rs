@@ -50,7 +50,12 @@ fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String>
         ip(ns, command);
     }
 
-    // `sudo` doesn't pass the parent's environment, so set the log filter explicitly.
+    // `sudo` doesn't pass the parent's environment, so set it explicitly. The daemon
+    // runs as root, which would otherwise find the installed service's configuration
+    // and write into its database: it gets the example configuration and a database
+    // of its own instead.
+    let config = concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy/netwatch.toml");
+    let database = std::env::temp_dir().join(format!("{ns}-{}.db", std::process::id()));
     let daemon = Command::new("sudo")
         .args([
             "-n",
@@ -62,6 +67,8 @@ fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String>
             "RUST_LOG=info",
             "NO_COLOR=1",
         ])
+        .arg(format!("NETWATCH_CONFIG={config}"))
+        .arg(format!("NETWATCH_DB={}", database.display()))
         .arg(env!("CARGO_BIN_EXE_netwatch"))
         .stdout(Stdio::piped())
         .spawn()
@@ -80,6 +87,10 @@ fn nic_epochs(ns: &'static str, setup: &[&str], changes: &[&str]) -> Vec<String>
     let mut log = String::new();
     std::io::Read::read_to_string(daemon.stdout.as_mut().unwrap(), &mut log).unwrap();
     let _ = daemon.wait();
+    let _ = Command::new("sudo")
+        .args(["-n", "rm", "-f"])
+        .args(["", "-wal", "-shm"].map(|suffix| format!("{}{suffix}", database.display())))
+        .status();
     log.lines()
         .filter(|line| line.contains("epoch started") && line.contains("role=Nic"))
         .map(|line| {
