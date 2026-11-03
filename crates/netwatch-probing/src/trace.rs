@@ -148,6 +148,14 @@ impl TraceSchedule {
             .collect()
     }
 
+    /// Whether `target` has an incident open that a trace can tell more about (on the
+    /// target, or on a hop beyond hop 1).
+    pub fn has_open(&self, target: TargetId) -> bool {
+        self.targets
+            .get(&target)
+            .is_some_and(|track| !track.open.is_empty())
+    }
+
     /// Records that `target`'s running trace finished at `now`. Returns the episode
     /// trace that was waiting for it, if any.
     pub fn finished(&mut self, target: TargetId, now: Instant) -> Option<TraceRequest> {
@@ -164,6 +172,83 @@ impl TraceSchedule {
                 kind: TraceKind::Episode,
             }
         })
+    }
+}
+
+/// How long the path must have been the same before a trace runs on it (ADR-0058).
+pub const SETTLE_S: f64 = 10.0;
+
+/// The traces the schedule asked for, waiting to run, one at a time, on a path that
+/// has settled (ADR-0058, ADR-0059). A trace started without the whole path known
+/// couldn't run, or would record a path nothing matches; one started as a link
+/// recovers would trace the recovery; and one started long after it was asked for
+/// may no longer be wanted. So the checks are made when a trace starts.
+#[derive(Debug, Default)]
+pub struct TraceQueue {
+    waiting: std::collections::VecDeque<TraceRequest>,
+    /// The current path, and since when it has been the current one.
+    path: Option<(TracePath, Instant)>,
+    running: bool,
+}
+
+/// What to do with the next request in a [`TraceQueue`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Next {
+    /// Run it now, on this path.
+    Run(TraceRequest, TracePath),
+    /// It's an episode trace whose target has nothing open any more: it was for an
+    /// outage that is over. Tell the schedule it finished.
+    Drop(TraceRequest),
+}
+
+impl TraceQueue {
+    /// Adds a request the schedule asked for.
+    pub fn push(&mut self, request: TraceRequest) {
+        self.waiting.push_back(request);
+    }
+
+    /// Adds every request given, such as the one [`TraceSchedule::finished`] hands
+    /// on, if any.
+    pub fn push_all(&mut self, requests: impl IntoIterator<Item = TraceRequest>) {
+        self.waiting.extend(requests);
+    }
+
+    /// The current path at `now`, if the whole of it is known. Any change, even
+    /// straight from one path to another, starts the settling afresh.
+    pub fn path(&mut self, path: Option<&TracePath>, now: Instant) {
+        match (path, &self.path) {
+            (Some(path), Some((current, _))) if path == current => {}
+            (Some(path), _) => self.path = Some((path.clone(), now)),
+            (None, _) => self.path = None,
+        }
+    }
+
+    /// The next request at `now`, if none is running and the path has settled.
+    /// `open` says whether a target still has an incident open, as
+    /// [`TraceSchedule::has_open`] does.
+    pub fn next(&mut self, now: Instant, open: impl Fn(TargetId) -> bool) -> Option<Next> {
+        if self.running {
+            return None;
+        }
+        let (path, since) = self.path.as_ref()?;
+        if now
+            .since(*since)
+            .get::<netwatch_shared::uom::si::time::second>()
+            < SETTLE_S
+        {
+            return None;
+        }
+        let request = self.waiting.pop_front()?;
+        if request.kind == TraceKind::Episode && !open(request.target) {
+            return Some(Next::Drop(request));
+        }
+        self.running = true;
+        Some(Next::Run(request, path.clone()))
+    }
+
+    /// The running trace finished, whether or not it could run.
+    pub fn finished(&mut self) {
+        self.running = false;
     }
 }
 

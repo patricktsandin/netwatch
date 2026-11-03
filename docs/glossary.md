@@ -156,9 +156,12 @@ words are defined elsewhere in this file.
   It is shown as such, never as loss.
 - **Path trace**: a one-off TTL sweep toward a *target*'s address, beyond the *hops*
   measured continuously, recording who answered at each TTL (ADR-0040). A *routine
-  trace* runs at startup and every 6 h; an *episode trace* runs when an *incident*
-  opens on the target or on one of its hops beyond hop 1. Each records its *trace
-  path*.
+  trace* runs at startup and every 6 h; an *episode trace* is asked for when an
+  *incident* opens on the target or on one of its hops beyond hop 1. Each waits in the
+  *trace queue*, and records its *trace path*.
+- **Trace queue**: where traces wait to run, one at a time, until the *trace path* has
+  been the same for 10 s. An *episode trace* whose target has no *incident* open by
+  the time it would start is dropped (ADR-0058, ADR-0059).
 - **Trace path**: the path a *path trace* ran on: the egress interface and the local
   address. The network map draws only traces of the current one (ADR-0056).
 - **Trace schedule**: decides when each *target* is traced: routine traces, episode

@@ -46,6 +46,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use netwatch_adapter_sqlite::Store;
+use netwatch_probing::trace::TracePath;
 use netwatch_shared::{Role, WallTime};
 use serde::Deserialize;
 use tokio::sync::{broadcast, watch};
@@ -426,6 +427,8 @@ const METHOD: &[&str] = &[
 /// The longest episode timeline, before steps grow from a minute to 10 minutes.
 const MINUTE_STEPS_UP_TO_US: i64 = 2 * 3600 * 1_000_000;
 const HOUR_US: i64 = 3600 * 1_000_000;
+/// How long after an episode ends one of its episode traces may start (ADR-0059).
+const EPISODE_TRACE_LATE_US: i64 = 120 * 1_000_000;
 const DAY_US: i64 = 24 * HOUR_US;
 
 fn wall_now() -> WallTime {
@@ -677,27 +680,38 @@ async fn build_report(
                     .collect::<std::collections::BTreeSet<_>>()
                     .into_iter()
                     .collect();
+                // An episode trace waits for the path to settle, and for the traces
+                // before it (ADR-0059), so it can start after a short episode ends.
+                let traced_until = WallTime::from_unix_micros(
+                    end.max(episode.started).as_unix_micros() + EPISODE_TRACE_LATE_US,
+                );
                 let traces: Vec<_> = store
-                    .traces(episode.started, end.max(episode.started))?
+                    .traces(episode.started, traced_until)?
                     .into_iter()
                     .filter(|t| t.kind == TraceKind::Episode && traced.contains(&t.role))
                     .collect();
-                // Each target's baseline is a routine trace of the path its episode
-                // trace ran on, or else of the path it was last traced on before the
-                // episode: another path's would read as a change (ADR-0057).
+                // Each episode trace's baseline is a routine trace of the path it ran
+                // on; without one, a target's is of the path it was last traced on
+                // before the episode. Another path's would read as a change (ADR-0057).
+                let mut wanted: Vec<(Role, Option<TracePath>)> = traces
+                    .iter()
+                    .map(|t| (t.role.clone(), t.path.clone()))
+                    .collect();
+                for role in traced
+                    .iter()
+                    .filter(|r| !traces.iter().any(|t| &t.role == *r))
+                {
+                    wanted.push((role.clone(), store.latest_path(role, episode.started)?));
+                }
                 let mut baselines = BTreeMap::new();
-                for role in &traced {
-                    let path = match traces.iter().find(|t| &t.role == role) {
-                        Some(trace) => trace.path.clone(),
-                        None => store.latest_path(role, episode.started)?,
-                    };
+                for (role, path) in wanted {
                     if let Some(trace) = store.latest_trace(
-                        role,
+                        &role,
                         TraceKind::Routine,
                         episode.started,
                         path.as_ref(),
                     )? {
-                        baselines.insert(role.clone(), trace);
+                        baselines.insert((role, path), trace);
                     }
                 }
                 episodes.push(report::render::EpisodeReport {

@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use netwatch_adapter_sqlite::StoredTrace;
 use netwatch_probing::incident::Severity;
-use netwatch_probing::trace::TraceKind;
+use netwatch_probing::trace::{TraceKind, TracePath};
 use netwatch_shared::uom::si::time::millisecond;
 use netwatch_shared::{Role, WallTime};
 
@@ -37,10 +37,12 @@ pub struct EpisodeReport {
     pub patterns: BTreeMap<Role, LossPattern>,
     /// The NIC's traffic during it, if readings still exist.
     pub load: Option<LinkLoad>,
-    /// The episode traces of its targets that ran during it.
+    /// The episode traces of its targets that it asked for: those that started during
+    /// it, or soon after, as they wait for the path to settle (ADR-0059).
     pub traces: Vec<StoredTrace>,
-    /// For each traced target, the latest routine trace before it began.
-    pub baselines: BTreeMap<Role, StoredTrace>,
+    /// For each traced target and path, the latest routine trace on that path before
+    /// it began.
+    pub baselines: BTreeMap<(Role, Option<TracePath>), StoredTrace>,
 }
 
 /// One event in the span.
@@ -418,7 +420,7 @@ fn episode_blocks(r: &EpisodeReport, report: &Report, label: Label<'_>) -> Vec<B
     for trace in &r.traces {
         blocks.extend(trace_blocks(
             trace,
-            r.baselines.get(&trace.role),
+            r.baselines.get(&(trace.role.clone(), trace.path.clone())),
             report.utc_offset_s,
             label,
         ));

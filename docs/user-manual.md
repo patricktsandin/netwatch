@@ -222,7 +222,9 @@ It is written for an ISP's network operations center (NOC):
 - **Episodes:** one per problem. Each has its start, end, and probable cause, every
   router's loss and latency during it compared with the hour before, the pattern of
   loss, how busy your own link was (so the ISP can rule out "you were saturating your
-  line"), and a full path trace taken when it began, beside a normal one.
+  line"), and a full path trace taken during it, beside a normal one of the same
+  network. The trace runs once the connection has been steady for 10 s, so an episode
+  that is over by then, such as a short drop of your own link, has none.
 
 ![One episode in a report](images/report-episode.png)
 

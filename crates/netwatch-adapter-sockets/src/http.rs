@@ -84,8 +84,9 @@ enum Families {
     Ipv4,
 }
 
-/// How long a connection attempt may take when another address is left to try.
-const CONNECT_BEFORE_NEXT: Duration = Duration::from_secs(2);
+/// How long each address has to connect before the next one is tried alongside it
+/// (RFC 8305's connection attempt delay).
+const ATTEMPT_DELAY: Duration = Duration::from_millis(250);
 
 /// How much of the body is read while checking for the expected text. A longer body
 /// is not an error: the rest is left unread.
@@ -133,6 +134,51 @@ pub async fn probe(target: HttpsTarget, pin: InterfaceName) -> HttpsResult {
     }
 }
 
+/// Connects through `pin` to the first of `addresses` that answers, as a client
+/// would (RFC 8305): each address gets [`ATTEMPT_DELAY`] before the next is tried
+/// alongside it. An address that silently drops the handshake, such as IPv6 on an
+/// egress with a broken IPv6 route, then costs a probe at most that delay rather than
+/// all of it. If every address fails, a failure to connect is what's reported, since
+/// it says more than a failure to make a socket (on a host with IPv6 turned off).
+async fn connect(
+    addresses: Vec<std::net::SocketAddr>,
+    pin: &InterfaceName,
+) -> Result<tokio::net::TcpStream, Failure> {
+    let mut attempts = tokio::task::JoinSet::new();
+    for (n, address) in addresses.into_iter().enumerate() {
+        let pin = *pin;
+        let delay = ATTEMPT_DELAY * u32::try_from(n).unwrap_or(u32::MAX);
+        attempts.spawn(async move {
+            tokio::time::sleep(delay).await;
+            let socket = if address.is_ipv4() {
+                TcpSocket::new_v4()
+            } else {
+                TcpSocket::new_v6()
+            }
+            .and_then(|socket| socket.bind_device(Some(pin.as_bytes())).map(|()| socket))
+            .map_err(|error| (None, error))?;
+            socket
+                .connect(address)
+                .await
+                .map_err(|error| (Some(ExchangeStage::Connect), error))
+        });
+    }
+    let mut failed = (
+        Some(ExchangeStage::Resolve),
+        io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
+    );
+    while let Some(attempt) = attempts.join_next().await {
+        match attempt {
+            Ok(Ok(tcp)) => return Ok(tcp),
+            Ok(Err(error)) if error.0.is_some() || failed.0 != Some(ExchangeStage::Connect) => {
+                failed = error;
+            }
+            Ok(Err(_)) | Err(_) => {}
+        }
+    }
+    Err(failed)
+}
+
 /// A failure of the HTTP request, after the connection was up.
 fn request_failed(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Failure {
     (Some(ExchangeStage::Request), io::Error::other(error))
@@ -167,50 +213,7 @@ async fn fetch(
         .collect();
     let resolved = Instant::now();
 
-    // In the resolver's order, the next address when one can't be used: an IPv6
-    // address on an egress with no IPv6 route, or on a host with IPv6 turned off. A
-    // failure to connect says more than one to make a socket, so it is what's
-    // reported if every address fails.
-    let mut failed = (
-        Some(ExchangeStage::Resolve),
-        io::Error::new(io::ErrorKind::NotFound, "no address to connect to"),
-    );
-    let mut connection = None;
-    let last = addresses.len().saturating_sub(1);
-    for (n, address) in addresses.into_iter().enumerate() {
-        let socket = if address.is_ipv4() {
-            TcpSocket::new_v4()
-        } else {
-            TcpSocket::new_v6()
-        }
-        .and_then(|socket| socket.bind_device(Some(pin.as_bytes())).map(|()| socket));
-        let socket = match socket {
-            Ok(socket) => socket,
-            Err(error) => {
-                if failed.0 != Some(ExchangeStage::Connect) {
-                    failed = (None, error);
-                }
-                continue;
-            }
-        };
-        // An address that drops the handshake silently mustn't use up the whole
-        // probe while another is left to try.
-        let attempt = if n < last {
-            tokio::time::timeout(CONNECT_BEFORE_NEXT, socket.connect(address))
-                .await
-                .unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "no answer")))
-        } else {
-            socket.connect(address).await
-        };
-        match attempt {
-            Ok(tcp) => {
-                connection = Some(tcp);
-                break;
-            }
-            Err(error) => failed = (Some(ExchangeStage::Connect), error),
-        }
-    }
-    let tcp = connection.ok_or(failed)?;
+    let tcp = connect(addresses, pin).await?;
     let connected = Instant::now();
 
     let name = ServerName::try_from(host.to_owned())
@@ -295,4 +298,34 @@ async fn exchange(target: HttpsTarget, pin: InterfaceName) -> Result<HttpsResult
     } else {
         HttpsResult::Unexpected { status }
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)] // Tests may unwrap (ADR-0015).
+mod tests {
+    use super::*;
+
+    fn lo() -> InterfaceName {
+        InterfaceName::parse(b"lo").unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_first_address_that_answers_is_used_and_a_refusal_is_a_connect_failure() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap();
+        // A port nothing listens on: bound, then released.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let start = std::time::Instant::now();
+        let tcp = connect(vec![closed, open], &lo()).await.unwrap();
+        assert_eq!(tcp.peer_addr().unwrap(), open);
+        assert!(start.elapsed() < Duration::from_secs(1));
+
+        let failure = connect(vec![closed], &lo()).await.unwrap_err();
+        assert_eq!(failure.0, Some(ExchangeStage::Connect));
+        let failure = connect(vec![], &lo()).await.unwrap_err();
+        assert_eq!(failure.0, Some(ExchangeStage::Resolve));
+    }
 }

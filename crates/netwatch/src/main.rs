@@ -26,7 +26,7 @@ use netwatch_host_health::{CounterWatch, KERNEL_RULES, NIC_RULES, Throughput};
 use netwatch_probing::health::{self, Health};
 use netwatch_probing::incident::{Incident, IncidentTracker};
 use netwatch_probing::sharing;
-use netwatch_probing::trace::{TracePath, TraceRequest, TraceSchedule};
+use netwatch_probing::trace::{Next, TracePath, TraceQueue, TraceSchedule};
 use netwatch_probing::{SequenceSpace, StreamConfig};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
@@ -316,11 +316,8 @@ async fn main() -> anyhow::Result<()> {
     // daemon grades every role each second (ADR-0030). Outcomes are timed on the
     // monotonic clock: a step of the wall clock mustn't make every role stale.
     let mut egress_watch = health::EgressWatch::default();
-    // Traces the schedule asked for, not yet started (ADR-0058); the incidents open
-    // now, by role; and since when the whole path has been known.
-    let mut waiting: Vec<TraceRequest> = Vec::new();
-    let mut open_incidents: BTreeMap<Role, Incident> = BTreeMap::new();
-    let mut path_known_since: Option<netwatch_shared::Instant> = None;
+    // Traces the schedule asked for, not yet started (ADR-0058, ADR-0059).
+    let mut trace_queue = TraceQueue::default();
     let mut recent: HashMap<Role, health::Outcomes> = HashMap::new();
     let mut layer_health: BTreeMap<Role, Health> = BTreeMap::new();
     // Facts about the host for the header and the report (ADR-0039), and the public
@@ -355,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
     );
     // Each target's latest trace, for the network map (ADR-0042), and the flush
     // generation each one's write was sent in.
-    let mut trace_generations: BTreeMap<TargetId, u64> = BTreeMap::new();
+    let mut trace_generations: BTreeMap<(TargetId, Option<TracePath>), u64> = BTreeMap::new();
     let mut latest_traces = {
         let (database, destinations) = (config.database.clone(), destinations.clone());
         tokio::task::spawn_blocking(move || persist::latest_traces(&database, &destinations))
@@ -368,15 +365,7 @@ async fn main() -> anyhow::Result<()> {
             })
     };
     let (traced_tx, mut traced) = mpsc::channel::<trace::Finished>(8);
-    // The path traces run on (ADR-0056): kept current from the topology below.
-    let (path_tx, path_rx) = watch::channel(None::<TracePath>);
-    let tracer = trace::Tracer::new(pin.clone(), path_rx, names.clone(), clock, traced_tx);
-    let start_trace = |request: TraceRequest| {
-        if let Some(&destination) = destinations.get(&request.target) {
-            tracing::info!(target = request.target.get(), kind = ?request.kind, "path trace");
-            tracer.start(request, destination);
-        }
-    };
+    let tracer = trace::Tracer::new(names.clone(), clock, traced_tx);
     // Wall-clock jumps and changes to network sysctls are events (ADR-0008). The wall
     // clock is held against the time since boot, which a suspend doesn't stop.
     let since_boot = || netwatch_adapter_procfs::since_boot().unwrap_or_default();
@@ -552,34 +541,15 @@ async fn main() -> anyhow::Result<()> {
                     // only the owner's incidents ask for one (ADR-0043).
                     let copy = sharing::stream_of(&hop_streams, &incident.role).is_some_and(|s| s.role() != incident.role);
                     if !copy && let Some(request) = traces.incident(&incident, clock.now()) {
-                        waiting.push(request);
-                    }
-                    if incident.ended.is_none() {
-                        open_incidents.insert(incident.role.clone(), incident.clone());
-                    } else {
-                        open_incidents.remove(&incident.role);
+                        trace_queue.push(request);
                     }
                     recorder.incident(incident);
                 }
-                waiting.extend(traces.tick(clock.now()));
-                // Traces wait for the whole path to have been back a while (ADR-0058):
-                // one run without it couldn't run or would record a path nothing
-                // matches, and one run as the link recovers would trace the recovery.
-                // An episode trace whose target has nothing open by then was for the
-                // outage itself, and is dropped: the schedule hears it finished.
-                path_known_since = current_path(&topology).map(|_| path_known_since.unwrap_or(clock.now()));
-                let settled = path_known_since.is_some_and(|since| clock.now().since(since).get::<second>() >= TRACE_SETTLE_S);
-                while settled && let Some(request) = waiting.pop() {
-                    let open = open_incidents.keys().any(|role| match role {
-                        Role::Target(t) | Role::Hop { target: t, .. } => *t == request.target,
-                        _ => false,
-                    });
-                    if request.kind == netwatch_probing::trace::TraceKind::Episode && !open {
-                        waiting.extend(traces.finished(request.target, clock.now()));
-                    } else {
-                        start_trace(request);
-                    }
+                for request in traces.tick(clock.now()) {
+                    trace_queue.push(request);
                 }
+                trace_queue.path(current_path(&topology).as_ref(), clock.now());
+                dispatch_traces(&mut trace_queue, &mut traces, &topology, &destinations, &tracer, clock.now());
             }
             Some(observation) = observations.recv() => {
                 for output in topology.observe(observation) {
@@ -591,12 +561,7 @@ async fn main() -> anyhow::Result<()> {
                     *current = egress;
                     changed
                 });
-                let path = current_path(&topology);
-                path_tx.send_if_modified(|current| {
-                    let changed = *current != path;
-                    *current = path;
-                    changed
-                });
+                trace_queue.path(current_path(&topology).as_ref(), clock.now());
                 // The hops are on another path now (ADR-0054).
                 if changed {
                     let hops: Vec<Role> = topology.bindings().map(|(role, _)| role.clone()).filter(|role| matches!(role, Role::Hop { .. })).collect();
@@ -640,16 +605,18 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(trace) = finished.trace {
                     recorder.note("trace", trace.role.clone(), trace::summary(&trace));
                     let generation = history_generation.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    trace_generations.insert(finished.target, *generation);
+                    trace_generations.insert((finished.target, trace.path.clone()), *generation);
                     latest_traces.insert((finished.target, trace.path.clone()), trace.clone());
                     let _ = writes.send(persist::Write::Trace(trace));
                     drop(generation);
                 }
-                waiting.extend(traces.finished(finished.target, clock.now()));
+                trace_queue.finished();
+                trace_queue.push_all(traces.finished(finished.target, clock.now()));
+                dispatch_traces(&mut trace_queue, &mut traces, &topology, &destinations, &tracer, clock.now());
             }
             Some(flushed) = history_flushed.recv() => {
                 // Traces written before the flush are gone; any written after it stay.
-                latest_traces.retain(|(target, _), _| trace_generations.get(target).is_some_and(|&g| g >= flushed));
+                latest_traces.retain(|key, _| trace_generations.get(key).is_some_and(|&g| g >= flushed));
             }
             Some((role, reason)) = disabled_rx.recv() => {
                 match reason {
@@ -984,8 +951,39 @@ fn publish_gone(
     });
 }
 
-/// How long the whole path must have been known before a trace runs (ADR-0058).
-const TRACE_SETTLE_S: f64 = 10.0;
+/// Starts what the trace queue says may run now (ADR-0059). A dropped request, or one
+/// that can't start after all, is finished at once, and what the schedule hands on
+/// for it is queued.
+fn dispatch_traces(
+    queue: &mut TraceQueue,
+    schedule: &mut TraceSchedule,
+    topology: &Topology,
+    destinations: &BTreeMap<TargetId, IpAddr>,
+    tracer: &trace::Tracer,
+    now: netwatch_shared::Instant,
+) {
+    while let Some(next) = queue.next(now, |target| schedule.has_open(target)) {
+        let unrun = match next {
+            Next::Run(request, path) => {
+                match (destinations.get(&request.target), egress_pin(topology)) {
+                    (Some(&destination), Some(pin)) => {
+                        tracing::info!(target = request.target.get(), kind = ?request.kind, path = path.as_str(), "path trace");
+                        tracer.start(request, destination, pin.clone(), path);
+                        None
+                    }
+                    _ => {
+                        queue.finished();
+                        Some(request)
+                    }
+                }
+            }
+            Next::Drop(request) => Some(request),
+        };
+        if let Some(request) = unrun {
+            queue.push_all(schedule.finished(request.target, now));
+        }
+    }
+}
 
 /// How often the system's resolver is read again, for `dns = "system"`.
 const RESOLVER_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);

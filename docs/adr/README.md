@@ -64,3 +64,4 @@ to "Superseded".
 | [0056](0056-grades-need-evidence-and-traces-know-their-path.md) | Grades need evidence, and traces know their path | Accepted |
 | [0057](0057-follow-the-current-pin-and-touch-no-real-state.md) | Follow the current pin, and touch no real state | Accepted |
 | [0058](0058-traces-wait-for-a-settled-path.md) | Traces wait for a settled path | Accepted |
+| [0059](0059-the-trace-queue-is-a-domain-type.md) | The trace queue is a domain type | Accepted |

@@ -3,7 +3,6 @@
 
 use std::net::IpAddr;
 use std::num::NonZeroU8;
-use std::sync::Arc;
 use std::time::Duration;
 
 use netwatch_adapter_sockets::ProbeSocket;
@@ -12,7 +11,7 @@ use netwatch_probing::trace::{TracePath, TraceProbe, TraceRequest, assemble};
 use netwatch_probing::{ProbeIndex, ProbeSequence, ReplyKind};
 use netwatch_shared::{HopTtl, Identity, Role, TargetId};
 use netwatch_topology::Binding;
-use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::sync::mpsc;
 
 use crate::clock::Clock;
 use crate::names::Names;
@@ -32,53 +31,29 @@ pub struct Finished {
     pub trace: Option<StoredTrace>,
 }
 
-/// Runs path traces, one at a time: probes of concurrent traces would delay one
-/// another's answers in this process and inflate their RTTs, and would reach the
-/// same routers in bursts that their ICMP rate limits drop.
+/// Runs path traces. One runs at a time, which the trace queue sees to (ADR-0059):
+/// probes of concurrent traces would delay one another's answers in this process and
+/// inflate their RTTs, and would reach the same routers in bursts that their ICMP rate
+/// limits drop.
 #[derive(Clone)]
 pub struct Tracer {
-    pin: watch::Receiver<Option<Binding>>,
-    path: watch::Receiver<Option<TracePath>>,
     names: Names,
     clock: Clock,
     done: mpsc::Sender<Finished>,
-    one_at_a_time: Arc<Semaphore>,
 }
 
 impl Tracer {
-    /// Traces over the egress `pin`, recording the `path` current then on each
-    /// trace (ADR-0056), naming responders with `names`, and reporting every
-    /// finished trace to `done`.
-    pub fn new(
-        pin: watch::Receiver<Option<Binding>>,
-        path: watch::Receiver<Option<TracePath>>,
-        names: Names,
-        clock: Clock,
-        done: mpsc::Sender<Finished>,
-    ) -> Self {
-        Self {
-            pin,
-            path,
-            names,
-            clock,
-            done,
-            one_at_a_time: Arc::new(Semaphore::new(1)),
-        }
+    /// Names responders with `names`, and reports every finished trace to `done`.
+    pub fn new(names: Names, clock: Clock, done: mpsc::Sender<Finished>) -> Self {
+        Self { names, clock, done }
     }
 
-    /// Runs `request` toward `destination` once the trace before it has finished,
-    /// over the pin current then, and reports to `done` whether or not it could run.
-    pub fn start(&self, request: TraceRequest, destination: IpAddr) {
+    /// Runs `request` toward `destination` now, over `pin`, recording `path` as the
+    /// path it ran on (ADR-0056), and reports to `done` whether or not it could run.
+    pub fn start(&self, request: TraceRequest, destination: IpAddr, pin: Binding, path: TracePath) {
         let tracer = self.clone();
         tokio::spawn(async move {
-            let trace = match tracer.one_at_a_time.acquire().await {
-                Ok(_permit) => {
-                    let pin = tracer.pin.borrow().clone();
-                    let path = tracer.path.borrow().clone();
-                    run(request, destination, pin, path, &tracer.names, tracer.clock).await
-                }
-                Err(_closed) => None,
-            };
+            let trace = run(request, destination, pin, path, &tracer.names, tracer.clock).await;
             let _ = tracer
                 .done
                 .send(Finished {
@@ -93,12 +68,12 @@ impl Tracer {
 async fn run(
     request: TraceRequest,
     destination: IpAddr,
-    pin: Option<Binding>,
-    path: Option<TracePath>,
+    pin: Binding,
+    path: TracePath,
     names: &Names,
     clock: Clock,
 ) -> Option<StoredTrace> {
-    let Some(Identity::Interface { index, .. }) = pin.map(|b| b.identity) else {
+    let Identity::Interface { index, .. } = pin.identity else {
         return None;
     };
     let at = clock.wall_now();
@@ -131,7 +106,7 @@ async fn run(
         destination,
         trace,
         names: named,
-        path,
+        path: Some(path),
     })
 }
 

@@ -6,7 +6,9 @@ use std::net::IpAddr;
 use std::num::NonZeroU8;
 
 use netwatch_probing::incident::{Incident, Severity};
-use netwatch_probing::trace::{TraceKind, TraceProbe, TraceRequest, TraceSchedule, assemble};
+use netwatch_probing::trace::{
+    Next, TraceKind, TracePath, TraceProbe, TraceQueue, TraceRequest, TraceSchedule, assemble,
+};
 use netwatch_shared::uom::si::f64::Time;
 use netwatch_shared::uom::si::time::{millisecond, second};
 use netwatch_shared::{HopTtl, Instant, Role, TargetId, WallTime};
@@ -155,4 +157,74 @@ fn silent_hops_after_the_last_answer_collapse_into_where_silence_began() {
     let nothing = assemble(&[probe(4, None, None, false)]);
     assert!(nothing.hops.is_empty());
     assert_eq!(nothing.silent_from, Some(ttl(4)));
+}
+
+fn path(local: &str) -> TracePath {
+    TracePath::new("wlan0", local.parse().unwrap())
+}
+
+fn routine() -> TraceRequest {
+    TraceRequest {
+        target: T1,
+        kind: TraceKind::Routine,
+    }
+}
+
+#[test]
+fn a_queued_trace_waits_for_the_path_to_settle_and_runs_on_it() {
+    let mut queue = TraceQueue::default();
+    queue.push(routine());
+    assert_eq!(queue.next(at(0), |_| true), None, "no path yet");
+    queue.path(Some(&path("192.0.2.20")), at(1));
+    assert_eq!(queue.next(at(10), |_| true), None, "not settled");
+    assert_eq!(
+        queue.next(at(11), |_| true),
+        Some(Next::Run(routine(), path("192.0.2.20")))
+    );
+}
+
+#[test]
+fn any_change_of_path_starts_the_settling_afresh() {
+    // Straight from one network to another between two looks (ADR-0059).
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    queue.path(Some(&path("192.0.2.20")), at(30));
+    queue.path(Some(&path("10.20.0.7")), at(31));
+    queue.push(routine());
+    assert_eq!(queue.next(at(40), |_| true), None);
+    assert!(queue.next(at(41), |_| true).is_some());
+}
+
+#[test]
+fn traces_run_one_at_a_time_and_each_is_checked_when_it_starts() {
+    let mut queue = TraceQueue::default();
+    queue.path(Some(&path("192.0.2.20")), at(0));
+    queue.push(episode().unwrap());
+    queue.push(episode().unwrap());
+    assert!(matches!(queue.next(at(10), |_| true), Some(Next::Run(..))));
+    assert_eq!(queue.next(at(11), |_| true), None, "one is running");
+    queue.finished();
+    // By the time the second could start, the incident it was for has ended.
+    assert_eq!(
+        queue.next(at(20), |_| false),
+        Some(Next::Drop(episode().unwrap()))
+    );
+}
+
+#[test]
+fn the_schedule_says_whether_a_target_has_an_incident_open() {
+    let mut schedule = schedule();
+    let hop = |n| Role::Hop {
+        target: T1,
+        ttl: ttl(n),
+    };
+    schedule.incident(&incident(hop(1), true), at(0));
+    assert!(
+        !schedule.has_open(T1),
+        "hop 1 is before what a trace measures"
+    );
+    schedule.incident(&incident(hop(3), true), at(0));
+    assert!(schedule.has_open(T1));
+    schedule.incident(&incident(hop(3), false), at(5));
+    assert!(!schedule.has_open(T1));
 }
